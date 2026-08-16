@@ -1,0 +1,22 @@
+services:
+  easyclean:
+    build: .
+    image: easyclean:latest
+    container_name: easyclean
+    restart: unless-stopped
+    # NOTE: media is mounted read-WRITE — EasyClean moves files between
+    # source/ clean/ .trash/. It must not be ":ro".
+    volumes:
+      - ${MEDIA_ROOT}:/media
+      - ./data:/data
+    environment:
+      # Auth — CHANGE THESE before exposing on any shared network.
+      EASYCLEAN_USER: ${EASYCLEAN_USER:-admin}
+      EASYCLEAN_PASSCODE: ${EASYCLEAN_PASSCODE:-easyclean}
+      # JWT signing secret. Generate one: `openssl rand -hex 32`.
+      # Without it the server falls back to a known dev secret (forgeable).
+      EASYCLEAN_SECRET: ${EASYCLEAN_SECRET:?set EASYCLEAN_SECRET in .env (openssl rand -hex 32)}
+      EASYCLEAN_TRASH_RETENTION_DAYS: ${EASYCLEAN_TRASH_RETENTION_DAYS:-30}
+      RUST_LOG: ${RUST_LOG:-info}
+    ports:
+      - "${PORT:-8080}:8080"

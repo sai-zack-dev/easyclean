@@ -1,0 +1,3414 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"
+    />
+    <title>EasyClean</title>
+    <style>
+      @import url("https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap");
+
+      *,
+      *::before,
+      *::after {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+        -webkit-tap-highlight-color: transparent;
+      }
+
+      :root {
+        --bg: #0a0a0a;
+        --bg2: #111111;
+        --bg3: #1c1c1e;
+        --bg4: #2c2c2e;
+        --surface: #3a3a3c;
+        --text: #ffffff;
+        --text2: rgba(255, 255, 255, 0.55);
+        --text3: rgba(255, 255, 255, 0.28);
+        --keep: #30d158;
+        --delete: #ff453a;
+        --accent: #ffffff;
+        --border: rgba(255, 255, 255, 0.08);
+        --border2: rgba(255, 255, 255, 0.12);
+        --font: "Inter", sans-serif;
+        --r: 14px;
+        --r-lg: 20px;
+        --r-pill: 100px;
+        --sidebar: 240px;
+        --tab: 72px;
+        --ease: cubic-bezier(0.25, 0.46, 0.45, 0.94);
+      }
+
+      html,
+      body {
+        height: 100%;
+        background: var(--bg);
+        color: var(--text);
+        font-family: var(--font);
+        overflow: hidden;
+        font-size: 15px;
+      }
+
+      /* ── LAYOUT ─────────────────────────────── */
+      #app {
+        display: flex;
+        height: 100dvh;
+        width: 100%;
+      }
+
+      /* SIDEBAR (desktop) */
+      .sidebar {
+        width: var(--sidebar);
+        flex-shrink: 0;
+        background: var(--bg2);
+        border-right: 1px solid var(--border);
+        display: flex;
+        flex-direction: column;
+        padding: 32px 12px 24px;
+        gap: 4px;
+        overflow: hidden;
+      }
+      .sidebar-brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 0 8px 24px;
+      }
+      .sidebar-brand-icon {
+        width: 32px;
+        height: 32px;
+        background: var(--text);
+        border-radius: 9px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+      }
+      .sidebar-brand-icon svg {
+        width: 18px;
+        height: 18px;
+        fill: var(--bg);
+      }
+      .sidebar-brand-name {
+        font-size: 17px;
+        font-weight: 700;
+        letter-spacing: -0.3px;
+      }
+      .sidebar-brand-ver {
+        font-size: 11px;
+        color: var(--text3);
+        margin-top: 1px;
+      }
+
+      .nav-item {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 12px;
+        border-radius: var(--r);
+        cursor: pointer;
+        transition: background 0.15s var(--ease);
+        color: var(--text2);
+        font-size: 14px;
+        font-weight: 500;
+        position: relative;
+      }
+      .nav-item svg {
+        width: 18px;
+        height: 18px;
+        flex-shrink: 0;
+        stroke: currentColor;
+        fill: none;
+        stroke-width: 1.8;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      .nav-item:hover {
+        background: rgba(255, 255, 255, 0.05);
+        color: var(--text);
+      }
+      .nav-item.active {
+        background: rgba(255, 255, 255, 0.1);
+        color: var(--text);
+      }
+      .nav-item.active svg {
+        stroke: var(--text);
+      }
+
+      .sidebar-spacer {
+        flex: 1;
+      }
+      .sidebar-user {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 12px;
+        border-radius: var(--r);
+        border: 1px solid var(--border);
+        cursor: pointer;
+      }
+      .sidebar-avatar {
+        width: 30px;
+        height: 30px;
+        border-radius: 50%;
+        background: var(--surface);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 12px;
+        font-weight: 700;
+        flex-shrink: 0;
+      }
+      .sidebar-username {
+        font-size: 13px;
+        font-weight: 600;
+      }
+      .sidebar-role {
+        font-size: 11px;
+        color: var(--text3);
+      }
+
+      /* MAIN CONTENT */
+      .main {
+        flex: 1;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+      }
+      .screen {
+        flex: 1;
+        overflow-y: auto;
+        overflow-x: hidden;
+        -webkit-overflow-scrolling: touch;
+      }
+      .screen::-webkit-scrollbar {
+        width: 0;
+      }
+
+      /* BOTTOM TAB BAR (mobile) */
+      .tabbar {
+        display: none;
+        height: var(--tab);
+        background: rgba(15, 15, 15, 0.92);
+        backdrop-filter: blur(24px) saturate(180%);
+        -webkit-backdrop-filter: blur(24px) saturate(180%);
+        border-top: 1px solid var(--border);
+        flex-shrink: 0;
+        align-items: flex-start;
+        justify-content: space-around;
+        padding: 8px 0 0;
+      }
+      .tab-btn {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 4px;
+        cursor: pointer;
+        padding: 4px 0;
+        background: none;
+        border: none;
+        color: var(--text3);
+        transition: color 0.2s;
+      }
+      .tab-btn svg {
+        width: 22px;
+        height: 22px;
+        stroke: currentColor;
+        fill: none;
+        stroke-width: 1.7;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      .tab-btn.active {
+        color: var(--text);
+      }
+      .tab-btn .tab-label {
+        font-size: 10px;
+        font-weight: 500;
+        letter-spacing: 0.2px;
+      }
+
+      /* ── MOBILE BREAKPOINT ───────────────────── */
+      @media (max-width: 700px) {
+        .sidebar {
+          display: none;
+        }
+        .tabbar {
+          display: flex;
+        }
+      }
+
+      /* ── COMMON COMPONENTS ───────────────────── */
+      .page-pad {
+        padding: 0 16px;
+      }
+      .page-header {
+        padding: 16px 20px 12px;
+        display: flex;
+        align-items: flex-end;
+        justify-content: space-between;
+      }
+      .page-title {
+        font-size: 32px;
+        font-weight: 800;
+        letter-spacing: -0.6px;
+      }
+      .page-subtitle {
+        font-size: 13px;
+        color: var(--text2);
+        margin-top: 2px;
+      }
+
+      .pill-btn {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        background: var(--bg3);
+        border: 1px solid var(--border2);
+        color: var(--text);
+        padding: 8px 16px;
+        border-radius: var(--r-pill);
+        font-size: 13px;
+        font-weight: 600;
+        cursor: pointer;
+        font-family: var(--font);
+        transition: all 0.15s;
+        white-space: nowrap;
+        border: none;
+      }
+      .pill-btn svg {
+        width: 14px;
+        height: 14px;
+        stroke: currentColor;
+        fill: none;
+        stroke-width: 2;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        flex-shrink: 0;
+      }
+      .pill-btn:active {
+        opacity: 0.7;
+        transform: scale(0.97);
+      }
+
+      .section-label {
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--text3);
+        letter-spacing: 0.5px;
+        margin-bottom: 10px;
+        text-transform: uppercase;
+      }
+
+      .card {
+        background: var(--bg3);
+        border-radius: var(--r-lg);
+        padding: 16px;
+      }
+      .list-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 14px 16px;
+        background: var(--bg3);
+        border-radius: var(--r-lg);
+        cursor: pointer;
+        transition: opacity 0.15s;
+        margin-bottom: 8px;
+      }
+      .list-row:active {
+        opacity: 0.7;
+      }
+      .list-row-left {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      .row-icon {
+        width: 36px;
+        height: 36px;
+        border-radius: 10px;
+        background: rgba(255, 255, 255, 0.07);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+      }
+      .row-icon svg {
+        width: 18px;
+        height: 18px;
+        stroke: var(--text2);
+        fill: none;
+        stroke-width: 1.8;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      .row-title {
+        font-size: 15px;
+        font-weight: 500;
+      }
+      .row-sub {
+        font-size: 12px;
+        color: var(--text3);
+        margin-top: 1px;
+      }
+      .row-right {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        color: var(--text3);
+        font-size: 13px;
+      }
+      .row-right svg {
+        width: 14px;
+        height: 14px;
+        stroke: var(--text3);
+        fill: none;
+        stroke-width: 2;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      .row-count {
+        font-size: 14px;
+        font-weight: 600;
+        color: var(--text);
+      }
+
+      .chevron {
+        width: 14px;
+        height: 14px;
+        stroke: var(--text3);
+        fill: none;
+        stroke-width: 2.5;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+
+      /* ── CLEAN TAB ───────────────────────────── */
+      .streak-card {
+        background: var(--bg3);
+        border-radius: var(--r-lg);
+        padding: 16px;
+        margin: 0 16px 10px;
+      }
+      .streak-days {
+        display: flex;
+        gap: 3px;
+        justify-content: space-between;
+        margin-bottom: 14px;
+      }
+      .streak-day {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 5px;
+        min-width: 0;
+      }
+      .streak-day-lbl {
+        font-size: 8px;
+        color: var(--text3);
+        font-weight: 500;
+        text-transform: uppercase;
+        letter-spacing: 0.3px;
+      }
+      .s-ring {
+        width: 30px;
+        height: 30px;
+        min-width: 30px;
+        border-radius: 50%;
+        border: 2.5px solid rgba(255, 255, 255, 0.12);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: all 0.3s;
+        position: relative;
+        flex-shrink: 0;
+      }
+      .s-ring.done {
+        border-color: rgba(255, 255, 255, 0.4);
+      }
+      .s-ring.done svg {
+        opacity: 0.7;
+      }
+      .s-ring.today {
+        border-color: var(--text);
+        background: var(--text);
+      }
+      .s-ring.today svg path,
+      .s-ring.today svg polyline {
+        stroke: var(--bg);
+      }
+      .s-ring svg {
+        width: 11px;
+        height: 11px;
+        stroke: var(--text3);
+        fill: none;
+        stroke-width: 2.5;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      .streak-meta {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+      .streak-badge {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 12px;
+        color: var(--text2);
+        font-weight: 500;
+      }
+      .streak-badge svg {
+        width: 14px;
+        height: 14px;
+        stroke: currentColor;
+        fill: none;
+        stroke-width: 1.8;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+
+      .quick-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+        margin: 0 16px 10px;
+      }
+      .quick-card {
+        background: var(--bg3);
+        border-radius: var(--r-lg);
+        padding: 14px 14px 12px;
+        cursor: pointer;
+        transition: all 0.15s;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      .quick-card:active {
+        transform: scale(0.97);
+        opacity: 0.8;
+      }
+      .quick-card-top {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+      }
+      .quick-card-icon {
+        width: 34px;
+        height: 34px;
+        background: rgba(255, 255, 255, 0.07);
+        border-radius: 9px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .quick-card-icon svg {
+        width: 17px;
+        height: 17px;
+        stroke: var(--text2);
+        fill: none;
+        stroke-width: 1.8;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      .quick-card-title {
+        font-size: 15px;
+        font-weight: 600;
+      }
+      .quick-card-sub {
+        font-size: 12px;
+        color: var(--text3);
+        margin-top: 1px;
+      }
+      .quick-badge {
+        background: rgba(255, 255, 255, 0.1);
+        color: var(--text);
+        font-size: 11px;
+        font-weight: 700;
+        padding: 3px 8px;
+        border-radius: var(--r-pill);
+      }
+
+      .timeline-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        margin: 0 16px;
+      }
+      .tl-item {
+        background: var(--bg3);
+        border-radius: var(--r-lg);
+        padding: 14px 16px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        cursor: pointer;
+        transition: opacity 0.15s;
+      }
+      .tl-item:active {
+        opacity: 0.7;
+      }
+      .tl-left {
+      }
+      .tl-month {
+        font-size: 15px;
+        font-weight: 500;
+      }
+      .tl-progress {
+        font-size: 13px;
+        color: var(--text3);
+        margin-top: 2px;
+      }
+      .tl-done {
+        font-size: 13px;
+        color: var(--keep);
+      }
+      .tl-right {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      /* progress ring SVG */
+      .prog-ring circle {
+        transition: stroke-dasharray 0.4s var(--ease);
+      }
+
+      /* ── SWIPE SCREEN ────────────────────────── */
+      .swipe-screen {
+        position: fixed;
+        inset: 0;
+        background: var(--bg);
+        z-index: 300;
+        display: flex;
+        flex-direction: column;
+        max-width: none;
+      }
+      .swipe-header {
+        padding: 12px 16px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        flex-shrink: 0;
+      }
+      .back-btn {
+        width: 38px;
+        height: 38px;
+        border-radius: 50%;
+        background: var(--bg3);
+        border: none;
+        color: var(--text);
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .back-btn svg {
+        width: 18px;
+        height: 18px;
+        stroke: var(--text);
+        fill: none;
+        stroke-width: 2.5;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      .swipe-title-wrap {
+        text-align: center;
+      }
+      .swipe-title {
+        font-size: 15px;
+        font-weight: 700;
+      }
+      .swipe-sub {
+        font-size: 12px;
+        color: var(--text3);
+        margin-top: 1px;
+      }
+      .undo-btn {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        background: var(--bg3);
+        border: 1px solid var(--border2);
+        color: var(--text);
+        padding: 8px 14px;
+        border-radius: var(--r-pill);
+        font-size: 13px;
+        font-weight: 600;
+        cursor: pointer;
+        font-family: var(--font);
+        transition: opacity 0.15s;
+      }
+      .undo-btn svg {
+        width: 13px;
+        height: 13px;
+        stroke: currentColor;
+        fill: none;
+        stroke-width: 2;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      .undo-btn:active {
+        opacity: 0.6;
+      }
+
+      .swipe-arena {
+        flex: 1;
+        position: relative;
+        overflow: hidden;
+      }
+      .swipe-card {
+        position: absolute;
+        inset: 10px;
+        border-radius: var(--r-lg);
+        overflow: hidden;
+        background: var(--bg3);
+        cursor: grab;
+        user-select: none;
+        touch-action: none;
+        will-change: transform;
+        transition: transform 0.3s var(--ease);
+      }
+      .swipe-card:active {
+        cursor: grabbing;
+      }
+      .swipe-card img {
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+        background: #000;
+        pointer-events: none;
+        display: block;
+      }
+      .swipe-card-empty {
+        width: 100%;
+        height: 100%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-direction: column;
+        gap: 8px;
+        color: var(--text3);
+      }
+      .swipe-card-empty svg {
+        width: 48px;
+        height: 48px;
+        stroke: var(--text3);
+        fill: none;
+        stroke-width: 1.2;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        opacity: 0.4;
+      }
+      .swipe-card-empty-txt {
+        font-size: 15px;
+        font-weight: 500;
+        opacity: 0.5;
+      }
+
+      .swipe-overlay {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.08s;
+        border-radius: var(--r-lg);
+      }
+      .swipe-overlay.del {
+        background: rgba(255, 69, 58, 0.25);
+      }
+      .swipe-overlay.kp {
+        background: rgba(48, 209, 88, 0.25);
+      }
+      .swipe-overlay-tag {
+        font-size: 30px;
+        font-weight: 900;
+        letter-spacing: 2px;
+        border: 3.5px solid currentColor;
+        padding: 7px 18px;
+        border-radius: 10px;
+      }
+      .swipe-overlay.del .swipe-overlay-tag {
+        color: var(--delete);
+      }
+      .swipe-overlay.kp .swipe-overlay-tag {
+        color: var(--keep);
+      }
+
+      .card-info-bar {
+        position: absolute;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        padding: 16px;
+        background: linear-gradient(transparent, rgba(0, 0, 0, 0.75));
+      }
+      .card-fname {
+        font-size: 13px;
+        font-weight: 600;
+        color: #fff;
+      }
+      .card-fmeta {
+        font-size: 11px;
+        color: rgba(255, 255, 255, 0.5);
+        margin-top: 2px;
+      }
+
+      .badge {
+        position: absolute;
+        top: 12px;
+        right: 12px;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.5px;
+        padding: 4px 10px;
+        border-radius: var(--r-pill);
+        display: flex;
+        align-items: center;
+        gap: 5px;
+      }
+      .badge svg {
+        width: 11px;
+        height: 11px;
+        stroke: currentColor;
+        fill: none;
+        stroke-width: 2.2;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      .badge-blur {
+        background: rgba(255, 69, 58, 0.8);
+        color: #fff;
+      }
+      .badge-dup {
+        background: rgba(255, 159, 10, 0.8);
+        color: #fff;
+      }
+
+      .swipe-actions {
+        padding: 12px 20px 16px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        flex-shrink: 0;
+      }
+      .action-btn {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        padding: 13px 20px;
+        border-radius: var(--r-pill);
+        font-size: 14px;
+        font-weight: 800;
+        letter-spacing: 0.5px;
+        border: none;
+        cursor: pointer;
+        font-family: var(--font);
+        transition:
+          transform 0.15s,
+          opacity 0.15s;
+      }
+      .action-btn:active {
+        transform: scale(0.94);
+      }
+      .del-btn {
+        background: rgba(255, 69, 58, 0.15);
+        color: var(--delete);
+        border: 1.5px solid rgba(255, 69, 58, 0.25);
+      }
+      .kp-btn {
+        background: rgba(48, 209, 88, 0.15);
+        color: var(--keep);
+        border: 1.5px solid rgba(48, 209, 88, 0.25);
+      }
+      .act-num {
+        min-width: 24px;
+        height: 24px;
+        border-radius: 12px;
+        background: currentColor;
+        color: var(--bg);
+        font-size: 10px;
+        font-weight: 900;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0 6px;
+      }
+
+      .done-screen {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        height: 100%;
+        gap: 12px;
+      }
+      .done-icon {
+        width: 64px;
+        height: 64px;
+        stroke: var(--text3);
+        fill: none;
+        stroke-width: 1;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        opacity: 0.35;
+      }
+      .done-title {
+        font-size: 22px;
+        font-weight: 800;
+        color: var(--text);
+      }
+      .done-sub {
+        font-size: 14px;
+        color: var(--text3);
+      }
+
+      /* ── GALLERY TAB ─────────────────────────── */
+      .gallery-date-hdr {
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--text2);
+        padding: 14px 16px 8px;
+      }
+      .gallery-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 2.5px;
+        padding: 0 0;
+      }
+      .g-cell {
+        aspect-ratio: 1;
+        background: var(--bg3);
+        overflow: hidden;
+        cursor: pointer;
+        transition: opacity 0.15s;
+      }
+      .g-cell:first-child {
+        border-top-left-radius: var(--r);
+      }
+      .g-cell:nth-child(3) {
+        border-top-right-radius: var(--r);
+      }
+      .g-cell:active {
+        opacity: 0.7;
+      }
+      .g-cell img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        display: block;
+      }
+      .g-cell-ph {
+        width: 100%;
+        height: 100%;
+        background: var(--bg3);
+      }
+
+      /* ── ALBUMS TAB ──────────────────────────── */
+      .albums-scroll {
+        display: flex;
+        gap: 8px;
+        overflow-x: auto;
+        padding-bottom: 4px;
+        padding-left: 16px;
+        padding-right: 16px;
+      }
+      .albums-scroll::-webkit-scrollbar {
+        display: none;
+      }
+      .al-card {
+        border-radius: var(--r-lg);
+        overflow: hidden;
+        position: relative;
+        cursor: pointer;
+        flex-shrink: 0;
+        background: var(--bg3);
+        transition: transform 0.15s;
+      }
+      .al-card:active {
+        transform: scale(0.97);
+      }
+      .al-label-bar {
+        position: absolute;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        padding: 8px 10px;
+        font-size: 12px;
+        font-weight: 600;
+        background: linear-gradient(transparent, rgba(0, 0, 0, 0.65));
+      }
+      .al-2col {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+      }
+      .al-lg {
+        aspect-ratio: 1;
+      }
+      .al-sm {
+        aspect-ratio: 1;
+        width: 128px;
+      }
+
+      /* ── SETTINGS TAB ────────────────────────── */
+      .settings-section {
+        margin: 0 16px 20px;
+      }
+      .settings-group {
+        background: var(--bg3);
+        border-radius: var(--r-lg);
+        overflow: hidden;
+      }
+      .srow {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 13px 16px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        cursor: pointer;
+        transition: opacity 0.15s;
+      }
+      .srow:last-child {
+        border-bottom: none;
+      }
+      .srow:active {
+        opacity: 0.7;
+      }
+      .srow-left {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      .srow-icon {
+        width: 30px;
+        height: 30px;
+        border-radius: 8px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: rgba(255, 255, 255, 0.07);
+      }
+      .srow-icon svg {
+        width: 15px;
+        height: 15px;
+        stroke: var(--text2);
+        fill: none;
+        stroke-width: 1.9;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      .srow-label {
+        font-size: 15px;
+      }
+      .srow-sub {
+        font-size: 11px;
+        color: var(--text3);
+        margin-top: 1px;
+      }
+      .srow-right {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 13px;
+        color: var(--text3);
+      }
+      .srow-right svg {
+        width: 13px;
+        height: 13px;
+        stroke: var(--text3);
+        fill: none;
+        stroke-width: 2.5;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+
+      .st-label {
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--text3);
+        letter-spacing: 0.7px;
+        text-transform: uppercase;
+        margin-bottom: 8px;
+      }
+
+      /* storage chart */
+      .stor-card {
+        background: var(--bg3);
+        border-radius: var(--r-lg);
+        padding: 16px;
+        margin: 0 16px 10px;
+      }
+      .stor-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        margin-bottom: 16px;
+      }
+      .stor-lbl {
+        font-size: 15px;
+        font-weight: 600;
+      }
+      .stor-days {
+        font-size: 11px;
+        color: var(--text3);
+        margin-top: 2px;
+      }
+      .stor-amount {
+        font-size: 26px;
+        font-weight: 800;
+        text-align: right;
+        letter-spacing: -0.5px;
+      }
+      .stor-change {
+        font-size: 11px;
+        color: var(--keep);
+        text-align: right;
+        margin-top: 1px;
+      }
+      .bar-row {
+        display: flex;
+        align-items: flex-end;
+        gap: 2.5px;
+        height: 72px;
+      }
+      .b {
+        flex: 1;
+        background: rgba(255, 255, 255, 0.13);
+        border-radius: 2px 2px 0 0;
+        min-height: 3px;
+        transition: height 0.4s var(--ease);
+      }
+      .b.hi {
+        background: rgba(255, 255, 255, 0.75);
+      }
+      .chart-dates {
+        display: flex;
+        justify-content: space-between;
+        margin-top: 6px;
+      }
+      .chart-date {
+        font-size: 10px;
+        color: var(--text3);
+      }
+
+      /* toggle */
+      .tog {
+        width: 48px;
+        height: 28px;
+        background: var(--surface);
+        border-radius: 14px;
+        position: relative;
+        cursor: pointer;
+        transition: background 0.2s;
+        flex-shrink: 0;
+      }
+      .tog.on {
+        background: var(--keep);
+      }
+      .tog-knob {
+        position: absolute;
+        top: 3px;
+        left: 3px;
+        width: 22px;
+        height: 22px;
+        background: #fff;
+        border-radius: 50%;
+        transition: transform 0.2s;
+        box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+      }
+      .tog.on .tog-knob {
+        transform: translateX(20px);
+      }
+
+      /* theme selector */
+      .theme-opts {
+        display: flex;
+        gap: 5px;
+      }
+      .th-opt {
+        padding: 5px 12px;
+        border-radius: var(--r-pill);
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+        border: 1.5px solid transparent;
+        transition: all 0.15s;
+        color: var(--text3);
+      }
+      .th-opt.active {
+        background: var(--surface);
+        border-color: rgba(255, 255, 255, 0.18);
+        color: var(--text);
+      }
+
+      /* accent dots */
+      .accent-row {
+        display: flex;
+        gap: 7px;
+        align-items: center;
+      }
+      .ac-dot {
+        width: 26px;
+        height: 26px;
+        border-radius: 50%;
+        cursor: pointer;
+        transition: transform 0.15s;
+        border: 2px solid transparent;
+        flex-shrink: 0;
+      }
+      .ac-dot.active {
+        border-color: #fff;
+        transform: scale(1.15);
+      }
+      .ac-dot:active {
+        transform: scale(0.9);
+      }
+      .ac-add {
+        background: var(--surface);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .ac-add svg {
+        width: 13px;
+        height: 13px;
+        stroke: var(--text3);
+        fill: none;
+        stroke-width: 2.5;
+        stroke-linecap: round;
+      }
+
+      /* user pill top-right */
+      .user-pill {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        background: var(--bg3);
+        border-radius: var(--r-pill);
+        padding: 7px 14px 7px 8px;
+        cursor: pointer;
+      }
+      .user-pill-av {
+        width: 26px;
+        height: 26px;
+        border-radius: 50%;
+        background: var(--surface);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .user-pill-av svg {
+        width: 14px;
+        height: 14px;
+        stroke: var(--text2);
+        fill: none;
+        stroke-width: 1.8;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      .user-pill-name {
+        font-size: 13px;
+        font-weight: 600;
+      }
+
+      /* online dot */
+      .online-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--keep);
+        flex-shrink: 0;
+      }
+
+      /* sensitivity slider */
+      .sens-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      input[type="range"] {
+        -webkit-appearance: none;
+        flex: 1;
+        height: 4px;
+        border-radius: 2px;
+        background: var(--surface);
+        outline: none;
+        cursor: pointer;
+      }
+      input[type="range"]::-webkit-slider-thumb {
+        -webkit-appearance: none;
+        width: 20px;
+        height: 20px;
+        border-radius: 50%;
+        background: #fff;
+        cursor: pointer;
+        box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+      }
+
+      /* ── TOAST ───────────────────────────────── */
+      .toast {
+        position: fixed;
+        top: 56px;
+        left: 50%;
+        transform: translateX(-50%);
+        background: rgba(40, 40, 40, 0.95);
+        backdrop-filter: blur(20px);
+        color: #fff;
+        padding: 9px 20px;
+        border-radius: var(--r-pill);
+        font-size: 13px;
+        font-weight: 500;
+        z-index: 999;
+        pointer-events: none;
+        border: 1px solid var(--border2);
+        white-space: nowrap;
+        animation: toastIn 0.25s var(--ease);
+      }
+      @keyframes toastIn {
+        from {
+          opacity: 0;
+          transform: translateX(-50%) translateY(-8px);
+        }
+        to {
+          opacity: 1;
+          transform: translateX(-50%) translateY(0);
+        }
+      }
+
+      /* ── LOADING ─────────────────────────────── */
+      .spinner {
+        width: 18px;
+        height: 18px;
+        border: 2px solid rgba(255, 255, 255, 0.2);
+        border-top-color: #fff;
+        border-radius: 50%;
+        animation: spin 0.7s linear infinite;
+        flex-shrink: 0;
+      }
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+
+      /* ── SCROLL PADDING ──────────────────────── */
+      .pb16 {
+        padding-bottom: 16px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+    <script>
+      const { useState, useEffect, useRef, useCallback, useMemo } = React;
+
+      /* ─── SVG ICON LIBRARY ───────────────────────────────── */
+      const IC = {
+        broom: () =>
+          React.createElement(
+            "svg",
+            { viewBox: "0 0 24 24", xmlns: "http://www.w3.org/2000/svg" },
+            React.createElement("path", {
+              d: "M3 21l9-9M9.5 3.5l1.5 1.5-7 7-1.5-1.5z",
+            }),
+            React.createElement("path", { d: "M14 4l6 6-9 9H5v-6z" }),
+          ),
+        photo: () =>
+          React.createElement(
+            "svg",
+            { viewBox: "0 0 24 24", xmlns: "http://www.w3.org/2000/svg" },
+            React.createElement("rect", {
+              x: "3",
+              y: "3",
+              width: "18",
+              height: "18",
+              rx: "3",
+            }),
+            React.createElement("circle", { cx: "8.5", cy: "8.5", r: "1.5" }),
+            React.createElement("polyline", { points: "21 15 16 10 5 21" }),
+          ),
+        album: () =>
+          React.createElement(
+            "svg",
+            { viewBox: "0 0 24 24", xmlns: "http://www.w3.org/2000/svg" },
+            React.createElement("rect", {
+              x: "3",
+              y: "3",
+              width: "7",
+              height: "7",
+              rx: "1.5",
+            }),
+            React.createElement("rect", {
+              x: "14",
+              y: "3",
+              width: "7",
+              height: "7",
+              rx: "1.5",
+            }),
+            React.createElement("rect", {
+              x: "3",
+              y: "14",
+              width: "7",
+              height: "7",
+              rx: "1.5",
+            }),
+            React.createElement("rect", {
+              x: "14",
+              y: "14",
+              width: "7",
+              height: "7",
+              rx: "1.5",
+            }),
+          ),
+        settings: () =>
+          React.createElement(
+            "svg",
+            { viewBox: "0 0 24 24", xmlns: "http://www.w3.org/2000/svg" },
+            React.createElement("circle", { cx: "12", cy: "12", r: "3" }),
+            React.createElement("path", {
+              d: "M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z",
+            }),
+          ),
+        scan: () =>
+          React.createElement(
+            "svg",
+            { viewBox: "0 0 24 24", xmlns: "http://www.w3.org/2000/svg" },
+            React.createElement("path", {
+              d: "M3 7V5a2 2 0 012-2h2M17 3h2a2 2 0 012 2v2M21 17v2a2 2 0 01-2 2h-2M7 21H5a2 2 0 01-2-2v-2",
+            }),
+            React.createElement("line", {
+              x1: "3",
+              y1: "12",
+              x2: "21",
+              y2: "12",
+            }),
+          ),
+        calendar: () =>
+          React.createElement(
+            "svg",
+            { viewBox: "0 0 24 24", xmlns: "http://www.w3.org/2000/svg" },
+            React.createElement("rect", {
+              x: "3",
+              y: "4",
+              width: "18",
+              height: "18",
+              rx: "2",
+            }),
+            React.createElement("line", {
+              x1: "16",
+              y1: "2",
+              x2: "16",
+              y2: "6",
+            }),
+            React.createElement("line", { x1: "8", y1: "2", x2: "8", y2: "6" }),
+            React.createElement("line", {
+              x1: "3",
+              y1: "10",
+              x2: "21",
+              y2: "10",
+            }),
+          ),
+        clock: () =>
+          React.createElement(
+            "svg",
+            { viewBox: "0 0 24 24", xmlns: "http://www.w3.org/2000/svg" },
+            React.createElement("circle", { cx: "12", cy: "12", r: "9" }),
+            React.createElement("polyline", { points: "12 7 12 12 15 15" }),
+          ),
+        copy: () =>
+          React.createElement(
+            "svg",
+            { viewBox: "0 0 24 24", xmlns: "http://www.w3.org/2000/svg" },
+            React.createElement("rect", {
+              x: "9",
+              y: "9",
+              width: "13",
+              height: "13",
+              rx: "2",
+            }),
+            React.createElement("path", {
+              d: "M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1",
+            }),
+          ),
+        blur: () =>
+          React.createElement(
+            "svg",
+            { viewBox: "0 0 24 24", xmlns: "http://www.w3.org/2000/svg" },
+            React.createElement("circle", { cx: "12", cy: "12", r: "2" }),
+            React.createElement("circle", {
+              cx: "12",
+              cy: "12",
+              r: "5",
+              opacity: ".4",
+            }),
+            React.createElement("circle", {
+              cx: "12",
+              cy: "12",
+              r: "8",
+              opacity: ".2",
+            }),
+          ),
+        chevRight: () =>
+          React.createElement(
+            "svg",
+            { viewBox: "0 0 24 24", xmlns: "http://www.w3.org/2000/svg" },
+            React.createElement("polyline", { points: "9 18 15 12 9 6" }),
+          ),
+        chevLeft: () =>
+          React.createElement(
+            "svg",
+            { viewBox: "0 0 24 24", xmlns: "http://www.w3.org/2000/svg" },
+            React.createElement("polyline", { points: "15 18 9 12 15 6" }),
+          ),
+        check: () =>
+          React.createElement(
+            "svg",
+            { viewBox: "0 0 24 24", xmlns: "http://www.w3.org/2000/svg" },
+            React.createElement("polyline", { points: "20 6 9 17 4 12" }),
+          ),
+        undo: () =>
+          React.createElement(
+            "svg",
+            { viewBox: "0 0 24 24", xmlns: "http://www.w3.org/2000/svg" },
+            React.createElement("polyline", { points: "1 4 1 10 7 10" }),
+            React.createElement("path", {
+              d: "M3.51 15a9 9 0 102.13-9.36L1 10",
+            }),
+          ),
+        fire: () =>
+          React.createElement(
+            "svg",
+            { viewBox: "0 0 24 24", xmlns: "http://www.w3.org/2000/svg" },
+            React.createElement("path", {
+              d: "M12 2C6.48 2 2 6.48 2 12c0 2.28.76 4.38 2.02 6.07C5.1 19.5 7 20.5 9 21c-.5-1-.5-2 0-3 1 1.5 3 2 3 2s2-.5 3-2c.5 1 .5 2 0 3 2-.5 3.9-1.5 4.98-2.93A10 10 0 0022 12c0-5.52-4.48-10-10-10z",
+            }),
+          ),
+        trophy: () =>
+          React.createElement(
+            "svg",
+            { viewBox: "0 0 24 24", xmlns: "http://www.w3.org/2000/svg" },
+            React.createElement("polyline", { points: "8 21 12 17 16 21" }),
+            React.createElement("line", {
+              x1: "12",
+              y1: "17",
+              x2: "12",
+              y2: "11",
+            }),
+            React.createElement("path", {
+              d: "M7 4H4v4a4 4 0 004 4h8a4 4 0 004-4V4h-3",
+            }),
+            React.createElement("path", { d: "M7 4h10" }),
+          ),
+        server: () =>
+          React.createElement(
+            "svg",
+            { viewBox: "0 0 24 24", xmlns: "http://www.w3.org/2000/svg" },
+            React.createElement("rect", {
+              x: "2",
+              y: "2",
+              width: "20",
+              height: "8",
+              rx: "2",
+            }),
+            React.createElement("rect", {
+              x: "2",
+              y: "14",
+              width: "20",
+              height: "8",
+              rx: "2",
+            }),
+            React.createElement("line", {
+              x1: "6",
+              y1: "6",
+              x2: "6.01",
+              y2: "6",
+            }),
+            React.createElement("line", {
+              x1: "6",
+              y1: "18",
+              x2: "6.01",
+              y2: "18",
+            }),
+          ),
+        link: () =>
+          React.createElement(
+            "svg",
+            { viewBox: "0 0 24 24", xmlns: "http://www.w3.org/2000/svg" },
+            React.createElement("path", {
+              d: "M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71",
+            }),
+            React.createElement("path", {
+              d: "M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71",
+            }),
+          ),
+        folder: () =>
+          React.createElement(
+            "svg",
+            { viewBox: "0 0 24 24", xmlns: "http://www.w3.org/2000/svg" },
+            React.createElement("path", {
+              d: "M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z",
+            }),
+          ),
+        sliders: () =>
+          React.createElement(
+            "svg",
+            { viewBox: "0 0 24 24", xmlns: "http://www.w3.org/2000/svg" },
+            React.createElement("line", {
+              x1: "4",
+              y1: "21",
+              x2: "4",
+              y2: "14",
+            }),
+            React.createElement("line", {
+              x1: "4",
+              y1: "10",
+              x2: "4",
+              y2: "3",
+            }),
+            React.createElement("line", {
+              x1: "12",
+              y1: "21",
+              x2: "12",
+              y2: "12",
+            }),
+            React.createElement("line", {
+              x1: "12",
+              y1: "8",
+              x2: "12",
+              y2: "3",
+            }),
+            React.createElement("line", {
+              x1: "20",
+              y1: "21",
+              x2: "20",
+              y2: "16",
+            }),
+            React.createElement("line", {
+              x1: "20",
+              y1: "12",
+              x2: "20",
+              y2: "3",
+            }),
+            React.createElement("line", {
+              x1: "1",
+              y1: "14",
+              x2: "7",
+              y2: "14",
+            }),
+            React.createElement("line", {
+              x1: "9",
+              y1: "8",
+              x2: "15",
+              y2: "8",
+            }),
+            React.createElement("line", {
+              x1: "17",
+              y1: "16",
+              x2: "23",
+              y2: "16",
+            }),
+          ),
+        sync: () =>
+          React.createElement(
+            "svg",
+            { viewBox: "0 0 24 24", xmlns: "http://www.w3.org/2000/svg" },
+            React.createElement("polyline", { points: "23 4 23 10 17 10" }),
+            React.createElement("polyline", { points: "1 20 1 14 7 14" }),
+            React.createElement("path", {
+              d: "M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15",
+            }),
+          ),
+        palette: () =>
+          React.createElement(
+            "svg",
+            { viewBox: "0 0 24 24", xmlns: "http://www.w3.org/2000/svg" },
+            React.createElement("circle", { cx: "12", cy: "12", r: "10" }),
+            React.createElement("circle", {
+              cx: "8",
+              cy: "10",
+              r: "1.5",
+              fill: "currentColor",
+              stroke: "none",
+            }),
+            React.createElement("circle", {
+              cx: "12",
+              cy: "8",
+              r: "1.5",
+              fill: "currentColor",
+              stroke: "none",
+            }),
+            React.createElement("circle", {
+              cx: "16",
+              cy: "10",
+              r: "1.5",
+              fill: "currentColor",
+              stroke: "none",
+            }),
+            React.createElement("path", {
+              d: "M12 18c-1.66 0-3-1.34-3-3s1.34-3 3-3",
+              strokeWidth: "1.5",
+            }),
+          ),
+        drop: () =>
+          React.createElement(
+            "svg",
+            { viewBox: "0 0 24 24", xmlns: "http://www.w3.org/2000/svg" },
+            React.createElement("path", {
+              d: "M12 2L5.5 8.5a9.5 9.5 0 1013 0z",
+            }),
+          ),
+        globe: () =>
+          React.createElement(
+            "svg",
+            { viewBox: "0 0 24 24", xmlns: "http://www.w3.org/2000/svg" },
+            React.createElement("circle", { cx: "12", cy: "12", r: "10" }),
+            React.createElement("line", {
+              x1: "2",
+              y1: "12",
+              x2: "22",
+              y2: "12",
+            }),
+            React.createElement("path", {
+              d: "M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z",
+            }),
+          ),
+        logout: () =>
+          React.createElement(
+            "svg",
+            { viewBox: "0 0 24 24", xmlns: "http://www.w3.org/2000/svg" },
+            React.createElement("path", {
+              d: "M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4",
+            }),
+            React.createElement("polyline", { points: "16 17 21 12 16 7" }),
+            React.createElement("line", {
+              x1: "21",
+              y1: "12",
+              x2: "9",
+              y2: "12",
+            }),
+          ),
+        user: () =>
+          React.createElement(
+            "svg",
+            { viewBox: "0 0 24 24", xmlns: "http://www.w3.org/2000/svg" },
+            React.createElement("path", {
+              d: "M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2",
+            }),
+            React.createElement("circle", { cx: "12", cy: "7", r: "4" }),
+          ),
+        plus: () =>
+          React.createElement(
+            "svg",
+            { viewBox: "0 0 24 24", xmlns: "http://www.w3.org/2000/svg" },
+            React.createElement("line", {
+              x1: "12",
+              y1: "5",
+              x2: "12",
+              y2: "19",
+            }),
+            React.createElement("line", {
+              x1: "5",
+              y1: "12",
+              x2: "19",
+              y2: "12",
+            }),
+          ),
+        search: () =>
+          React.createElement(
+            "svg",
+            { viewBox: "0 0 24 24", xmlns: "http://www.w3.org/2000/svg" },
+            React.createElement("circle", { cx: "11", cy: "11", r: "8" }),
+            React.createElement("line", {
+              x1: "21",
+              y1: "21",
+              x2: "16.65",
+              y2: "16.65",
+            }),
+          ),
+        zap: () =>
+          React.createElement(
+            "svg",
+            { viewBox: "0 0 24 24", xmlns: "http://www.w3.org/2000/svg" },
+            React.createElement("polygon", {
+              points: "13 2 3 14 12 14 11 22 21 10 12 10 13 2",
+            }),
+          ),
+        imgOff: () =>
+          React.createElement(
+            "svg",
+            { viewBox: "0 0 24 24", xmlns: "http://www.w3.org/2000/svg" },
+            React.createElement("line", {
+              x1: "1",
+              y1: "1",
+              x2: "23",
+              y2: "23",
+            }),
+            React.createElement("path", {
+              d: "M21 21H3a2 2 0 01-2-2V5a2 2 0 012-2h3m3.66 0H21a2 2 0 012 2v9.34M8.5 8.5a2 2 0 102.83 2.83",
+            }),
+            React.createElement("path", {
+              d: "M9.26 9.26L5 21l6.24-6.24M15 15l3 4",
+            }),
+          ),
+      };
+
+      function Icon({ n, cls, style }) {
+        const El = IC[n];
+        if (!El) return null;
+        return React.createElement(
+          "span",
+          { className: cls, style },
+          React.createElement(El),
+        );
+      }
+
+      /* ─── HELPERS ────────────────────────────────────────── */
+      const API_KEY = "easyclean_api";
+      function getApiBase() {
+        const port = window.location.port;
+        if (port === "3333" || port === "80" || port === "") return "";
+        return localStorage.getItem(API_KEY) || "http://localhost:8888";
+      }
+      function makeApi(base) {
+        const h = { "Content-Type": "application/json" };
+        return {
+          get: (p) => fetch(base + p).then((r) => r.json()),
+          post: (p, b) =>
+            fetch(base + p, {
+              method: "POST",
+              headers: h,
+              body: JSON.stringify(b),
+            }).then((r) => r.json()),
+          del: (p) =>
+            fetch(base + p, { method: "DELETE" }).then((r) => r.json()),
+          base,
+        };
+      }
+      function fmtBytes(b) {
+        if (!b || b === 0) return "0 B";
+        if (b < 1024) return b + " B";
+        if (b < 1048576) return (b / 1024).toFixed(1) + " KB";
+        if (b < 1073741824) return (b / 1048576).toFixed(1) + " MB";
+        return (b / 1073741824).toFixed(2) + " GB";
+      }
+      function fmtDate(iso) {
+        if (!iso) return "";
+        return new Date(iso).toLocaleDateString("en-US", {
+          month: "short",
+          day: "numeric",
+          year: "numeric",
+        });
+      }
+
+      /* ─── PROGRESS RING ──────────────────────────────────── */
+      function ProgRing({ val, total, size = 28 }) {
+        const pct = total > 0 ? Math.min(val / total, 1) : 0;
+        const r = size / 2 - 3;
+        const c = 2 * Math.PI * r;
+        if (pct >= 1)
+          return React.createElement(
+            "div",
+            {
+              style: {
+                width: size,
+                height: size,
+                borderRadius: "50%",
+                border: "2px solid rgba(255,255,255,.35)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+              },
+            },
+            React.createElement(
+              "svg",
+              {
+                viewBox: "0 0 24 24",
+                width: 12,
+                height: 12,
+                style: {
+                  stroke: "rgba(255,255,255,.8)",
+                  fill: "none",
+                  strokeWidth: 3,
+                  strokeLinecap: "round",
+                  strokeLinejoin: "round",
+                },
+              },
+              React.createElement("polyline", { points: "20 6 9 17 4 12" }),
+            ),
+          );
+        return React.createElement(
+          "svg",
+          {
+            width: size,
+            height: size,
+            viewBox: `0 0 ${size} ${size}`,
+            className: "prog-ring",
+          },
+          React.createElement("circle", {
+            cx: size / 2,
+            cy: size / 2,
+            r,
+            fill: "none",
+            stroke: "rgba(255,255,255,.1)",
+            strokeWidth: 2.5,
+          }),
+          React.createElement("circle", {
+            cx: size / 2,
+            cy: size / 2,
+            r,
+            fill: "none",
+            stroke: "rgba(255,255,255,.65)",
+            strokeWidth: 2.5,
+            strokeDasharray: `${c * pct} ${c}`,
+            strokeLinecap: "round",
+            transform: `rotate(-90 ${size / 2} ${size / 2})`,
+          }),
+        );
+      }
+
+      /* ─── TOAST ──────────────────────────────────────────── */
+      function Toast({ msg }) {
+        return msg
+          ? React.createElement("div", { className: "toast" }, msg)
+          : null;
+      }
+
+      /* ─── SWIPE CARD ─────────────────────────────────────── */
+      function SwipeCard({ file, apiBase, onKeep, onDelete, badge }) {
+        const ref = useRef();
+        const sx = useRef(null);
+        const cx = useRef(0);
+        const [dir, setDir] = useState(null);
+        const [imgErr, setImgErr] = useState(false);
+
+        const gx = (e) => (e.touches ? e.touches[0].clientX : e.clientX);
+        const onS = (e) => {
+          sx.current = gx(e);
+        };
+        const onM = (e) => {
+          if (sx.current === null) return;
+          const dx = gx(e) - sx.current;
+          cx.current = dx;
+          if (ref.current) {
+            ref.current.style.transform = `translateX(${dx}px) rotate(${dx * 0.06}deg)`;
+            ref.current.style.transition = "none";
+          }
+          setDir(Math.abs(dx) > 40 ? (dx > 0 ? "kp" : "del") : null);
+          if (e.cancelable) e.preventDefault();
+        };
+        const onE = () => {
+          if (ref.current)
+            ref.current.style.transition =
+              "transform .3s cubic-bezier(.25,.46,.45,.94)";
+          const dx = cx.current;
+          if (Math.abs(dx) > 110) {
+            const target = dx > 0 ? "160vw" : "-160vw";
+            if (ref.current)
+              ref.current.style.transform = `translateX(${target}) rotate(${dx > 0 ? 18 : -18}deg)`;
+            setTimeout(() => (dx > 0 ? onKeep() : onDelete()), 260);
+          } else {
+            if (ref.current) ref.current.style.transform = "";
+            setDir(null);
+          }
+          sx.current = null;
+          cx.current = 0;
+        };
+
+        return React.createElement(
+          "div",
+          {
+            ref,
+            className: "swipe-card",
+            onMouseDown: onS,
+            onMouseMove: onM,
+            onMouseUp: onE,
+            onMouseLeave: onE,
+            onTouchStart: onS,
+            onTouchMove: onM,
+            onTouchEnd: onE,
+          },
+          imgErr
+            ? React.createElement(
+                "div",
+                { className: "swipe-card-empty" },
+                React.createElement(IC.imgOff, null),
+                React.createElement(
+                  "div",
+                  { className: "swipe-card-empty-txt" },
+                  file.filename,
+                ),
+              )
+            : React.createElement("img", {
+                src: `${apiBase}/api/media/${file.id}/thumb`,
+                onError: () => setImgErr(true),
+                draggable: false,
+                alt: "",
+              }),
+          dir &&
+            React.createElement(
+              "div",
+              { className: `swipe-overlay ${dir}` },
+              React.createElement(
+                "div",
+                { className: "swipe-overlay-tag" },
+                dir === "kp" ? "KEEP" : "DELETE",
+              ),
+            ),
+          badge === "blur" &&
+            React.createElement(
+              "div",
+              { className: "badge badge-blur" },
+              React.createElement(IC.zap, null),
+              " BLURRY",
+            ),
+          badge === "dup" &&
+            React.createElement(
+              "div",
+              { className: "badge badge-dup" },
+              React.createElement(IC.copy, null),
+              " DUPLICATE",
+            ),
+          React.createElement(
+            "div",
+            { className: "card-info-bar" },
+            React.createElement(
+              "div",
+              { className: "card-fname" },
+              file.filename,
+            ),
+            React.createElement(
+              "div",
+              { className: "card-fmeta" },
+              `${fmtDate(file.created_at)} · ${fmtBytes(file.size_bytes)}`,
+            ),
+          ),
+        );
+      }
+
+      /* ─── SWIPE SCREEN ───────────────────────────────────── */
+      function SwipeScreen({ mode, month, label, api, onClose }) {
+        const [files, setFiles] = useState([]);
+        const [idx, setIdx] = useState(0);
+        const [dels, setDels] = useState(0);
+        const [kps, setKps] = useState(0);
+        const [hist, setHist] = useState([]);
+        const [loading, setLoading] = useState(true);
+
+        useEffect(() => {
+          setLoading(true);
+          let url = `/api/media/batch?mode=${mode}&size=200`;
+          if (month) url += `&month=${month}`;
+          api
+            .get(url)
+            .then((d) => {
+              setFiles(d.files || []);
+              setLoading(false);
+            })
+            .catch(() => setLoading(false));
+        }, [mode, month]);
+
+        const cur = files[idx];
+        const total = files.length;
+        const prog =
+          total > 0
+            ? `${idx}/${total} · ${((idx / total) * 100).toFixed(0)}%`
+            : "";
+
+        const act = (action) => {
+          if (!cur) return;
+          api.post("/api/media/swipe", { file_id: cur.id, action });
+          setHist((h) => [...h, { file: cur, action, idx }]);
+          if (action === "delete") setDels((d) => d + 1);
+          else setKps((k) => k + 1);
+          setIdx((i) => i + 1);
+        };
+        const undo = () => {
+          if (!hist.length) return;
+          const last = hist[hist.length - 1];
+          setHist((h) => h.slice(0, -1));
+          if (last.action === "delete") setDels((d) => Math.max(0, d - 1));
+          else setKps((k) => Math.max(0, k - 1));
+          setIdx(last.idx);
+        };
+        const badge = (f) => {
+          if (!f) return null;
+          if (mode === "blurs" || f.is_blurry) return "blur";
+          if (mode === "duplicates" || f.duplicate_group) return "dup";
+          return null;
+        };
+
+        const numFmt = (n) => String(n).padStart(3, "0");
+
+        return React.createElement(
+          "div",
+          { className: "swipe-screen" },
+          React.createElement(
+            "div",
+            { className: "swipe-header" },
+            React.createElement(
+              "button",
+              { className: "back-btn", onClick: onClose },
+              React.createElement(IC.chevLeft, null),
+            ),
+            React.createElement(
+              "div",
+              { className: "swipe-title-wrap" },
+              React.createElement("div", { className: "swipe-title" }, label),
+              React.createElement("div", { className: "swipe-sub" }, prog),
+            ),
+            React.createElement(
+              "button",
+              { className: "undo-btn", onClick: undo },
+              "UNDO ",
+              React.createElement(IC.undo, null),
+            ),
+          ),
+          React.createElement(
+            "div",
+            { className: "swipe-arena" },
+            loading
+              ? React.createElement(
+                  "div",
+                  {
+                    style: {
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      height: "100%",
+                    },
+                  },
+                  React.createElement("div", { className: "spinner" }),
+                )
+              : cur
+                ? React.createElement(SwipeCard, {
+                    key: cur.id,
+                    file: cur,
+                    apiBase: api.base,
+                    onKeep: () => act("keep"),
+                    onDelete: () => act("delete"),
+                    badge: badge(cur),
+                  })
+                : React.createElement(
+                    "div",
+                    { className: "done-screen" },
+                    React.createElement(IC.check, {
+                      style: {
+                        width: 56,
+                        height: 56,
+                        stroke: "rgba(255,255,255,.25)",
+                        fill: "none",
+                        strokeWidth: 1.2,
+                      },
+                    }),
+                    React.createElement(
+                      "div",
+                      { className: "done-title" },
+                      total === 0 ? "Nothing here" : "All done!",
+                    ),
+                    React.createElement(
+                      "div",
+                      { className: "done-sub" },
+                      `${kps} kept · ${dels} deleted`,
+                    ),
+                  ),
+          ),
+          React.createElement(
+            "div",
+            { className: "swipe-actions" },
+            React.createElement(
+              "button",
+              { className: "action-btn del-btn", onClick: () => act("delete") },
+              React.createElement(IC.chevLeft, null),
+              " DELETE",
+            ),
+            React.createElement(
+              "span",
+              {
+                style: {
+                  color: "var(--delete)",
+                  fontSize: 13,
+                  fontWeight: 700,
+                  alignSelf: "center",
+                },
+              },
+              numFmt(dels),
+            ),
+            React.createElement(
+              "span",
+              {
+                style: {
+                  color: "var(--keep)",
+                  fontSize: 13,
+                  fontWeight: 700,
+                  alignSelf: "center",
+                },
+              },
+              numFmt(kps),
+            ),
+            React.createElement(
+              "button",
+              { className: "action-btn kp-btn", onClick: () => act("keep") },
+              "KEEP ",
+              React.createElement(IC.chevRight, null),
+            ),
+          ),
+        );
+      }
+
+      /* ─── CLEAN TAB ──────────────────────────────────────── */
+      function CleanTab({ api, onSwipe, toast }) {
+        const [timeline, setTimeline] = useState([]);
+        const [det, setDet] = useState({ blurry_count: 0, duplicate_pairs: 0 });
+        const [stats, setStats] = useState({ swipes: 0 });
+        const [scanning, setScanning] = useState(false);
+        const days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Today"];
+
+        const load = () => {
+          api
+            .get("/api/media/timeline")
+            .then(setTimeline)
+            .catch(() => {});
+          api
+            .get("/api/detection/summary")
+            .then(setDet)
+            .catch(() => {});
+          api
+            .get("/api/stats/summary")
+            .then(setStats)
+            .catch(() => {});
+        };
+        useEffect(() => {
+          load();
+        }, []);
+
+        const scan = async () => {
+          setScanning(true);
+          try {
+            await api.post("/api/media/scan", {});
+            await api.post("/api/detection/scan", {});
+            load();
+            toast("Scan complete!");
+          } catch {
+            toast("Scan failed");
+          }
+          setScanning(false);
+        };
+
+        // streak circles: Mon-Sat done, Today active
+        const rings = [
+          React.createElement(IC.check, null),
+          React.createElement(IC.check, null),
+          React.createElement(IC.check, null),
+          React.createElement(IC.check, null),
+          React.createElement(IC.check, null),
+          React.createElement(IC.check, null),
+          React.createElement(IC.check, null),
+        ];
+
+        return React.createElement(
+          "div",
+          { className: "screen" },
+          // HEADER
+          React.createElement(
+            "div",
+            { className: "page-header" },
+            React.createElement(
+              "div",
+              null,
+              React.createElement(
+                "div",
+                { className: "page-title" },
+                "EasyClean",
+              ),
+              React.createElement(
+                "div",
+                { className: "page-subtitle" },
+                "Welcome, Sai Zack",
+              ),
+            ),
+            React.createElement(
+              "button",
+              { className: "pill-btn", onClick: scan, disabled: scanning },
+              scanning
+                ? React.createElement("div", { className: "spinner" })
+                : React.createElement(IC.scan, null),
+              scanning ? "Scanning…" : "Scan",
+            ),
+          ),
+
+          // STREAK
+          React.createElement(
+            "div",
+            { className: "streak-card" },
+            React.createElement(
+              "div",
+              { className: "streak-days" },
+              days.map((d, i) =>
+                React.createElement(
+                  "div",
+                  { key: d, className: "streak-day" },
+                  React.createElement(
+                    "div",
+                    {
+                      className: `s-ring ${i === 6 ? "today" : i < 5 ? "done" : ""}`,
+                    },
+                    React.createElement(
+                      "svg",
+                      {
+                        viewBox: "0 0 24 24",
+                        xmlns: "http://www.w3.org/2000/svg",
+                      },
+                      React.createElement("polyline", {
+                        points: "20 6 9 17 4 12",
+                      }),
+                    ),
+                  ),
+                  React.createElement(
+                    "div",
+                    { className: "streak-day-lbl" },
+                    d,
+                  ),
+                ),
+              ),
+            ),
+            React.createElement(
+              "div",
+              { className: "streak-meta" },
+              React.createElement(
+                "div",
+                { className: "streak-badge" },
+                React.createElement(IC.fire, null),
+                " 7 days strike!",
+              ),
+              React.createElement(
+                "div",
+                { className: "streak-badge" },
+                React.createElement(IC.trophy, null),
+                " " + (stats.swipes || 192) + " swipes",
+              ),
+            ),
+          ),
+
+          // QUICK CARDS
+          React.createElement(
+            "div",
+            { className: "quick-grid" },
+            React.createElement(
+              "div",
+              {
+                className: "quick-card",
+                onClick: () => onSwipe("timeline", null, "On This Day"),
+              },
+              React.createElement(
+                "div",
+                { className: "quick-card-top" },
+                React.createElement(
+                  "div",
+                  { className: "quick-card-icon" },
+                  React.createElement(IC.calendar, null),
+                ),
+                React.createElement("div", { className: "quick-badge" }, "03"),
+              ),
+              React.createElement(
+                "div",
+                null,
+                React.createElement(
+                  "div",
+                  { className: "quick-card-title" },
+                  "On This Day",
+                ),
+                React.createElement(
+                  "div",
+                  { className: "quick-card-sub" },
+                  new Date().toLocaleDateString("en-US", {
+                    month: "short",
+                    day: "numeric",
+                  }),
+                ),
+              ),
+            ),
+            React.createElement(
+              "div",
+              {
+                className: "quick-card",
+                onClick: () => onSwipe("timeline", null, "Recents"),
+              },
+              React.createElement(
+                "div",
+                { className: "quick-card-top" },
+                React.createElement(
+                  "div",
+                  { className: "quick-card-icon" },
+                  React.createElement(IC.clock, null),
+                ),
+              ),
+              React.createElement(
+                "div",
+                null,
+                React.createElement(
+                  "div",
+                  { className: "quick-card-title" },
+                  "Recents",
+                ),
+                React.createElement(
+                  "div",
+                  { className: "quick-card-sub" },
+                  "This week",
+                ),
+              ),
+            ),
+            React.createElement(
+              "div",
+              {
+                className: "quick-card",
+                onClick: () => onSwipe("duplicates", null, "Duplicates"),
+              },
+              React.createElement(
+                "div",
+                { className: "quick-card-top" },
+                React.createElement(
+                  "div",
+                  { className: "quick-card-icon" },
+                  React.createElement(IC.copy, null),
+                ),
+              ),
+              React.createElement(
+                "div",
+                null,
+                React.createElement(
+                  "div",
+                  { className: "quick-card-title" },
+                  "Duplicates",
+                ),
+                React.createElement(
+                  "div",
+                  { className: "quick-card-sub" },
+                  (det.duplicate_pairs || 0) + " pairs",
+                ),
+              ),
+            ),
+            React.createElement(
+              "div",
+              {
+                className: "quick-card",
+                onClick: () => onSwipe("blurs", null, "Blurs"),
+              },
+              React.createElement(
+                "div",
+                { className: "quick-card-top" },
+                React.createElement(
+                  "div",
+                  { className: "quick-card-icon" },
+                  React.createElement(IC.blur, null),
+                ),
+              ),
+              React.createElement(
+                "div",
+                null,
+                React.createElement(
+                  "div",
+                  { className: "quick-card-title" },
+                  "Blurs",
+                ),
+                React.createElement(
+                  "div",
+                  { className: "quick-card-sub" },
+                  (det.blurry_count || 0) + " files",
+                ),
+              ),
+            ),
+          ),
+
+          // TIMELINE CHECKLIST
+          React.createElement(
+            "div",
+            { style: { padding: "0 16px", marginBottom: 8 } },
+            React.createElement(
+              "div",
+              { className: "section-label" },
+              "Timeline Checklist",
+            ),
+          ),
+          React.createElement(
+            "div",
+            { className: "timeline-list" },
+            timeline.length === 0
+              ? React.createElement(
+                  "div",
+                  {
+                    style: {
+                      color: "var(--text3)",
+                      textAlign: "center",
+                      padding: "24px 0",
+                      fontSize: 13,
+                    },
+                  },
+                  "No media scanned yet — tap Quick Scan",
+                )
+              : timeline.map((t) =>
+                  React.createElement(
+                    "div",
+                    {
+                      key: t.month,
+                      className: "tl-item",
+                      onClick: () => onSwipe("timeline", t.sort_key, t.month),
+                    },
+                    React.createElement(
+                      "div",
+                      { className: "tl-left" },
+                      React.createElement(
+                        "div",
+                        { className: "tl-month" },
+                        t.month,
+                      ),
+                      React.createElement(
+                        "div",
+                        {
+                          className:
+                            t.reviewed >= t.total && t.total > 0
+                              ? "tl-done"
+                              : "tl-progress",
+                        },
+                        t.reviewed >= t.total && t.total > 0
+                          ? fmtBytes(0) + " Cleaned"
+                          : `${t.reviewed}/${t.total}`,
+                      ),
+                    ),
+                    React.createElement(
+                      "div",
+                      { className: "tl-right" },
+                      React.createElement(ProgRing, {
+                        val: t.reviewed,
+                        total: t.total,
+                      }),
+                    ),
+                  ),
+                ),
+          ),
+          React.createElement("div", { className: "pb16" }),
+        );
+      }
+
+      /* ─── GALLERY TAB ────────────────────────────────────── */
+      function GalleryTab({ api }) {
+        const [files, setFiles] = useState([]);
+        useEffect(() => {
+          api
+            .get("/api/media/batch?size=150")
+            .then((d) => setFiles(d.files || []))
+            .catch(() => {});
+        }, []);
+
+        const groups = {};
+        files.forEach((f) => {
+          const key = new Date(f.created_at).toLocaleDateString("en-US", {
+            day: "2-digit",
+            month: "long",
+            year: "numeric",
+          });
+          if (!groups[key]) groups[key] = [];
+          groups[key].push(f);
+        });
+
+        return React.createElement(
+          "div",
+          { className: "screen" },
+          React.createElement(
+            "div",
+            { className: "page-header" },
+            React.createElement(
+              "div",
+              null,
+              React.createElement(
+                "div",
+                { className: "page-title" },
+                "Gallery",
+              ),
+              React.createElement(
+                "div",
+                { className: "page-subtitle" },
+                new Date().toLocaleDateString("en-US", {
+                  day: "2-digit",
+                  month: "long",
+                  year: "numeric",
+                }),
+              ),
+            ),
+            React.createElement(
+              "div",
+              { style: { display: "flex", gap: 8 } },
+              React.createElement(
+                "button",
+                { className: "pill-btn", style: { padding: "8px 10px" } },
+                React.createElement(IC.search, null),
+              ),
+              React.createElement(
+                "button",
+                { className: "pill-btn" },
+                "Select",
+              ),
+            ),
+          ),
+          Object.entries(groups).length === 0
+            ? React.createElement(
+                "div",
+                {
+                  style: {
+                    color: "var(--text3)",
+                    textAlign: "center",
+                    padding: "64px 24px",
+                    fontSize: 13,
+                  },
+                },
+                "No photos yet. Use Quick Scan in Clean tab.",
+              )
+            : Object.entries(groups).map(([date, gf]) =>
+                React.createElement(
+                  "div",
+                  { key: date },
+                  React.createElement(
+                    "div",
+                    { className: "gallery-date-hdr" },
+                    date,
+                  ),
+                  React.createElement(
+                    "div",
+                    { className: "gallery-grid" },
+                    gf.slice(0, 12).map((f) =>
+                      React.createElement(
+                        "div",
+                        { key: f.id, className: "g-cell" },
+                        React.createElement("img", {
+                          src: `${api.base}/api/media/${f.id}/thumb`,
+                          alt: "",
+                          onError: (e) => {
+                            e.target.parentNode.className = "g-cell g-cell-ph";
+                          },
+                        }),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+          React.createElement("div", { className: "pb16" }),
+        );
+      }
+
+      /* ─── ALBUMS TAB ─────────────────────────────────────── */
+      function AlbumsTab() {
+        const collections = [
+          ["Favourites"],
+          ["Recents"],
+          ["Pet"],
+          ["Food"],
+          ["Travel"],
+        ];
+        const suggested = [["Hiking"], ["Cycling"], ["Shopping"]];
+        const memories = [["May 2026"], ["Apr 2026"], ["Mar 2026"]];
+
+        const AlCard = ({ label, cls, style }) =>
+          React.createElement(
+            "div",
+            { className: `al-card ${cls || ""}`, style },
+            React.createElement("div", { className: "al-label-bar" }, label),
+          );
+
+        return React.createElement(
+          "div",
+          { className: "screen" },
+          React.createElement(
+            "div",
+            { className: "page-header" },
+            React.createElement("div", { className: "page-title" }, "Albums"),
+            React.createElement(
+              "button",
+              { className: "pill-btn" },
+              React.createElement(IC.plus, null),
+            ),
+          ),
+
+          React.createElement(
+            "div",
+            { style: { padding: "0 16px", marginBottom: 8 } },
+            React.createElement(
+              "div",
+              { className: "section-label" },
+              "Collections",
+            ),
+          ),
+          React.createElement(
+            "div",
+            { style: { padding: "0 16px", marginBottom: 10 } },
+            React.createElement(
+              "div",
+              { className: "al-2col" },
+              React.createElement(AlCard, {
+                label: "Favourites",
+                cls: "al-lg",
+              }),
+              React.createElement(AlCard, { label: "Recents", cls: "al-lg" }),
+            ),
+          ),
+          React.createElement(
+            "div",
+            { className: "albums-scroll", style: { marginBottom: 20 } },
+            ["Pet", "Food", "Travel"].map((n) =>
+              React.createElement(AlCard, { key: n, label: n, cls: "al-sm" }),
+            ),
+          ),
+
+          React.createElement(
+            "div",
+            { style: { padding: "0 16px", marginBottom: 8 } },
+            React.createElement(
+              "div",
+              { className: "section-label" },
+              "Suggested Collections",
+            ),
+          ),
+          React.createElement(
+            "div",
+            { className: "albums-scroll", style: { marginBottom: 20 } },
+            suggested.map(([n]) =>
+              React.createElement(AlCard, { key: n, label: n, cls: "al-sm" }),
+            ),
+          ),
+
+          React.createElement(
+            "div",
+            { style: { padding: "0 16px", marginBottom: 8 } },
+            React.createElement(
+              "div",
+              { className: "section-label" },
+              "Memories",
+            ),
+          ),
+          React.createElement(
+            "div",
+            { className: "albums-scroll", style: { marginBottom: 20 } },
+            memories.map(([n]) =>
+              React.createElement(AlCard, { key: n, label: n, cls: "al-sm" }),
+            ),
+          ),
+
+          React.createElement(
+            "div",
+            { style: { padding: "0 16px", marginBottom: 20 } },
+            React.createElement(
+              "div",
+              { className: "al-2col" },
+              React.createElement(AlCard, { label: "Recap", cls: "al-lg" }),
+              React.createElement(AlCard, { label: "Trash", cls: "al-lg" }),
+            ),
+          ),
+          React.createElement("div", { className: "pb16" }),
+        );
+      }
+
+      /* ─── SETTINGS TAB ───────────────────────────────────── */
+      function SettingsTab({ apiBase, setApiBase, toast }) {
+        const [url, setUrl] = useState(apiBase);
+        const [zoom, setZoom] = useState(true);
+        const [theme, setTheme] = useState("Dark");
+        const [accent, setAccent] = useState(0);
+        const [stats, setStats] = useState(null);
+        const accents = ["#ffffff", "#00C7BE", "#30D158", "#FFD60A", "#FF9F0A"];
+
+        const bars = [
+          0.3, 0.5, 0.8, 1.2, 1.8, 2.1, 1.5, 2.4, 2.8, 2.2, 1.9, 2.6, 2.3, 1.7,
+          1.4, 1.6, 2.0, 2.5, 2.9, 2.7, 2.1, 1.8, 2.4, 2.8, 3.0, 2.3, 1.9, 2.2,
+        ];
+        const mx = Math.max(...bars);
+
+        useEffect(() => {
+          const a = makeApi(apiBase);
+          a.get("/api/stats/summary")
+            .then(setStats)
+            .catch(() => {});
+        }, []);
+
+        const save = () => {
+          const t = url.trim().replace(/\/$/, "");
+          localStorage.setItem(API_KEY, t);
+          setApiBase(t);
+          toast("Server URL saved!");
+        };
+
+        const SRow = ({ icon, label, sub, right, onClick }) =>
+          React.createElement(
+            "div",
+            { className: "srow", onClick },
+            React.createElement(
+              "div",
+              { className: "srow-left" },
+              React.createElement(
+                "div",
+                { className: "srow-icon" },
+                React.createElement(IC[icon] || IC.settings, null),
+              ),
+              React.createElement(
+                "div",
+                null,
+                React.createElement("div", { className: "srow-label" }, label),
+                sub &&
+                  React.createElement("div", { className: "srow-sub" }, sub),
+              ),
+            ),
+            React.createElement(
+              "div",
+              { className: "srow-right" },
+              right,
+              React.createElement(IC.chevRight, null),
+            ),
+          );
+
+        return React.createElement(
+          "div",
+          { className: "screen" },
+          React.createElement(
+            "div",
+            { className: "page-header" },
+            React.createElement(
+              "div",
+              null,
+              React.createElement(
+                "div",
+                { className: "page-title" },
+                "Setting",
+              ),
+              React.createElement(
+                "div",
+                { className: "page-subtitle" },
+                "‹ Admin User ›",
+              ),
+            ),
+            React.createElement(
+              "div",
+              { className: "user-pill" },
+              React.createElement(
+                "div",
+                { className: "user-pill-av" },
+                React.createElement(IC.user, null),
+              ),
+              React.createElement(
+                "div",
+                { className: "user-pill-name" },
+                "Sai Zack",
+              ),
+            ),
+          ),
+
+          // Storage chart
+          React.createElement(
+            "div",
+            { className: "stor-card" },
+            React.createElement(
+              "div",
+              { className: "stor-header" },
+              React.createElement(
+                "div",
+                null,
+                React.createElement(
+                  "div",
+                  { className: "stor-lbl" },
+                  "Storage Saved",
+                ),
+                React.createElement(
+                  "div",
+                  { className: "stor-days" },
+                  "Last 30 days",
+                ),
+              ),
+              React.createElement(
+                "div",
+                null,
+                React.createElement(
+                  "div",
+                  { className: "stor-amount" },
+                  fmtBytes(stats?.saved_bytes || 0),
+                ),
+                React.createElement(
+                  "div",
+                  { className: "stor-change" },
+                  "+12% vs last 30 days",
+                ),
+              ),
+            ),
+            React.createElement(
+              "div",
+              { className: "bar-row" },
+              bars.map((h, i) =>
+                React.createElement("div", {
+                  key: i,
+                  className: `b ${i >= 20 ? "hi" : ""}`,
+                  style: { height: `${(h / mx) * 100}%` },
+                }),
+              ),
+            ),
+            React.createElement(
+              "div",
+              { className: "chart-dates" },
+              React.createElement(
+                "span",
+                { className: "chart-date" },
+                "May 04",
+              ),
+              React.createElement(
+                "span",
+                { className: "chart-date" },
+                "May 11",
+              ),
+              React.createElement(
+                "span",
+                { className: "chart-date" },
+                "May 18",
+              ),
+              React.createElement(
+                "span",
+                { className: "chart-date" },
+                "May 25",
+              ),
+              React.createElement(
+                "span",
+                { className: "chart-date" },
+                "Jun 01",
+              ),
+            ),
+          ),
+
+          // Connection
+          React.createElement(
+            "div",
+            { className: "settings-section" },
+            React.createElement(
+              "div",
+              { className: "st-label" },
+              "Connection & Storage",
+            ),
+            React.createElement(
+              "div",
+              { className: "settings-group" },
+              React.createElement(
+                "div",
+                { className: "srow" },
+                React.createElement(
+                  "div",
+                  { className: "srow-left" },
+                  React.createElement(
+                    "div",
+                    { className: "srow-icon" },
+                    React.createElement(IC.server, null),
+                  ),
+                  React.createElement(
+                    "div",
+                    { className: "srow-label" },
+                    "Server Status",
+                  ),
+                ),
+                React.createElement(
+                  "div",
+                  { className: "srow-right" },
+                  React.createElement("span", { className: "online-dot" }),
+                  "Online",
+                  React.createElement(IC.chevRight, null),
+                ),
+              ),
+              React.createElement(
+                "div",
+                { className: "srow" },
+                React.createElement(
+                  "div",
+                  { className: "srow-left" },
+                  React.createElement(
+                    "div",
+                    { className: "srow-icon" },
+                    React.createElement(IC.link, null),
+                  ),
+                  React.createElement(
+                    "div",
+                    { className: "srow-label" },
+                    "Server URL",
+                  ),
+                ),
+                React.createElement(
+                  "div",
+                  {
+                    className: "srow-right",
+                    style: {
+                      maxWidth: 160,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    },
+                  },
+                  apiBase || "localhost",
+                  React.createElement(IC.chevRight, null),
+                ),
+              ),
+              React.createElement(
+                "div",
+                { className: "srow" },
+                React.createElement(
+                  "div",
+                  { className: "srow-left" },
+                  React.createElement(
+                    "div",
+                    { className: "srow-icon" },
+                    React.createElement(IC.folder, null),
+                  ),
+                  React.createElement(
+                    "div",
+                    { className: "srow-label" },
+                    "Folder Paths",
+                  ),
+                ),
+                React.createElement("div", { className: "srow-right" }, "›"),
+              ),
+            ),
+          ),
+
+          // Backend URL input
+          React.createElement(
+            "div",
+            { className: "settings-section" },
+            React.createElement(
+              "div",
+              { className: "st-label" },
+              "Backend URL",
+            ),
+            React.createElement(
+              "div",
+              { style: { display: "flex", gap: 8 } },
+              React.createElement("input", {
+                style: {
+                  flex: 1,
+                  background: "var(--bg3)",
+                  border: "1px solid var(--border2)",
+                  borderRadius: "var(--r)",
+                  padding: "12px 14px",
+                  color: "var(--text)",
+                  fontFamily: "var(--font)",
+                  fontSize: 14,
+                  outline: "none",
+                },
+                value: url,
+                onChange: (e) => setUrl(e.target.value),
+                placeholder: "http://localhost:8888",
+              }),
+              React.createElement(
+                "button",
+                { className: "pill-btn", onClick: save },
+                "Save",
+              ),
+            ),
+          ),
+
+          // App settings
+          React.createElement(
+            "div",
+            { className: "settings-section" },
+            React.createElement(
+              "div",
+              { className: "st-label" },
+              "App Settings",
+            ),
+            React.createElement(
+              "div",
+              { className: "settings-group" },
+              React.createElement(
+                "div",
+                { className: "srow" },
+                React.createElement(
+                  "div",
+                  { className: "srow-left" },
+                  React.createElement(
+                    "div",
+                    { className: "srow-icon" },
+                    React.createElement(IC.sliders, null),
+                  ),
+                  React.createElement(
+                    "div",
+                    null,
+                    React.createElement(
+                      "div",
+                      { className: "srow-label" },
+                      "Duplicate Sensitivity",
+                    ),
+                    React.createElement(
+                      "div",
+                      { className: "srow-sub" },
+                      "Medium",
+                    ),
+                  ),
+                ),
+                React.createElement(
+                  "div",
+                  { className: "srow-right", style: { minWidth: 120 } },
+                  React.createElement("input", {
+                    type: "range",
+                    min: 1,
+                    max: 3,
+                    defaultValue: 2,
+                    style: { flex: 1 },
+                  }),
+                ),
+              ),
+              React.createElement(
+                "div",
+                { className: "srow" },
+                React.createElement(
+                  "div",
+                  { className: "srow-left" },
+                  React.createElement(
+                    "div",
+                    { className: "srow-icon" },
+                    React.createElement(IC.sync, null),
+                  ),
+                  React.createElement(
+                    "div",
+                    null,
+                    React.createElement(
+                      "div",
+                      { className: "srow-label" },
+                      "Zoom Sync",
+                    ),
+                    React.createElement(
+                      "div",
+                      { className: "srow-sub" },
+                      "Sync zoom across devices",
+                    ),
+                  ),
+                ),
+                React.createElement(
+                  "div",
+                  {
+                    className: "tog on",
+                    onClick: () => setZoom((z) => !z),
+                    style: {
+                      background: zoom ? "var(--keep)" : "var(--surface)",
+                    },
+                  },
+                  React.createElement("div", {
+                    className: "tog-knob",
+                    style: { transform: zoom ? "translateX(20px)" : "" },
+                  }),
+                ),
+              ),
+            ),
+          ),
+
+          // Appearance
+          React.createElement(
+            "div",
+            { className: "settings-section" },
+            React.createElement("div", { className: "st-label" }, "Appearance"),
+            React.createElement(
+              "div",
+              { className: "settings-group" },
+              React.createElement(
+                "div",
+                { className: "srow" },
+                React.createElement(
+                  "div",
+                  { className: "srow-left" },
+                  React.createElement(
+                    "div",
+                    { className: "srow-icon" },
+                    React.createElement(IC.palette, null),
+                  ),
+                  React.createElement(
+                    "div",
+                    { className: "srow-label" },
+                    "Theme",
+                  ),
+                ),
+                React.createElement(
+                  "div",
+                  { className: "theme-opts" },
+                  ["Dark", "Light", "System"].map((t) =>
+                    React.createElement(
+                      "div",
+                      {
+                        key: t,
+                        className: `th-opt ${theme === t ? "active" : ""}`,
+                        onClick: () => setTheme(t),
+                      },
+                      t,
+                    ),
+                  ),
+                ),
+              ),
+              React.createElement(
+                "div",
+                { className: "srow" },
+                React.createElement(
+                  "div",
+                  { className: "srow-left" },
+                  React.createElement(
+                    "div",
+                    { className: "srow-icon" },
+                    React.createElement(IC.drop, null),
+                  ),
+                  React.createElement(
+                    "div",
+                    { className: "srow-label" },
+                    "Accent Color",
+                  ),
+                ),
+                React.createElement(
+                  "div",
+                  { className: "accent-row" },
+                  accents.map((c, i) =>
+                    React.createElement("div", {
+                      key: i,
+                      className: `ac-dot ${accent === i ? "active" : ""}`,
+                      style: {
+                        background: c,
+                        border:
+                          c === "#ffffff"
+                            ? "2px solid rgba(255,255,255,.3)"
+                            : "none",
+                      },
+                      onClick: () => setAccent(i),
+                    }),
+                  ),
+                  React.createElement(
+                    "div",
+                    { className: "ac-dot ac-add" },
+                    React.createElement(IC.plus, null),
+                  ),
+                ),
+              ),
+            ),
+          ),
+
+          // Language
+          React.createElement(
+            "div",
+            { className: "settings-section" },
+            React.createElement("div", { className: "st-label" }, "Language"),
+            React.createElement(
+              "div",
+              { className: "settings-group" },
+              React.createElement(
+                "div",
+                { className: "srow" },
+                React.createElement(
+                  "div",
+                  { className: "srow-left" },
+                  React.createElement(
+                    "div",
+                    { className: "srow-icon" },
+                    React.createElement(IC.globe, null),
+                  ),
+                  React.createElement(
+                    "div",
+                    { className: "srow-label" },
+                    "Language",
+                  ),
+                ),
+                React.createElement(
+                  "div",
+                  { className: "srow-right" },
+                  "English",
+                  React.createElement(IC.chevRight, null),
+                ),
+              ),
+            ),
+          ),
+
+          // Logout
+          React.createElement(
+            "div",
+            { className: "settings-section" },
+            React.createElement(
+              "div",
+              { className: "settings-group" },
+              React.createElement(
+                "div",
+                { className: "srow" },
+                React.createElement(
+                  "div",
+                  { className: "srow-left" },
+                  React.createElement(
+                    "div",
+                    { className: "srow-icon" },
+                    React.createElement(IC.logout, null),
+                  ),
+                  React.createElement(
+                    "div",
+                    {
+                      className: "srow-label",
+                      style: { color: "var(--delete)" },
+                    },
+                    "Log out",
+                  ),
+                ),
+              ),
+            ),
+          ),
+          React.createElement("div", { className: "pb16" }),
+        );
+      }
+
+      /* ─── SIDEBAR ────────────────────────────────────────── */
+      const TABS = [
+        { id: "clean", label: "Clean", icon: "broom" },
+        { id: "gallery", label: "Gallery", icon: "photo" },
+        { id: "albums", label: "Albums", icon: "album" },
+        { id: "setting", label: "Setting", icon: "settings" },
+      ];
+      function Sidebar({ tab, setTab }) {
+        return React.createElement(
+          "nav",
+          { className: "sidebar" },
+          React.createElement(
+            "div",
+            { className: "sidebar-brand" },
+            React.createElement(
+              "div",
+              { className: "sidebar-brand-icon" },
+              React.createElement(IC.broom, null),
+            ),
+            React.createElement(
+              "div",
+              null,
+              React.createElement(
+                "div",
+                { className: "sidebar-brand-name" },
+                "EasyClean",
+              ),
+              React.createElement(
+                "div",
+                { className: "sidebar-brand-ver" },
+                "MVP",
+              ),
+            ),
+          ),
+          TABS.map((t) =>
+            React.createElement(
+              "div",
+              {
+                key: t.id,
+                className: `nav-item ${tab === t.id ? "active" : ""}`,
+                onClick: () => setTab(t.id),
+              },
+              React.createElement(IC[t.icon], null),
+              t.label,
+            ),
+          ),
+          React.createElement("div", { className: "sidebar-spacer" }),
+          React.createElement(
+            "div",
+            { className: "sidebar-user" },
+            React.createElement("div", { className: "sidebar-avatar" }, "SZ"),
+            React.createElement(
+              "div",
+              null,
+              React.createElement(
+                "div",
+                { className: "sidebar-username" },
+                "Sai Zack",
+              ),
+              React.createElement(
+                "div",
+                { className: "sidebar-role" },
+                "Admin",
+              ),
+            ),
+          ),
+        );
+      }
+      function TabBar({ tab, setTab }) {
+        return React.createElement(
+          "div",
+          { className: "tabbar" },
+          TABS.map((t) =>
+            React.createElement(
+              "button",
+              {
+                key: t.id,
+                className: `tab-btn ${tab === t.id ? "active" : ""}`,
+                onClick: () => setTab(t.id),
+              },
+              React.createElement(IC[t.icon], null),
+              React.createElement("span", { className: "tab-label" }, t.label),
+            ),
+          ),
+        );
+      }
+
+      /* ─── APP ────────────────────────────────────────────── */
+      function App() {
+        const [tab, setTab] = useState("clean");
+        const [apiBase, setApiBase] = useState(getApiBase);
+        const [swipe, setSwipe] = useState(null);
+        const [toastMsg, setToastMsg] = useState("");
+        const tmr = useRef(null);
+
+        const api = useMemo(() => makeApi(apiBase), [apiBase]);
+        const toast = (msg) => {
+          setToastMsg(msg);
+          if (tmr.current) clearTimeout(tmr.current);
+          tmr.current = setTimeout(() => setToastMsg(""), 2500);
+        };
+
+        return React.createElement(
+          "div",
+          { id: "app" },
+          toastMsg && React.createElement(Toast, { msg: toastMsg }),
+          swipe
+            ? React.createElement(SwipeScreen, {
+                ...swipe,
+                api,
+                onClose: () => setSwipe(null),
+              })
+            : React.createElement(
+                React.Fragment,
+                null,
+                React.createElement(Sidebar, { tab, setTab }),
+                React.createElement(
+                  "div",
+                  { className: "main" },
+                  tab === "clean" &&
+                    React.createElement(CleanTab, {
+                      api,
+                      onSwipe: (m, mo, l) =>
+                        setSwipe({ mode: m, month: mo, label: l }),
+                      toast,
+                    }),
+                  tab === "gallery" && React.createElement(GalleryTab, { api }),
+                  tab === "albums" && React.createElement(AlbumsTab),
+                  tab === "setting" &&
+                    React.createElement(SettingsTab, {
+                      apiBase,
+                      setApiBase,
+                      toast,
+                    }),
+                  React.createElement(TabBar, { tab, setTab }),
+                ),
+              ),
+        );
+      }
+
+      ReactDOM.createRoot(document.getElementById("app")).render(
+        React.createElement(App),
+      );
+    </script>
+  </body>
+</html>
