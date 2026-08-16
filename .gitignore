@@ -1,0 +1,22 @@
+# Rust
+/target
+**/*.rs.bk
+
+# Node / web
+node_modules
+web/dist
+
+# App data — SQLite index, thumbnail cache, scanned media
+/data
+/tmp
+/.m1data
+
+# Secrets — .env holds EASYCLEAN_SECRET and the passcode. Commit .env.example.
+.env
+*.db
+
+# Tauri generated schemas
+desktop/gen/schemas
+
+# OS
+.DS_Store

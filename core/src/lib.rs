@@ -1,0 +1,18 @@
+//! EasyClean core — the headless engine: config, storage model, database,
+//! scanning, thumbnails, detection (blur + perceptual-hash duplicates), and
+//! file operations (trash / clean / purge).
+
+pub mod auth;
+pub mod categorize;
+pub mod config;
+pub mod db;
+pub mod detect;
+pub mod error;
+pub mod fileops;
+pub mod models;
+pub mod scan;
+pub mod storage;
+pub mod thumbs;
+
+pub use config::Config;
+pub use error::{Error, Result};
