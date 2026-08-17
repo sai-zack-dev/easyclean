@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use futures_util::stream::{self, StreamExt};
 use image::{imageops::FilterType, DynamicImage, GrayImage};
 
 use crate::db::{self, Db};
@@ -17,9 +18,31 @@ pub struct Analysis {
     pub thumb_made: bool,
 }
 
+/// How many files to analyze at once. Decoding is CPU-bound, so one in flight
+/// per core; a floor of 2 keeps single-core boxes making progress on two files
+/// while one waits on disk.
+fn analysis_concurrency() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+        .max(2)
+}
+
+/// What a worker produced for one file.
+enum Analyzed {
+    Image(Option<Analysis>),
+    /// Video: whether ffmpeg wrote a first-frame thumbnail.
+    Video(bool),
+}
+
 /// Analyze every un-hashed file for `user`: compute blur + perceptual hash,
-/// write a thumbnail, then group near-duplicates. CPU-heavy decoding runs on a
-/// blocking thread so the async runtime stays responsive.
+/// write a thumbnail, then group near-duplicates.
+///
+/// Decoding runs on the blocking pool, `analysis_concurrency()` files at a time
+/// — this is the slowest stage by far (see `examples/bench.rs`), and doing it
+/// one-at-a-time left every core but one idle. Results are applied to SQLite as
+/// they land, in completion order: writes stay serialized (SQLite has a single
+/// writer anyway) while the decoding fans out.
 pub async fn run_detection(
     pool: &Db,
     user: &str,
@@ -31,36 +54,59 @@ pub async fn run_detection(
     let pending = db::pending_for_detection(pool, user).await?;
     let mut stats = DetectStats::default();
 
-    for (id, path, media_type) in pending {
+    let jobs = pending.into_iter().map(|(id, path, media_type)| {
         let thumb_path = thumb_dir.join(format!("{id}.jpg"));
-
-        if media_type != "image" {
-            if thumbs::ensure_video_thumb(&path, &thumb_path).unwrap_or(false) {
-                let _ = db::set_thumb(pool, id, &thumb_path.to_string_lossy()).await;
-                stats.thumbs += 1;
-            }
-            continue;
+        async move {
+            let tp = thumb_path.clone();
+            let done = tokio::task::spawn_blocking(move || {
+                if media_type == "image" {
+                    Analyzed::Image(analyze_image(Path::new(&path), &tp, blur_threshold))
+                } else {
+                    Analyzed::Video(thumbs::ensure_video_thumb(&path, &tp).unwrap_or(false))
+                }
+            })
+            .await;
+            (id, thumb_path, done)
         }
+    });
 
-        let p = path.clone();
-        let tp = thumb_path.clone();
-        let analysis = tokio::task::spawn_blocking(move || analyze_image(Path::new(&p), &tp, blur_threshold))
-            .await
-            .unwrap_or(None);
+    let mut in_flight = stream::iter(jobs).buffer_unordered(analysis_concurrency());
 
-        if let Some(a) = analysis {
-            let thumb_str: Option<PathBuf> = a.thumb_made.then(|| thumb_path.clone());
-            let thumb_ref = thumb_str.as_ref().map(|p| p.to_string_lossy().to_string());
-            db::update_analysis(pool, id, Some(a.blur_score), a.is_blurry, &a.phash, thumb_ref.as_deref())
+    while let Some((id, thumb_path, done)) = in_flight.next().await {
+        // A panicking decode kills only its own file, not the whole run.
+        let Ok(done) = done else { continue };
+
+        match done {
+            Analyzed::Video(made_thumb) => {
+                if made_thumb {
+                    let _ = db::set_thumb(pool, id, &thumb_path.to_string_lossy()).await;
+                    stats.thumbs += 1;
+                }
+            }
+            Analyzed::Image(Some(a)) => {
+                let thumb_str: Option<PathBuf> = a.thumb_made.then(|| thumb_path.clone());
+                let thumb_ref = thumb_str.as_ref().map(|p| p.to_string_lossy().to_string());
+                db::update_analysis(
+                    pool,
+                    id,
+                    Some(a.blur_score),
+                    a.is_blurry,
+                    &a.phash,
+                    thumb_ref.as_deref(),
+                )
                 .await?;
-            stats.processed += 1;
-            if a.is_blurry {
-                stats.blurry += 1;
+                stats.processed += 1;
+                if a.is_blurry {
+                    stats.blurry += 1;
+                }
+                if a.thumb_made {
+                    stats.thumbs += 1;
+                }
+                progress(stats.processed);
             }
-            if a.thumb_made {
-                stats.thumbs += 1;
-            }
-            progress(stats.processed);
+            // Undecodable file (corrupt, or HEIC in a build without libheif):
+            // it stays indexed and un-hashed, so a later run can retry it.
+            Analyzed::Image(None) => {}
         }
     }
 
@@ -78,7 +124,7 @@ pub async fn run_detection(
 
 /// Decode an image once and derive blur score, perceptual hash, and a thumbnail.
 pub fn analyze_image(path: &Path, thumb_out: &Path, blur_threshold: f64) -> Option<Analysis> {
-    let img = image::open(path).ok()?;
+    let img = crate::decode::open_image(path).ok()?;
     let blur = laplacian_variance(&img);
     let phash = dhash(&img);
     let thumb_made = thumbs::make_image_thumb(&img, thumb_out).is_ok();
@@ -230,6 +276,61 @@ mod tests {
     fn blur_orders_sharp_above_flat() {
         // A flat image has ~0 Laplacian variance; a textured one is much higher.
         assert!(laplacian_variance(&noisy(128, 128)) > laplacian_variance(&solid(128, 128, 128)));
+    }
+
+    /// End-to-end over the concurrent path: every file must be analyzed exactly
+    /// once, get a thumbnail, and duplicates must still group — none of which is
+    /// guaranteed by construction now that files are decoded in parallel and
+    /// applied in completion order.
+    #[tokio::test]
+    async fn detection_processes_every_file_concurrently() {
+        let dir = std::env::temp_dir().join(format!("ec-detect-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let media = dir.join("media");
+        std::fs::create_dir_all(&media).unwrap();
+
+        // More files than cores, so the concurrency limit actually kicks in.
+        let count = analysis_concurrency() * 3 + 1;
+        for i in 0..count {
+            // Every third image repeats the previous one → duplicate groups.
+            let seed = if i % 3 == 0 { i.saturating_sub(1) } else { i };
+            let mut img = RgbImage::new(48, 32);
+            for (x, y, px) in img.enumerate_pixels_mut() {
+                let v = ((x * 7 + y * 13 + seed as u32 * 29) % 256) as u8;
+                *px = Rgb([v, v.wrapping_mul(3), v.wrapping_add(seed as u8)]);
+            }
+            img.save(media.join(format!("img_{i:03}.png"))).unwrap();
+        }
+
+        let pool = crate::db::init(&dir.join("test.db")).await.unwrap();
+        let scanned = crate::scan::scan_folder(&pool, "u", &media, |_| {})
+            .await
+            .unwrap();
+        assert_eq!(scanned.added, count);
+
+        let thumbs_dir = dir.join("thumbs");
+        let mut progress_calls = 0;
+        let stats = run_detection(&pool, "u", 100.0, &thumbs_dir, 4, |_| progress_calls += 1)
+            .await
+            .unwrap();
+
+        assert_eq!(stats.processed, count, "every file analyzed exactly once");
+        assert_eq!(stats.thumbs, count, "every file got a thumbnail");
+        assert_eq!(progress_calls, count, "progress reported once per file");
+        assert!(stats.duplicate_groups > 0, "repeated images should group");
+        assert_eq!(
+            std::fs::read_dir(&thumbs_dir).unwrap().count(),
+            count,
+            "thumbnail files on disk"
+        );
+
+        // A second pass has nothing left to do — rows are no longer un-hashed.
+        let again = run_detection(&pool, "u", 100.0, &thumbs_dir, 4, |_| {})
+            .await
+            .unwrap();
+        assert_eq!(again.processed, 0, "detection must not redo finished files");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

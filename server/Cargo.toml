@@ -4,6 +4,11 @@ edition.workspace = true
 version.workspace = true
 license.workspace = true
 
+[features]
+default = []
+# HEIC/HEIF decode — needs system libheif >= 1.17. Enabled in the Docker image.
+heic = ["easyclean-core/heic"]
+
 [dependencies]
 easyclean-core = { path = "../core" }
 tokio = { workspace = true }

@@ -7,8 +7,9 @@ use crate::db::{self, Db};
 use crate::error::Result;
 use crate::models::{NewMedia, ScanStats};
 
-pub const IMAGE_EXTS: &[&str] =
-    &["jpg", "jpeg", "png", "gif", "bmp", "tiff", "tif", "webp", "heic", "heif"];
+pub const IMAGE_EXTS: &[&str] = &[
+    "jpg", "jpeg", "png", "gif", "bmp", "tiff", "tif", "webp", "heic", "heif",
+];
 pub const VIDEO_EXTS: &[&str] = &["mp4", "mov", "avi", "mkv", "m4v", "3gp", "webm"];
 
 fn classify(ext: &str) -> Option<&'static str> {
@@ -118,8 +119,18 @@ fn read_exif(path: &Path) -> (Option<i64>, Option<f64>, Option<f64>) {
     let ts = exif
         .get_field(exif::Tag::DateTimeOriginal, exif::In::PRIMARY)
         .and_then(parse_datetime);
-    let lat = gps_coord(&exif, exif::Tag::GPSLatitude, exif::Tag::GPSLatitudeRef, b'S');
-    let lon = gps_coord(&exif, exif::Tag::GPSLongitude, exif::Tag::GPSLongitudeRef, b'W');
+    let lat = gps_coord(
+        &exif,
+        exif::Tag::GPSLatitude,
+        exif::Tag::GPSLatitudeRef,
+        b'S',
+    );
+    let lon = gps_coord(
+        &exif,
+        exif::Tag::GPSLongitude,
+        exif::Tag::GPSLongitudeRef,
+        b'W',
+    );
     (ts, lat, lon)
 }
 

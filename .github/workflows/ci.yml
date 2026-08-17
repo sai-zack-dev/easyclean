@@ -1,0 +1,140 @@
+name: ci
+
+# Every push and PR: the whole quality gate from CLAUDE.md — fmt, clippy,
+# tests, web lint/build, and a real Docker build so packaging breakage shows up
+# here rather than on the home server.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    name: rust — fmt · clippy · test
+    # Pinned, not `ubuntu-latest`: the `heic` feature needs libheif >= 1.17 from
+    # apt. 24.04 ships 1.17.6; 22.04 shipped 1.12, so a runner-image rollover
+    # would break this job for a reason that has nothing to do with the code.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # `desktop/` is excluded from these jobs (Tauri needs GTK/WebKit);
+          # keep its cache key separate from the server build's.
+          shared-key: server
+
+      # HEIC support is compiled in, so clippy/tests see the same code the
+      # image ships.
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libheif-dev pkg-config ffmpeg
+          pkg-config --modversion libheif
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: >
+          cargo clippy --workspace --exclude easyclean-desktop
+          --all-targets --features easyclean-server/heic -- -D warnings
+
+      - name: Test
+        run: >
+          cargo test --workspace --exclude easyclean-desktop
+          --features easyclean-server/heic
+
+  web:
+    name: web — lint · typecheck · build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - run: npm ci
+        working-directory: web
+
+      - run: npm run lint
+        working-directory: web
+
+      # `npm run build` runs `tsc -b` first, so this covers typechecking too.
+      - run: npm run build
+        working-directory: web
+
+      - name: Check PWA assets made it into the build
+        working-directory: web
+        run: |
+          for f in manifest.webmanifest sw.js icon-192.png icon-512.png \
+                   icon-maskable-512.png apple-touch-icon.png; do
+            test -f "dist/$f" || { echo "missing dist/$f"; exit 1; }
+          done
+          echo "PWA assets present"
+
+  docker:
+    name: docker — build image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: easyclean:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Boot the image the way the home server will and prove it serves.
+      - name: Smoke-test the image
+        run: |
+          docker run -d --name ec -p 8080:8080 \
+            -e EASYCLEAN_USER=ci -e EASYCLEAN_PASSCODE=ci-passcode \
+            -e EASYCLEAN_SECRET=ci-secret-not-used-in-prod \
+            easyclean:ci
+
+          for i in $(seq 1 30); do
+            curl -fsS http://localhost:8080/api/health >/dev/null && break
+            sleep 1
+          done
+
+          curl -fsS http://localhost:8080/api/health | grep -q '"ok"'
+          curl -fsS http://localhost:8080/ | grep -q '<title>EasyClean</title>'
+          curl -fsS -o /dev/null -w '%{http_code}' http://localhost:8080/manifest.webmanifest | grep -q 200
+
+          # Auth must actually be enforced, and a login must return a token.
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/api/stats/summary)" = "401"
+          curl -fsS -X POST http://localhost:8080/api/auth/login \
+            -H 'content-type: application/json' \
+            -d '{"username":"ci","passcode":"ci-passcode"}' | grep -q access_token
+
+          # HEIC decode must be compiled in — the whole point of the trixie base.
+          docker logs ec 2>&1 | grep -q "HEIF/HEIC decoding enabled" \
+            || { echo "::error::image is missing HEIC support"; docker logs ec; exit 1; }
+
+          echo "image smoke test passed"
+
+      - name: Container logs on failure
+        if: failure()
+        run: docker logs ec || true

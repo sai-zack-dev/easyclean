@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useCallback, useState, useEffect } from 'react'
 import { IC } from '../icons'
 import { api, type MediaFile } from '../api/client'
 import { Spinner } from '../components/Spinner'
@@ -22,14 +22,14 @@ export function TrashScreen({ onClose, toast }: Props) {
   const [busy, setBusy] = useState<number | null>(null)
   const [confirmAll, setConfirmAll] = useState(false)
 
-  const load = () => {
+  const load = useCallback(() => {
     api.trash()
       .then(setFiles)
       .catch(() => toast('Could not load the trash'))
       .finally(() => setLoading(false))
-  }
+  }, [toast])
 
-  useEffect(() => { load() }, [])
+  useEffect(() => { load() }, [load])
 
   const restore = (f: MediaFile) => {
     setBusy(f.id)

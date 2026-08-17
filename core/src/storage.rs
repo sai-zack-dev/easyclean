@@ -21,7 +21,9 @@ impl UserRoot {
         {
             return Err(Error::InvalidUser(user.to_string()));
         }
-        Ok(Self { root: media_root.join(user) })
+        Ok(Self {
+            root: media_root.join(user),
+        })
     }
 
     pub fn root(&self) -> &Path {

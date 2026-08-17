@@ -6,6 +6,7 @@ pub mod auth;
 pub mod categorize;
 pub mod config;
 pub mod db;
+pub mod decode;
 pub mod detect;
 pub mod error;
 pub mod fileops;

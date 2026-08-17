@@ -19,8 +19,8 @@ Requires Docker + Docker Compose.
 
 ```bash
 cp .env.example .env
-# edit .env: set MEDIA_ROOT, a passcode, and a secret:
-#   EASYCLEAN_SECRET=$(openssl rand -hex 32)
+# edit .env: set MEDIA_ROOT and a passcode.
+# EASYCLEAN_SECRET is optional — the server generates and persists one.
 
 docker compose up -d --build
 ```
@@ -28,8 +28,13 @@ docker compose up -d --build
 Open **http://&lt;server-ip&gt;:8080** from any device on the LAN and sign in with
 `EASYCLEAN_USER` / `EASYCLEAN_PASSCODE`.
 
-The image bundles **ffmpeg** (video thumbnails) and **libheif** runtime. Migrations are embedded; the
-SQLite DB and thumbnail cache live in the `./data` volume.
+The image bundles **ffmpeg** (video thumbnails) and **libheif + libde265** (HEIC/HEIF decode, so iPhone
+photos get thumbnails, blur scores, and duplicate hashes like anything else). Migrations are embedded;
+the SQLite DB, thumbnail cache, and generated JWT secret live in the `./data` volume.
+
+> **Deploying for real?** [`deploy/README.md`](deploy/README.md) covers the production setup at
+> `/opt/easyclean`: the GHCR image, a self-hosted GitHub Actions runner, and automatic rollout with
+> health check + rollback on every green push to `main`.
 
 ### Media folder layout
 
@@ -93,7 +98,8 @@ Code-signing / notarization needs your own Apple Developer / Windows certificate
 | `EASYCLEAN_USER` | `default` | Seeded admin username |
 | `EASYCLEAN_PASSCODE` | `easyclean` | Seeded admin passcode |
 | `EASYCLEAN_USERS` | — | Multi-user: `user:pass[:role],user2:pass2` |
-| `EASYCLEAN_SECRET` | *dev default* | JWT signing secret — **set this** |
+| `EASYCLEAN_SECRET` | *generated* | JWT signing secret. Empty ⇒ a random key is generated into `<data>/secret.key` (0600) and reused |
+| `EASYCLEAN_CORS_ORIGINS` | — | Extra allowed browser origins (comma-separated). Empty ⇒ same-origin only |
 | `EASYCLEAN_BLUR_THRESHOLD` | `100.0` | Laplacian-variance blur cutoff |
 | `EASYCLEAN_DUPLICATE_DISTANCE_THRESHOLD` | `10` | Max pHash Hamming distance for duplicates |
 | `EASYCLEAN_TRASH_RETENTION_DAYS` | `30` | Days in `.trash` before auto-purge |
@@ -104,13 +110,17 @@ Code-signing / notarization needs your own Apple Developer / Windows certificate
 
 EasyClean is **LAN-only by default** and is not hardened for direct internet exposure.
 
-- **Always set `EASYCLEAN_SECRET`** (`openssl rand -hex 32`). The built-in dev default is public, so
-  tokens signed with it are forgeable.
+- **The JWT secret is never a shared default.** Set `EASYCLEAN_SECRET` yourself, or let the server
+  generate a random one into `<data_dir>/secret.key` on first boot and keep it. Deleting the data dir
+  rotates it and logs everyone out.
+- **CORS is closed by default** — only the origin serving the UI can call the API. Open it with
+  `EASYCLEAN_CORS_ORIGINS` only for a split dev setup.
 - **Change the passcode** — anyone on the Wi-Fi who reaches the port can otherwise see and delete photos.
+  Logins are rate-limited to 5 attempts / 15 min per IP.
 - **Don't port-forward.** For remote access use Tailscale or a Cloudflare Tunnel (planned), never a
   router port-forward.
 - Deletions are **trash-first** — files move to `.trash/` and are only purged on explicit action or after
-  the retention window.
+  the retention window. That is a delay, not a backup.
 
 ---
 
@@ -126,11 +136,29 @@ EasyClean is **LAN-only by default** and is not hardened for direct internet exp
 ## Project layout
 
 ```
-core/      Rust engine (scan, thumbnails, blur/dup detection, file ops, albums, DB)
+core/      Rust engine (scan, decode, thumbnails, blur/dup detection, file ops, albums, DB)
 server/    axum HTTP server (REST + SSE; serves the web UI)
-web/       React 18 + Vite + TS frontend (built → web/dist, served by the server)
+web/       React 18 + Vite + TS PWA (built → web/dist, served by the server)
 desktop/   Tauri control-panel app (spawns the server, shows LAN URL + QR)
-Dockerfile, docker-compose.yml   Linux home-server deployment
+deploy/    Production kit for /opt/easyclean (compose + install.sh + runbook)
+Dockerfile, docker-compose.yml   Build-from-source deployment
 ```
+
+### Development
+
+```bash
+cargo test  --workspace --exclude easyclean-desktop     # 36 tests
+cargo clippy --workspace --exclude easyclean-desktop --all-targets -- -D warnings
+cd web && npm run lint && npm run build
+
+# Scale check — generates synthetic photos and times scan/detect/queries
+cargo run --release -p easyclean-core --example bench -- 10000
+
+# Regenerate the PWA icon set after changing the mark
+cd web && node scripts/generate-icons.mjs
+```
+
+HEIC support is a cargo feature (`--features heic`) because it links system libheif ≥ 1.17; the Docker
+image always builds with it. Without it, `.heic` files are indexed but not decoded.
 
 See `.claude/spec.md` (API), `.claude/ui.md` (design system), `.claude/checklist.md` (build plan).

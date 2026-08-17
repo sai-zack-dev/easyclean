@@ -19,7 +19,10 @@ pub struct AuthUser {
 impl FromRequestParts<AppState> for AuthUser {
     type Rejection = ApiError;
 
-    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
         let header_token = parts
             .headers
             .get(AUTHORIZATION)
@@ -38,7 +41,10 @@ impl FromRequestParts<AppState> for AuthUser {
         let claims = easyclean_core::auth::verify_token(&token, &state.cfg.secret)
             .ok_or_else(|| ApiError(StatusCode::UNAUTHORIZED, "invalid or expired token".into()))?;
 
-        Ok(AuthUser { username: claims.sub, role: claims.role })
+        Ok(AuthUser {
+            username: claims.sub,
+            role: claims.role,
+        })
     }
 }
 
@@ -57,8 +63,14 @@ mod tests {
 
     #[test]
     fn extracts_token_from_query() {
-        assert_eq!(query_token(Some("token=abc.def.ghi")).as_deref(), Some("abc.def.ghi"));
-        assert_eq!(query_token(Some("size=5&token=xyz")).as_deref(), Some("xyz"));
+        assert_eq!(
+            query_token(Some("token=abc.def.ghi")).as_deref(),
+            Some("abc.def.ghi")
+        );
+        assert_eq!(
+            query_token(Some("size=5&token=xyz")).as_deref(),
+            Some("xyz")
+        );
         assert_eq!(query_token(Some("size=5")), None);
         assert_eq!(query_token(Some("token=")), None);
         assert_eq!(query_token(None), None);
