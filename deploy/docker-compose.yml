@@ -23,6 +23,10 @@ services:
     environment:
       EASYCLEAN_USER: ${EASYCLEAN_USER:-admin}
       EASYCLEAN_PASSCODE: ${EASYCLEAN_PASSCODE:?set EASYCLEAN_PASSCODE in .env}
+      # Multi-user: "name:passcode[:role],name2:passcode2". When set it REPLACES
+      # the single EASYCLEAN_USER/PASSCODE seed above. Each name needs its own
+      # <MEDIA_ROOT>/<name>/source folder.
+      EASYCLEAN_USERS: ${EASYCLEAN_USERS:-}
       # Optional: omit and the server generates + persists /data/secret.key.
       EASYCLEAN_SECRET: ${EASYCLEAN_SECRET:-}
       EASYCLEAN_TRASH_RETENTION_DAYS: ${EASYCLEAN_TRASH_RETENTION_DAYS:-30}
