@@ -75,7 +75,10 @@ strictly.** 5. **Output order:** architecture + data-flow → file structure →
 
 ## Key gotchas
 
-- **HEIC** (iPhone photos) needs system `libheif` — install in the Docker image; bundle/notarize on Mac.
+- **HEIC** (iPhone photos) is behind the `heic` cargo feature — it links system `libheif` ≥ 1.17, so
+  Debian **trixie**, not bookworm, and the `libheif-plugin-libde265` package must be installed or
+  decode fails at runtime. Desktop bundles build without the feature (would need libheif bundled +
+  signed per platform).
 - **Video** needs `ffmpeg` (thumbnails + `ffprobe` dates).
 - **Long work** (scan / thumb / detect) async + progress (SSE/WS); never block at 100K+.
 - **Undo** = last ~10 swipes.
@@ -88,9 +91,19 @@ Locked, both themes (dark from prototypes, light defined) — see [ui.md](ui.md)
 
 ## Existing assets
 
-- **`frontend/index.html` — the canonical web UI.** A complete React 18 app (single file, React via CDN)
-  implementing every screen with the exact OLED design in [ui.md](ui.md); the mobile prototype
-  screenshots are this app on a phone. **M3 = port it to Vite + TS** — split into components, add the
-  light theme (it's dark-only today), repoint the API client at the Rust server. Do NOT redesign it.
-- `backend/` (Python FastAPI) — logic reference only (scan/pHash/blur shapes); not reused; build is Rust.
-- Prototype runs via `docker compose up -d` at http://localhost:3333 (uses these two).
+- **`web/` is the canonical web UI** — React 18 + Vite + TS, the finished port of the original
+  single-file prototype, with both themes and the PWA layer. Do NOT redesign it; match [ui.md](ui.md).
+- The two prototypes it replaced (`frontend/index.html`, the Python `backend/`) were **deleted on
+  2026-08-17**. They live in git history at commit `2763e16` if you ever need the original markup or
+  the old scan/pHash reference.
+
+## Deployment
+
+Production is a Linux home server at **`/opt/easyclean`**, running the GHCR image via
+`deploy/docker-compose.yml`. CI/CD: `ci.yml` gates every push (fmt · clippy · tests · web · Docker
+build + container smoke test); `deploy.yml` then publishes the image and rolls it out through a
+**self-hosted runner installed on that server**, with a health check and auto-rollback. Setup and
+runbook: [deploy/README.md](../deploy/README.md).
+
+MVP ships **web + PWA only**. A native mobile client (Flutter or React Native — decision deferred) is
+M7, after the web app has proven itself in daily use.

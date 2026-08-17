@@ -24,9 +24,17 @@ pub fn verify_passcode(plain: &str, hash: &str) -> bool {
 /// Mint an HS256 JWT valid for `days`.
 pub fn make_token(username: &str, role: &str, secret: &str, days: i64) -> Result<String> {
     let exp = (chrono::Utc::now().timestamp() + days * 86_400).max(0) as usize;
-    let claims = Claims { sub: username.to_string(), role: role.to_string(), exp };
-    encode(&Header::default(), &claims, &EncodingKey::from_secret(secret.as_bytes()))
-        .map_err(|e| Error::Auth(e.to_string()))
+    let claims = Claims {
+        sub: username.to_string(),
+        role: role.to_string(),
+        exp,
+    };
+    encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(secret.as_bytes()),
+    )
+    .map_err(|e| Error::Auth(e.to_string()))
 }
 
 /// Verify a token; `None` if invalid, tampered, or expired.

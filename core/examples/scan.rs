@@ -19,14 +19,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pool = db::init(&cfg.db_path()).await?;
     let thumb_dir = cfg.data_dir.join("thumbs");
 
-    println!("scanning {dir:?} as user '{user}' (db: {:?}) ...", cfg.db_path());
+    println!(
+        "scanning {dir:?} as user '{user}' (db: {:?}) ...",
+        cfg.db_path()
+    );
     let s = scan::scan_folder(&pool, &user, &dir, |n| {
         if n % 25 == 0 {
             println!("  indexed {n}");
         }
     })
     .await?;
-    println!("scan:   scanned={} added={} skipped={}", s.scanned, s.added, s.skipped);
+    println!(
+        "scan:   scanned={} added={} skipped={}",
+        s.scanned, s.added, s.skipped
+    );
 
     println!("detecting (blur + duplicates + thumbnails) ...");
     let d = detect::run_detection(

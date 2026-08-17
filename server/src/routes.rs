@@ -29,13 +29,11 @@ use crate::state::AppState;
 
 /// Build the full API router.
 pub fn router(state: AppState) -> Router {
-    let web_dist = std::env::var("EASYCLEAN_WEB_DIST")
-        .unwrap_or_else(|_| "web/dist".to_string());
+    let web_dist = std::env::var("EASYCLEAN_WEB_DIST").unwrap_or_else(|_| "web/dist".to_string());
 
-    let static_files = tower_http::services::ServeDir::new(&web_dist)
-        .not_found_service(tower_http::services::ServeFile::new(
-            format!("{web_dist}/index.html"),
-        ));
+    let static_files = tower_http::services::ServeDir::new(&web_dist).not_found_service(
+        tower_http::services::ServeFile::new(format!("{web_dist}/index.html")),
+    );
 
     Router::new()
         .route("/api/health", get(health))
@@ -66,9 +64,42 @@ pub fn router(state: AppState) -> Router {
         .route("/api/trash/purge/:id", delete(trash_purge_one))
         .route("/api/trash/purge-all", delete(trash_purge_all))
         .layer(tower_http::trace::TraceLayer::new_for_http())
-        .layer(tower_http::cors::CorsLayer::permissive())
+        .layer(cors_layer(&state.cfg))
         .with_state(state)
         .fallback_service(static_files)
+}
+
+/// CORS policy. The UI is served by this same server, so the default is
+/// same-origin only: an empty `CorsLayer` emits no `Access-Control-Allow-*`,
+/// which keeps any other page on the LAN from reading the API with a stolen
+/// token. `EASYCLEAN_CORS_ORIGINS` opens it up for split dev setups.
+fn cors_layer(cfg: &easyclean_core::Config) -> tower_http::cors::CorsLayer {
+    use tower_http::cors::{Any, CorsLayer};
+
+    if cfg.cors_origins.is_empty() {
+        return CorsLayer::new();
+    }
+    if cfg.cors_origins.iter().any(|o| o == "*") {
+        tracing::warn!("EASYCLEAN_CORS_ORIGINS=* — any website may call this API");
+        return CorsLayer::permissive();
+    }
+
+    let origins: Vec<HeaderValue> = cfg
+        .cors_origins
+        .iter()
+        .filter_map(|o| match HeaderValue::from_str(o) {
+            Ok(v) => Some(v),
+            Err(_) => {
+                tracing::warn!("ignoring malformed CORS origin {o:?}");
+                None
+            }
+        })
+        .collect();
+
+    CorsLayer::new()
+        .allow_origin(origins)
+        .allow_methods(Any)
+        .allow_headers(Any)
 }
 
 async fn health() -> Json<Value> {
@@ -122,14 +153,20 @@ async fn login(
 ) -> Result<Json<Value>, ApiError> {
     let ip = addr.ip().to_string();
     if !st.rate_limiter.check(&ip) {
-        return Err(ApiError(StatusCode::TOO_MANY_REQUESTS, "too many login attempts".into()));
+        return Err(ApiError(
+            StatusCode::TOO_MANY_REQUESTS,
+            "too many login attempts".into(),
+        ));
     }
     let result = db::get_user(&st.db, &b.username).await?;
     let (username, _hash, role) = match result {
         Some(r) if core_auth::verify_passcode(&b.passcode, &r.1) => r,
         _ => {
             st.rate_limiter.record(&ip);
-            return Err(ApiError(StatusCode::UNAUTHORIZED, "invalid credentials".into()));
+            return Err(ApiError(
+                StatusCode::UNAUTHORIZED,
+                "invalid credentials".into(),
+            ));
         }
     };
     let token = core_auth::make_token(&username, &role, &st.cfg.secret, st.cfg.jwt_expire_days)?;
@@ -150,7 +187,13 @@ async fn scan_start(State(st): State<AppState>, user: AuthUser) -> Json<Value> {
     if st.scan.running.swap(true, Ordering::SeqCst) {
         return Json(json!({ "started": false, "reason": "already running" }));
     }
-    for c in [&st.scan.added, &st.scan.processed, &st.scan.blurry, &st.scan.dup_groups, &st.scan.thumbs] {
+    for c in [
+        &st.scan.added,
+        &st.scan.processed,
+        &st.scan.blurry,
+        &st.scan.dup_groups,
+        &st.scan.thumbs,
+    ] {
         c.store(0, Ordering::Relaxed);
     }
     *st.scan.error.lock().unwrap() = None;
@@ -160,7 +203,10 @@ async fn scan_start(State(st): State<AppState>, user: AuthUser) -> Json<Value> {
 
 async fn run_scan(st: AppState, user: String) {
     let root = match UserRoot::new(&st.cfg.media_root, &user) {
-        Ok(r) => { let _ = r.ensure(); r }
+        Ok(r) => {
+            let _ = r.ensure();
+            r
+        }
         Err(e) => {
             *st.scan.error.lock().unwrap() = Some(e.to_string());
             st.scan.running.store(false, Ordering::SeqCst);
@@ -180,7 +226,10 @@ async fn run_scan(st: AppState, user: String) {
     }
     let sp = st.scan.clone();
     match detect::run_detection(
-        &st.db, &user, st.cfg.blur_threshold, &thumb_dir,
+        &st.db,
+        &user,
+        st.cfg.blur_threshold,
+        &thumb_dir,
         st.cfg.duplicate_distance_threshold,
         move |n| sp.processed.store(n, Ordering::Relaxed),
     )
@@ -188,7 +237,9 @@ async fn run_scan(st: AppState, user: String) {
     {
         Ok(d) => {
             st.scan.blurry.store(d.blurry, Ordering::Relaxed);
-            st.scan.dup_groups.store(d.duplicate_groups, Ordering::Relaxed);
+            st.scan
+                .dup_groups
+                .store(d.duplicate_groups, Ordering::Relaxed);
             st.scan.thumbs.store(d.thumbs, Ordering::Relaxed);
         }
         Err(e) => *st.scan.error.lock().unwrap() = Some(format!("detect: {e}")),
@@ -289,9 +340,8 @@ async fn session_finish(
     State(st): State<AppState>,
     user: AuthUser,
 ) -> Result<Json<Value>, ApiError> {
-    let root = UserRoot::new(&st.cfg.media_root, &user.username)
-        .map_err(|e| ApiError::internal(e))?;
-    root.ensure().map_err(|e| ApiError::internal(e))?;
+    let root = UserRoot::new(&st.cfg.media_root, &user.username).map_err(ApiError::internal)?;
+    root.ensure().map_err(ApiError::internal)?;
 
     let kept = db::kept_files(&st.db, &user.username).await?;
     let mut moved = 0usize;
@@ -312,8 +362,13 @@ async fn session_finish(
         let src = FsPath::new(&mf.path);
         if src.exists() && !src.starts_with(clean_dir) {
             if let Ok(dest) = fileops::to_clean(&root, src, &album_name) {
-                db::update_path(&st.db, mf.id, &dest.to_string_lossy(), &rel_to_root(&root, &dest))
-                    .await?;
+                db::update_path(
+                    &st.db,
+                    mf.id,
+                    &dest.to_string_lossy(),
+                    &rel_to_root(&root, &dest),
+                )
+                .await?;
                 moved += 1;
             }
         }
@@ -349,15 +404,22 @@ async fn session_finish(
         }
         match fileops::to_trash(&root, src) {
             Ok(dest) => {
-                db::update_path(&st.db, mf.id, &dest.to_string_lossy(), &rel_to_root(&root, &dest))
-                    .await?;
+                db::update_path(
+                    &st.db,
+                    mf.id,
+                    &dest.to_string_lossy(),
+                    &rel_to_root(&root, &dest),
+                )
+                .await?;
                 trashed += 1;
             }
             Err(e) => tracing::warn!("finish: trashing {}: {e}", mf.path),
         }
     }
 
-    Ok(Json(json!({ "moved": moved, "trashed": trashed, "categorized": kept.len() })))
+    Ok(Json(
+        json!({ "moved": moved, "trashed": trashed, "categorized": kept.len() }),
+    ))
 }
 
 async fn favorite(
@@ -375,7 +437,9 @@ async fn thumb(
     Path(id): Path<i64>,
 ) -> Result<Response, ApiError> {
     let m = owned_media(&st, &user, id).await?;
-    let tp = m.thumb_path.ok_or_else(|| ApiError::not_found("no thumbnail yet"))?;
+    let tp = m
+        .thumb_path
+        .ok_or_else(|| ApiError::not_found("no thumbnail yet"))?;
     serve_file(FsPath::new(&tp)).await
 }
 
@@ -387,7 +451,10 @@ async fn raw(
     let m = owned_media(&st, &user, id).await?;
     let p = FsPath::new(&m.path);
     if !p.starts_with(&st.cfg.media_root) {
-        return Err(ApiError(StatusCode::FORBIDDEN, "path outside media root".into()));
+        return Err(ApiError(
+            StatusCode::FORBIDDEN,
+            "path outside media root".into(),
+        ));
     }
     if !p.exists() {
         return Err(ApiError::not_found("file missing on disk"));
@@ -473,7 +540,13 @@ async fn trash_restore(
     let src = FsPath::new(&m.path);
     if src.exists() && src.starts_with(root.trash()) {
         let dest = fileops::restore(src, &root.source()).map_err(ApiError::internal)?;
-        db::update_path(&st.db, id, &dest.to_string_lossy(), &rel_to_root(&root, &dest)).await?;
+        db::update_path(
+            &st.db,
+            id,
+            &dest.to_string_lossy(),
+            &rel_to_root(&root, &dest),
+        )
+        .await?;
     }
     db::set_status(&st.db, &user.username, id, "pending", None).await?;
     Ok(Json(json!({ "id": id, "status": "pending" })))
@@ -524,7 +597,10 @@ async fn run_retention(st: &AppState) {
     let retention_secs = st.cfg.trash_retention_days as i64 * 86_400;
     let users = match db::users_with_trash(&st.db).await {
         Ok(u) => u,
-        Err(e) => { tracing::error!("retention: list users: {e}"); return; }
+        Err(e) => {
+            tracing::error!("retention: list users: {e}");
+            return;
+        }
     };
     for user in users {
         match db::expired_trash(&st.db, &user, retention_secs).await {
@@ -547,11 +623,16 @@ async fn run_retention(st: &AppState) {
 // ── Helpers ───────────────────────────────────────────────────────────────
 
 fn now_secs() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 async fn owned_media(st: &AppState, user: &AuthUser, id: i64) -> Result<MediaFile, ApiError> {
-    let m = db::get_media(&st.db, id).await?.ok_or_else(|| ApiError::not_found("media not found"))?;
+    let m = db::get_media(&st.db, id)
+        .await?
+        .ok_or_else(|| ApiError::not_found("media not found"))?;
     if m.user != user.username {
         return Err(ApiError::not_found("media not found"));
     }
@@ -565,7 +646,9 @@ fn rel_to_root(root: &UserRoot, path: &FsPath) -> String {
     path.strip_prefix(root.root())
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|_| {
-            path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+            path.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default()
         })
 }
 
@@ -585,8 +668,12 @@ fn enrich(files: Vec<MediaFile>) -> Vec<Value> {
 }
 
 async fn serve_file(path: &FsPath) -> Result<Response, ApiError> {
-    let bytes = tokio::fs::read(path).await.map_err(|_| ApiError::not_found("file not found"))?;
-    let mime = mime_guess::from_path(path).first_or_octet_stream().to_string();
+    let bytes = tokio::fs::read(path)
+        .await
+        .map_err(|_| ApiError::not_found("file not found"))?;
+    let mime = mime_guess::from_path(path)
+        .first_or_octet_stream()
+        .to_string();
     let mut resp = Response::new(Body::from(bytes));
     resp.headers_mut().insert(
         header::CONTENT_TYPE,
@@ -612,10 +699,13 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("easyclean_api_test_{id}"));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let mut cfg = easyclean_core::Config::default();
-        cfg.data_dir = dir.clone();
-        cfg.media_root = dir.join("media");
-        cfg.default_user = "saiz".into();
+        let cfg = easyclean_core::Config {
+            data_dir: dir.clone(),
+            media_root: dir.join("media"),
+            default_user: "saiz".into(),
+            secret: "test-secret".into(),
+            ..easyclean_core::Config::default()
+        };
         let db = db::init(&cfg.db_path()).await.unwrap();
         let hash = core_auth::hash_passcode("pw").unwrap();
         db::upsert_user(&db, "saiz", &hash, "admin").await.unwrap();
@@ -651,7 +741,9 @@ mod tests {
     }
 
     async fn body_json(resp: Response) -> Value {
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         serde_json::from_slice(&bytes).unwrap()
     }
 
@@ -663,17 +755,79 @@ mod tests {
     #[tokio::test]
     async fn health_ok() {
         let r = app(test_state().await)
-            .oneshot(Request::builder().uri("/api/health").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/api/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(r.status(), StatusCode::OK);
+    }
+
+    /// Default policy is same-origin: a page on another origin must not be
+    /// handed `Access-Control-Allow-Origin`, or any site on the LAN could read
+    /// the API with a token it scraped from localStorage.
+    #[tokio::test]
+    async fn cors_is_closed_by_default() {
+        let st = test_state().await;
+        let auth = bearer(&st);
+        let r = app(st)
+            .oneshot(
+                Request::builder()
+                    .uri("/api/stats/summary")
+                    .header("origin", "http://evil.local")
+                    .header("authorization", auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+        assert!(
+            r.headers().get("access-control-allow-origin").is_none(),
+            "no cross-origin read access without EASYCLEAN_CORS_ORIGINS"
+        );
+    }
+
+    /// ...and configuring an origin opens it for exactly that origin.
+    #[tokio::test]
+    async fn cors_allows_configured_origin() {
+        let mut st = test_state().await;
+        let cfg = easyclean_core::Config {
+            cors_origins: vec!["http://dev.local:5173".into()],
+            ..(*st.cfg).clone()
+        };
+        st.cfg = Arc::new(cfg);
+        let auth = bearer(&st);
+        let r = app(st)
+            .oneshot(
+                Request::builder()
+                    .uri("/api/stats/summary")
+                    .header("origin", "http://dev.local:5173")
+                    .header("authorization", auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            r.headers()
+                .get("access-control-allow-origin")
+                .map(|v| v.to_str().unwrap()),
+            Some("http://dev.local:5173")
+        );
     }
 
     #[tokio::test]
     async fn protected_requires_token() {
         let r = app(test_state().await)
             .oneshot(
-                Request::builder().uri("/api/stats/summary").body(Body::empty()).unwrap(),
+                Request::builder()
+                    .uri("/api/stats/summary")
+                    .body(Body::empty())
+                    .unwrap(),
             )
             .await
             .unwrap();
@@ -781,14 +935,27 @@ mod tests {
         post(r#"{"file_id":1,"action":"delete"}"#).await;
         let s = db::stats_summary(&st.db, "saiz").await.unwrap();
         assert_eq!((s.trashed, s.pending), (1, 0));
-        assert_eq!(db::streak_stats(&st.db, "saiz", now_secs()).await.unwrap().total_swipes, 1);
+        assert_eq!(
+            db::streak_stats(&st.db, "saiz", now_secs())
+                .await
+                .unwrap()
+                .total_swipes,
+            1
+        );
 
         let j = body_json(post(r#"{"file_id":1,"action":"undo"}"#).await).await;
         assert_eq!(j["status"], "pending");
         let s = db::stats_summary(&st.db, "saiz").await.unwrap();
-        assert_eq!((s.trashed, s.pending), (0, 1), "undo should return it to the deck");
         assert_eq!(
-            db::streak_stats(&st.db, "saiz", now_secs()).await.unwrap().total_swipes,
+            (s.trashed, s.pending),
+            (0, 1),
+            "undo should return it to the deck"
+        );
+        assert_eq!(
+            db::streak_stats(&st.db, "saiz", now_secs())
+                .await
+                .unwrap()
+                .total_swipes,
             0,
             "undo should not leave a swipe on the streak"
         );
@@ -806,7 +973,9 @@ mod tests {
         // Put a real file in source/ and point the media row at it.
         let src = root.source().join("x.jpg");
         std::fs::write(&src, b"photo").unwrap();
-        db::update_path(&st.db, 1, &src.to_string_lossy(), "source/x.jpg").await.unwrap();
+        db::update_path(&st.db, 1, &src.to_string_lossy(), "source/x.jpg")
+            .await
+            .unwrap();
 
         let a = app(st.clone());
         let post = |uri: &str, body: &'static str| {
@@ -855,7 +1024,9 @@ mod tests {
 
         let src = root.source().join("x.jpg");
         std::fs::write(&src, b"photo").unwrap();
-        db::update_path(&st.db, 1, &src.to_string_lossy(), "source/x.jpg").await.unwrap();
+        db::update_path(&st.db, 1, &src.to_string_lossy(), "source/x.jpg")
+            .await
+            .unwrap();
 
         let a = app(st.clone());
         let post = |uri: &'static str, body: &'static str| {
@@ -894,10 +1065,16 @@ mod tests {
         let mut out = Vec::new();
         let mut stack = vec![dir.to_path_buf()];
         while let Some(d) = stack.pop() {
-            let Ok(entries) = std::fs::read_dir(&d) else { continue };
+            let Ok(entries) = std::fs::read_dir(&d) else {
+                continue;
+            };
             for e in entries.flatten() {
                 let p = e.path();
-                if p.is_dir() { stack.push(p) } else { out.push(p) }
+                if p.is_dir() {
+                    stack.push(p)
+                } else {
+                    out.push(p)
+                }
             }
         }
         out.sort();

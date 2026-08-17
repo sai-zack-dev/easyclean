@@ -1,3 +1,7 @@
+# Local / from-source compose. Builds the image out of this checkout.
+#
+# For a real home-server deployment use deploy/docker-compose.yml instead —
+# it pulls the published GHCR image and is what CI rolls out to /opt/easyclean.
 services:
   easyclean:
     build: .
@@ -13,9 +17,10 @@ services:
       # Auth — CHANGE THESE before exposing on any shared network.
       EASYCLEAN_USER: ${EASYCLEAN_USER:-admin}
       EASYCLEAN_PASSCODE: ${EASYCLEAN_PASSCODE:-easyclean}
-      # JWT signing secret. Generate one: `openssl rand -hex 32`.
-      # Without it the server falls back to a known dev secret (forgeable).
-      EASYCLEAN_SECRET: ${EASYCLEAN_SECRET:?set EASYCLEAN_SECRET in .env (openssl rand -hex 32)}
+      # JWT signing secret. Optional: leave it empty and the server generates
+      # one into /data/secret.key on first boot (persisted across restarts).
+      # Set it explicitly to manage rotation yourself: openssl rand -hex 32
+      EASYCLEAN_SECRET: ${EASYCLEAN_SECRET:-}
       EASYCLEAN_TRASH_RETENTION_DAYS: ${EASYCLEAN_TRASH_RETENTION_DAYS:-30}
       RUST_LOG: ${RUST_LOG:-info}
     ports:

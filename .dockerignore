@@ -9,13 +9,15 @@ data/
 .m1data/
 tmp/
 
-# The old Python prototype and the desktop (Tauri) crate aren't part of the
-# server image.
-backend/
+# The desktop (Tauri) crate isn't part of the headless server image; the
+# Dockerfile drops it from the workspace members list.
 desktop/
 
-# Design reference, not shipped by the server image
-frontend/
+# Docs and the deploy kit: consumed on the host, never inside the image.
+deploy/
+.claude/
+.github/
+*.md
 
 # VCS / editor / OS
 .git/

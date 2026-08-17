@@ -1,3 +1,10 @@
+/*
+ * A registry of icon components, looked up by name (`IC[icon]`) so screens can
+ * take an icon key as a prop. That single named export is what trips
+ * react-refresh's "only export components" rule; the cost is one extra HMR
+ * reload when this file changes, which is worth the callsite ergonomics.
+ */
+/* eslint-disable react-refresh/only-export-components */
 export const IC = {
   broom: () => (
     <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">

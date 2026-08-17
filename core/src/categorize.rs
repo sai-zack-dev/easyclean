@@ -17,8 +17,7 @@ pub mod cat {
 pub fn categories_for(mf: &MediaFile) -> Vec<String> {
     let mut cats: Vec<String> = Vec::new();
 
-    let dt = DateTime::<Utc>::from_timestamp(mf.created_at, 0)
-        .unwrap_or_else(|| DateTime::UNIX_EPOCH.into());
+    let dt = DateTime::<Utc>::from_timestamp(mf.created_at, 0).unwrap_or(DateTime::UNIX_EPOCH);
 
     cats.push(format!("month:{}", dt.format("%Y-%m")));
     cats.push(format!("year:{}", dt.format("%Y")));

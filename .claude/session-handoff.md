@@ -1,113 +1,148 @@
 # EasyClean — Session Handoff
 
-> Rewritten 2026-06-19. The previous version (end of session 1) was badly stale — it claimed M3/M4
-> were not started when both are essentially built. Trust this file + [checklist.md](checklist.md).
-> Full specs: [CLAUDE.md](CLAUDE.md) · [spec.md](spec.md) · [ui.md](ui.md)
+> Rewritten 2026-08-17 (session 3). Trust this file + [checklist.md](checklist.md).
+> Full specs: [CLAUDE.md](CLAUDE.md) · [spec.md](spec.md) · [ui.md](ui.md) · [deploy runbook](../deploy/README.md)
 
 ---
 
-## TL;DR — true state as of 2026-06-19
+## TL;DR — true state as of 2026-08-17
 
-- **M0–M2 (Rust core + axum server):** ✅ done, compiles clean, **verified live this session**.
-- **M3 (React web UI):** ✅ built — every screen in `web/src/`, builds to `web/dist`, served by the
-  Rust server. (Had a build break — fixed this session, see below.)
-- **M4 (Tauri desktop):** ✅ **functionally complete & spawn-path verified** (2026-06-21). `desktop/`
-  builds, launches, and its server-spawn path is proven (see below). Only the manual GUI click-through is
-  unrun — blocked on macOS Accessibility/Screen-Recording grant, not on code.
-- **M5 (Packaging & deploy):** ✅ **artifacts complete** (2026-06-21). Multi-stage `Dockerfile`,
-  single-service `docker-compose.yml` (replaces the old Python one), `.dockerignore`, `.env`/`.env.example`,
-  rewritten `README.md`, `CHANGELOG.md`, `.github/workflows/release.yml`, Tauri `bundle.icon` populated.
-  ⚠️ **Docker image build NOT yet run here** — host disk was ~95% full (~10 GiB free) so Docker Desktop's
-  VM couldn't boot ("no space left on device"). `docker compose config` validates; the server binary the
-  image packages is already proven. To verify: free disk space, then `docker compose up -d --build`.
-  Bundle signing/notarization still needs your Apple/Windows certs (CI hook is in place).
+**MVP (M0–M5) is complete and, for the first time, the Docker path is actually verified.** The app is
+deployable to a Linux home server; the only unfinished MVP items need hardware or certificates, not
+code.
 
-## M4 completion notes (2026-06-21)
+| Area | State |
+|---|---|
+| M0–M2 core + API | ✅ 36 tests green, clippy `-D warnings` clean, fmt clean |
+| M3 web UI | ✅ builds; lint clean; **now an installable PWA** |
+| M4 Tauri desktop | ✅ code complete; GUI click-through still unrun (needs macOS screen-recording grant) |
+| M5 Docker | ✅ **image builds and passes a container smoke test** (was broken before today) |
+| M5.4 CI/CD | ✅ workflows written; ⏳ runner not yet registered on the server |
+| HEIC | ✅ decodes via libheif (Docker); desktop bundles still without |
+| Scale | ✅ benchmarked at 10K synthetic images (see below) |
 
-Three real gaps found & fixed in `desktop/src/main.rs`:
-1. **`EASYCLEAN_WEB_DIST` now passed (absolute).** The server defaults to a *relative* `web/dist`; when
-   the desktop spawns it the CWD isn't the workspace root, so the web UI would 404. Now passes
-   `<workspace>/web/dist`. Verified: spawned the server from `/tmp` → `GET /` serves the UI, JS assets 200.
-2. **Persistent random JWT secret.** Desktop generates 32 random bytes once, stores in `config.json`,
-   passes as `EASYCLEAN_SECRET` (reused across restarts so sessions survive Stop/Start). Was using the
-   server's forgeable hardcoded dev default — a LAN-security hole. Verified: dev-secret warning gone.
-3. **Fail-fast.** `start_server` probes the child after 400ms; returns an error (e.g. "port in use")
-   instead of leaving the UI on "Running" against a dead process.
+## What changed this session
 
-To finish the last 1%: grant Claude Accessibility + Screen Recording (Claude desktop app → permissions),
-then launch `./target/debug/easyclean-desktop`, click Start, and open the LAN URL / scan the QR.
-Note: `cargo tauri build` (bundling) needs `cargo install tauri-cli` and `tauri.conf.json` `bundle.icon`
-populated (currently `[]`, though `desktop/icons/` has the PNGs) — that's M5.2.
+**Blockers**
+1. **Docker image now builds** — verified: `easyclean:test`, 210 MB. It never did before: the Dockerfile
+   wrote a stub `Cargo.toml` that dropped `[workspace.dependencies]`, so cargo died on "error
+   inheriting `serde` from workspace root". It now copies the real manifest and strips only `desktop`
+   from `members`. Container smoke test passed: health, UI + manifest + sw.js + icons served, 401
+   without a token, login → JWT, runs as uid 10001, `/data` writable, `secret.key` created `0600`.
+2. **HEIC decode** via `libheif-rs` behind the `heic` cargo feature, registered as an `image`-crate
+   decoding hook so `image::open` just works. Base image moved bookworm → **trixie** (libheif 1.19 vs
+   1.15; the crate needs ≥ 1.17) and the runtime installs **`libheif-plugin-libde265`** — without that
+   plugin libheif opens an iPhone `.heic` and then fails to decode it.
+   *Verified inside the container* with real HEIF/HEIC files: blur scores computed, valid JPEG
+   thumbnails rendered (checked the actual image), and `test.heic` + `test.heif` correctly grouped as
+   duplicates of each other — so perceptual hashing works across containers too.
+3. **Scale benchmarked** — `core/examples/bench.rs`, numbers below.
 
-## Verified live this session (server + web stack)
+**Security**
+4. **No shared default JWT secret.** `dev-insecure-secret-change-me` is gone. Resolution order, on
+   *every* boot: `EASYCLEAN_SECRET` → `<data_dir>/secret.key` (0600) → freshly generated random key.
+5. **CORS closed by default** — `CorsLayer::permissive()` replaced with same-origin-only; opt in via
+   `EASYCLEAN_CORS_ORIGINS`. Two tests cover both directions.
 
-Ran `./target/debug/easyclean-server` against `/Users/saiz/Downloads/storage` (160 files):
-- binds `0.0.0.0:8080` (LAN-ready) · serves built web UI at `/` (`<title>EasyClean</title>`)
-- `POST /api/auth/login` → JWT · `GET /api/auth/me` → `{role:admin, username}`
-- `POST /api/scan` → indexes 160, blur detection runs, thumbnails written to `data/thumbs/*.jpg`
-- `GET /api/media/batch?mode=blurs` → 35 blurry · `GET /api/media/:id/thumb` → 200 JPEG ·
-  `/raw` → 200 PNG · `/api/stats/summary` → correct counts · `/api/albums` → ok
+**Product**
+6. **PWA**: manifest, icon set (generated by a dependency-free Node script), and a hand-written service
+   worker — offline shell, cache-first hashed assets, capped thumbnail cache, never-cached API state.
+   Thumbnail cache keys strip the `?token=` query, so no JWT lands in Cache Storage.
+7. **EXIF orientation** applied on every decode (`core/src/decode.rs`), so portrait photos stop showing
+   sideways.
+8. **Same-origin API base URL** — the store persisted a hardcoded `http://localhost:8080`, which on a
+   phone is the *phone*. Every LAN device therefore hit the "enter your server address" screen on first
+   open. Now defaults to same-origin (relative `/api/...`), with `Settings → Backend URL` as the
+   override and a zustand `migrate` that clears the stale value. Verified in a real browser: load →
+   Login (no setup detour) → Scan → 24 files indexed → Gallery thumbnails → SW activated, 3 manifest
+   icons, thumbnails cached.
 
-## ⚠️ Gotchas discovered this session (don't relearn these)
+**CI/CD**
+9. `ci.yml` (fmt · clippy · test · web · Docker build + container smoke test) and `deploy.yml`
+   (publish to GHCR → roll out via self-hosted runner → health check → auto-rollback).
+10. `deploy/` kit for `/opt/easyclean`.
 
-1. **Login response field is `access_token`, not `token`.** Shape:
-   `{access_token, token_type:"Bearer", user:{role,username}}`. (Old handoff said `token` — wrong.)
-2. **Default `node` is v18.20.5; Vite 8 needs ≥20.19.** Node 22.22.3 is installed via nvm —
-   run `nvm use 22` before `npm run build`/`npm run dev`, or the build dies with `CustomEvent is not defined`.
-3. **`cargo` not on PATH** until `source ~/.cargo/env` (zsh).
-4. **Fixed this session:** `web/src/screens/LoginScreen.tsx` + `ServerSetup.tsx` used
-   `import { useState, FormEvent }` → broke `tsc` under `verbatimModuleSyntax`. Changed to `import type`.
+**Hygiene**
+11. Deleted `backend/` (Python) and `frontend/` (prototype) — in history at `2763e16`. Added MIT
+    `LICENSE`. Fixed all clippy + eslint findings (including a component declared during render and a
+    swipe-batch race). `npm audit`: 0 vulnerabilities.
 
----
+## Benchmark — 10K images
+
+`cargo run --release -p easyclean-core --example bench -- 10000`
+(320×240 synthetic JPEGs; MacBook Air M2, 8 cores, macOS 26.3.1)
+
+| Stage | Result | ×10 ⇒ 100K |
+|---|---|---|
+| scan (walk + EXIF + insert) | 21.5s · 464/s | ~4 min |
+| detect (decode + blur + dHash + thumbnail) | **60.6s · 165/s** | ~10 min |
+| `batch(timeline\|duplicates\|blurs, 200)` | 2.6 / 4.5 / 10.2 ms | comfortably interactive |
+| `stats/summary` · `stats/timeline` | 7.6 ms · 18.7 ms | " |
+| incremental rescan (nothing new) | 0.1s · 105K/s | ~1s |
+| SQLite size | 7.4 MB | ~74 MB |
+
+**Detection was the finding.** The first run measured 168.8s (59/s) because `run_detection` awaited each
+`spawn_blocking` before starting the next — one core busy, seven idle. It now decodes
+`available_parallelism()` files at a time (`buffer_unordered`), applying results to SQLite as they land:
+**168.8s → 60.6s, 2.8×**, with identical output (424 duplicate groups, 10 000 thumbnails). Covered by
+`detect::tests::detection_processes_every_file_concurrently`.
+
+Two caveats, stated plainly:
+- Read detection throughput as a **ceiling for small files, not a promise for real ones**: synthetic
+  320×240 JPEGs decode far faster than 12 MP phone photos, so a real 100K library will take
+  meaningfully longer than 10 minutes. Scan, query, and rescan numbers are representative.
+- The 2.8× (not 8×) speedup suggests the remaining cost is thumbnail encoding + SQLite writes, not
+  decode. Next lever if it ever matters: batch the `update_analysis` writes into transactions.
+- `group_duplicates` is O(n²) over hashes — fine at 10K (424 groups found instantly), but it is the
+  next thing to break at 100K+. Swap in a BK-tree when that day comes.
+
+## Still open (not code — hardware / accounts)
+
+1. **Register the self-hosted runner** on the home server and do the first live rollout —
+   [deploy/README.md](../deploy/README.md) §2. Nothing else stands between `git push` and production.
+2. **M4 GUI click-through** — grant Claude Accessibility + Screen Recording, launch
+   `target/debug/easyclean-desktop`, Start, scan the QR from a phone.
+3. **Desktop code-signing** — needs your Apple Developer + Windows certs (CI hooks are in place).
+4. **HEIC in desktop bundles** — would need libheif bundled and signed per platform.
+
+## Gotchas (don't relearn these)
+
+1. Login response field is `access_token`, not `token`:
+   `{access_token, token_type:"Bearer", user:{role,username}}`.
+2. **Node 22 required** (`nvm use 22`) — the default v18 dies with `CustomEvent is not defined`.
+3. `cargo` needs `source ~/.cargo/env` in zsh.
+4. Building the amd64 image on an Apple Silicon Mac runs under QEMU and takes ~20 minutes. CI on a
+   native amd64 runner is far faster — prefer letting CI verify Docker changes.
+5. The `heic` feature can't compile on a Mac without `brew install libheif`; it's off by default for
+   exactly that reason. CI and the image both build with it on.
+6. `image` 0.25's default features pull in rav1e (AVIF encode), which is a large slice of the Rust
+   build time. Trimming `default-features` is an easy future win if CI build time becomes annoying.
 
 ## How to run
 
-### Rust server (API + serves built web UI)
 ```bash
+# Server (API + built web UI)
 source ~/.cargo/env
 EASYCLEAN_MEDIA_ROOT=/Users/saiz/Downloads/storage \
 EASYCLEAN_USER=username EASYCLEAN_PASSCODE=easyclean \
 EASYCLEAN_DATA_DIR=./data EASYCLEAN_WEB_DIST=./web/dist \
-cargo run -p easyclean-server          # → http://localhost:8080  (login: username / easyclean)
+cargo run -p easyclean-server                    # → http://localhost:8080
+
+# Web dev (hot reload, proxies /api → :8080)
+nvm use 22 && cd web && npm run dev              # → http://localhost:5173
+
+# Full local stack in Docker
+cp .env.example .env && docker compose up -d --build
+
+# Quality gate (what CI runs)
+cargo fmt --all -- --check
+cargo clippy --workspace --exclude easyclean-desktop --all-targets -- -D warnings
+cargo test --workspace --exclude easyclean-desktop
+cd web && npm run lint && npm run build
 ```
 
-### Web UI dev (hot reload, proxies /api → :8080)
-```bash
-nvm use 22 && cd web && npm run dev     # → http://localhost:5173
-```
+## File structure
 
-### Build web for production (server serves web/dist)
-```bash
-nvm use 22 && cd web && npm run build
-```
-
-### Tauri desktop (not yet verified)
-```bash
-cargo build -p easyclean-server         # desktop spawns this binary from target/<profile>/
-cd desktop && cargo tauri dev           # needs tauri-cli; see desktop/tauri.conf.json (frontendDist: "ui")
-```
-
----
-
-## Recommended next steps (priority order)
-
-1. **M4 GUI click-through** (last 1%) — grant screen permissions, launch `target/debug/easyclean-desktop`,
-   Start, scan the QR from a phone, run login→scan→swipe→finish→albums. Code + spawn path already verified.
-2. **M5.1 Docker** — multi-stage Dockerfile (build Rust + web, runtime with `libheif`+`ffmpeg`,
-   non-root, healthcheck). **Replace** the current `docker-compose.yml` (it still runs the old Python
-   app on :3333) with one that runs `easyclean-server`.
-3. **M5.2 desktop bundle** — `cargo tauri build` (macOS sign/notarize, Windows sign).
-4. **Cleanup** — delete the old `backend/` (Python) and decide the fate of `frontend/index.html`
-   (design reference; the port is done). Add `git init` + README (still no git repo here).
-
-## Known deferred / not-in-MVP-yet
-- HEIC decode (needs `brew install libheif`; none in test set) · EXIF-orientation correction on thumbs
-- `ffmpeg` not installed on this Mac → video thumbnails skip gracefully (the 1 MP4 has no thumb)
-- Benchmark on 10K+ images (validated on 160) · M6 CLIP semantic search (post-MVP)
-
----
-
-## File structure (unchanged from before — see git/tree)
-`core/` (engine lib) · `server/` (axum bin) · `web/` (React/Vite, built → `web/dist`) ·
-`desktop/` (Tauri) · `frontend/index.html` (design reference) · `backend/` (old Python, delete) ·
-`.claude/` (CLAUDE.md, spec.md, ui.md, checklist.md, this file)
+`core/` (engine: scan · decode · thumbs · detect · fileops · db) · `server/` (axum bin) ·
+`web/` (React/Vite PWA → `web/dist`) · `desktop/` (Tauri) · `deploy/` (production kit for
+`/opt/easyclean`) · `.github/workflows/` (ci · deploy · release) · `.claude/` (specs + this file)

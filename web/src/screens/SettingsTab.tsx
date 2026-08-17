@@ -18,6 +18,42 @@ const ACCENTS = ['#ffffff', '#00C7BE', '#30D158', '#FFD60A', '#FF9F0A']
 const BARS = [0.3, 0.5, 0.8, 1.2, 1.8, 2.1, 1.5, 2.4, 2.8, 2.2, 1.9, 2.6, 2.3, 1.7, 1.4, 1.6, 2.0, 2.5, 2.9, 2.7, 2.1, 1.8, 2.4, 2.8, 3.0, 2.3, 1.9, 2.2]
 const BAR_MAX = Math.max(...BARS)
 
+/**
+ * A settings row. Declared at module scope, not inside `SettingsTab`: a
+ * component created during render is a brand-new type on every render, so React
+ * unmounts and remounts it (losing any state inside) each time.
+ */
+function SRow({
+  icon,
+  label,
+  sub,
+  right,
+  onClick,
+}: {
+  icon: keyof typeof IC
+  label: string
+  sub?: string
+  right?: React.ReactNode
+  onClick?: () => void
+}) {
+  const El = IC[icon] ?? IC.settings
+  return (
+    <div className="srow" onClick={onClick}>
+      <div className="srow-left">
+        <div className="srow-icon"><El /></div>
+        <div>
+          <div className="srow-label">{label}</div>
+          {sub && <div className="srow-sub">{sub}</div>}
+        </div>
+      </div>
+      <div className="srow-right">
+        {right}
+        <IC.chevRight />
+      </div>
+    </div>
+  )
+}
+
 export function SettingsTab({ toast }: Props) {
   const { backendUrl, setBackendUrl, user, theme, setTheme, accentIndex, setAccentIndex, logout } = useSession()
   const [url, setUrl] = useState(backendUrl)
@@ -32,37 +68,6 @@ export function SettingsTab({ toast }: Props) {
     const t = url.trim().replace(/\/$/, '')
     setBackendUrl(t)
     toast('Server URL saved!')
-  }
-
-  const SRow = ({
-    icon,
-    label,
-    sub,
-    right,
-    onClick,
-  }: {
-    icon: keyof typeof IC
-    label: string
-    sub?: string
-    right?: React.ReactNode
-    onClick?: () => void
-  }) => {
-    const El = IC[icon] ?? IC.settings
-    return (
-      <div className="srow" onClick={onClick}>
-        <div className="srow-left">
-          <div className="srow-icon"><El /></div>
-          <div>
-            <div className="srow-label">{label}</div>
-            {sub && <div className="srow-sub">{sub}</div>}
-          </div>
-        </div>
-        <div className="srow-right">
-          {right}
-          <IC.chevRight />
-        </div>
-      </div>
-    )
   }
 
   return (
@@ -123,7 +128,9 @@ export function SettingsTab({ toast }: Props) {
               <div className="srow-label">Server URL</div>
             </div>
             <div className="srow-right" style={{ maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {backendUrl || 'localhost'}
+              {/* Empty backendUrl means same-origin — show the host actually
+                  in use, not a misleading "localhost". */}
+              {backendUrl || window.location.origin}
               <IC.chevRight />
             </div>
           </div>
@@ -155,7 +162,7 @@ export function SettingsTab({ toast }: Props) {
             }}
             value={url}
             onChange={(e) => setUrl(e.target.value)}
-            placeholder="http://localhost:8080"
+            placeholder="leave empty to use this server"
           />
           <button className="pill-btn" onClick={saveUrl}>Save</button>
         </div>

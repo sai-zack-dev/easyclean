@@ -30,11 +30,23 @@ export function SwipeScreen({ mode, month, label, onClose, toast }: Props) {
   const [loading, setLoading] = useState(true)
   const [finishing, setFinishing] = useState(false)
 
+  // `cancelled` guards against a slow first batch landing after the user has
+  // already switched mode — the stale response would overwrite the new deck.
   useEffect(() => {
-    setLoading(true)
+    let cancelled = false
     api.mediaBatch({ mode, month, size: 200 })
-      .then((d) => { setFiles(d.files); setLoading(false) })
-      .catch(() => setLoading(false))
+      .then((d) => {
+        if (cancelled) return
+        setFiles(d.files)
+        setIdx(0)
+        setLoading(false)
+      })
+      .catch(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
   }, [mode, month])
 
   const cur = files[idx]

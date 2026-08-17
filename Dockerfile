@@ -2,8 +2,11 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # EasyClean — multi-stage build
 #   1. web    : build the React/Vite frontend → /web/dist
-#   2. rust   : compile the axum server in release mode
-#   3. runtime: slim Debian + ffmpeg (+ libheif), non-root, serves UI + API
+#   2. rust   : compile the axum server in release mode (with HEIC support)
+#   3. runtime: slim Debian + ffmpeg + libheif, non-root, serves UI + API
+#
+# Debian *trixie* (not bookworm) throughout: libheif-rs needs libheif >= 1.17
+# and bookworm only ships 1.15.
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── 1. Web build ─────────────────────────────────────────────────────────────
@@ -16,29 +19,44 @@ COPY web/ ./
 RUN npm run build          # → /web/dist
 
 # ── 2. Rust build ────────────────────────────────────────────────────────────
-FROM rust:1-bookworm AS rust
+FROM rust:1-trixie AS rust
 WORKDIR /src
+
+# libheif-dev + pkg-config: HEIC/HEIF decode (the `heic` cargo feature).
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends libheif-dev pkg-config && \
+    rm -rf /var/lib/apt/lists/*
+
 # Copy the whole workspace except the desktop crate (Tauri pulls in GTK/webkit
-# system libs we don't want in a headless build). We swap in a server-only
-# workspace manifest so cargo doesn't try to build `desktop/`.
-COPY Cargo.lock ./
+# system libs we don't want in a headless build), then drop `desktop` from the
+# members list. We edit the real manifest rather than writing a stub one: the
+# crates inherit `serde`, `tokio`, … from [workspace.dependencies], which a
+# hand-written stub silently loses.
+COPY Cargo.toml Cargo.lock ./
 COPY core/ ./core/
 COPY server/ ./server/
-RUN printf '[workspace]\nresolver = "2"\nmembers = ["core", "server"]\n\n[workspace.package]\nedition = "2021"\nversion = "0.1.0"\nlicense = "MIT"\n' > Cargo.toml
-# libsqlite3-sys vendors SQLite, so no system sqlite needed. Build with a cache
-# mount to speed up rebuilds.
+RUN sed -i 's/,[[:space:]]*"desktop"//' Cargo.toml && \
+    grep -q '^members = \["core", "server"\]$' Cargo.toml
+
+# libsqlite3-sys vendors SQLite, so no system sqlite needed. Cache mounts keep
+# rebuilds fast; the binary is copied out of the cached target dir immediately,
+# because /src/target does not survive the mount.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
-    cargo build --release -p easyclean-server && \
+    cargo build --release -p easyclean-server --features heic && \
     cp /src/target/release/easyclean-server /usr/local/bin/easyclean-server
 
 # ── 3. Runtime ───────────────────────────────────────────────────────────────
-FROM debian:bookworm-slim AS runtime
-# ffmpeg: video first-frame thumbnails + ffprobe dates.
-# libheif1: runtime lib for HEIC/HEIF (forward-looking; decode lands when
-#           libheif-rs is wired). ca-certificates + curl for the healthcheck.
+FROM debian:trixie-slim AS runtime
+# ffmpeg      : video first-frame thumbnails + ffprobe dates
+# libheif1    : HEIC/HEIF container support
+# libheif-plugin-libde265 : the actual HEVC decoder — without it libheif opens
+#               an iPhone .heic and then fails to decode it
+# curl        : HEALTHCHECK
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ffmpeg libheif1 ca-certificates curl && \
+    apt-get install -y --no-install-recommends \
+        ffmpeg libheif1 libheif-plugin-libde265 libheif-plugin-aomdec \
+        ca-certificates curl && \
     rm -rf /var/lib/apt/lists/*
 
 # Non-root user owning the data dir.

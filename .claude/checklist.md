@@ -14,7 +14,11 @@ Rust-only "one core, two shells" (see [CLAUDE.md](CLAUDE.md) / [spec.md](spec.md
 | **M4 LAN + Desktop** | Tauri app: pick folder → serve on LAN | Mac app → pick folder → URL+QR → open from phone |
 | **M5 Packaging** | Docker image + desktop bundles + docs | `docker compose up -d` on clean box; signed builds; README |
 | **M6 CLIP search** | Semantic search (post-MVP) | text→image + similar, adjustable threshold |
-| **M7 Beyond** | Native mobile · remote access (post-MVP) | — |
+| **M7 Native mobile** | Flutter or React Native client (post-MVP) | installs from a store, talks to the same API |
+| **M8 Beyond** | Remote access · multi-tenant (post-MVP) | — |
+
+**MVP delivery = web + PWA only.** Native mobile is deliberately after the web app is proven in daily
+use on the home server (M7).
 
 Cross-cutting quality gates (every milestone): `cargo clippy` + `fmt` clean, unit/integration tests,
 trash-first + path-traversal safety, no blocking ops, works toward 100K+ images.
@@ -28,9 +32,9 @@ trash-first + path-traversal safety, no blocking ops, works toward 100K+ images.
 ### Phase 0.1 — Workspace
 - [x] Cargo workspace: `core/` (lib), `server/` (axum bin) — *`desktop/` Tauri deferred to M4 (needs the web build to embed)*
 - [x] `web/` React + Vite + TS app initialized — *done in M3*
-- [x] Tooling: `rustfmt.toml`, `.gitignore` — *`.editorconfig` + CI deferred*
-- [ ] `git init`; README skeleton; LICENSE — *not yet (M5 for README)*
-- [ ] CI: build + test + clippy + fmt on push — *deferred*
+- [x] Tooling: `rustfmt.toml`, `.gitignore`
+- [x] `git init`; README; LICENSE (MIT) — *done 2026-08-17*
+- [x] CI: build + test + clippy + fmt on push — *`.github/workflows/ci.yml`, done 2026-08-17*
 
 ### Phase 0.2 — Config & logging
 - [x] Settings module (`EASYCLEAN_*` env + defaults): media root, data dir, port, blur/dup thresholds, retention
@@ -46,7 +50,8 @@ trash-first + path-traversal safety, no blocking ops, works toward 100K+ images.
 ### Phase 0.4 — Storage model
 - [x] Per-user three-folder resolver: `source/` · `clean/` · `.trash/`
 - [x] Path-safety util: lexical normalize + assert inside user root, reject `..` (unit-tested)
-- [ ] Document + script system deps: `libheif`, `ffmpeg` — *next, before M1*
+- [x] Document + script system deps: `libheif`, `ffmpeg` — *installed in the image; documented in
+      README + [deploy/README.md](../deploy/README.md); `deploy/install.sh` covers host setup*
 
 ---
 
@@ -59,14 +64,17 @@ trash-first + path-traversal safety, no blocking ops, works toward 100K+ images.
 ### Phase 1.1 — Scanner
 - [x] Recursive walk; filter image + video extensions
 - [x] Metadata: size, mtime; EXIF `DateTimeOriginal` + GPS (`kamadak-exif`)
-- [ ] HEIC/HEIF decode — *deferred: needs `libheif` (not installed; none in test set). `.heic` is indexed, not yet decoded.*
+- [x] HEIC/HEIF decode — *done 2026-08-17 via `libheif-rs` behind the `heic` cargo feature
+      (registers an `image`-crate hook, so `image::open` handles `.heic`). Docker image builds with it
+      + ships `libheif-plugin-libde265` for the HEVC decode. Desktop bundles still build without it.*
 - [x] Upsert into DB; dedupe by path (incremental rescan via `existing_paths`)
 - [x] Async + progress callback
 
 ### Phase 1.2 — Thumbnails
 - [x] Image thumbnails (`image`, JPEG, 480px longest edge)
-- [ ] EXIF-orientation correction — *refinement TODO*
-- [ ] HEIC thumbnails — *with libheif (see 1.1)*
+- [x] EXIF-orientation correction — *done 2026-08-17: `core/src/decode.rs::open_image` applies the
+      EXIF orientation on every decode, so portrait phone photos stop coming out sideways*
+- [x] HEIC thumbnails — *falls out of the decode hook in 1.1*
 - [x] Video first-frame via `ffmpeg` — *implemented; degrades gracefully when ffmpeg absent*
 - [x] Thumbnail cache dir (`<data>/thumbs/<id>.jpg`)
 
@@ -74,6 +82,11 @@ trash-first + path-traversal safety, no blocking ops, works toward 100K+ images.
 - [x] Blur: grayscale → Laplacian variance vs `BLUR_THRESHOLD`; score stored
 - [x] Duplicates: in-house dHash; union-find grouping by Hamming distance ≤ threshold → `group_id`
 - [x] Process only un-hashed rows; async + heavy decode on `spawn_blocking`
+- [x] **Parallel across cores** *(2026-08-17)* — `run_detection` used to await each `spawn_blocking`
+      before starting the next, so 1 core worked and the rest idled. Now `buffer_unordered`
+      (`available_parallelism()` in flight), DB writes applied in completion order: **168.8s → 60.6s
+      for 10K images (2.8×)**, identical output. Test:
+      `detect::tests::detection_processes_every_file_concurrently`
 
 ### Phase 1.4 — File operations
 - [x] Move to `.trash/` — rename + copy/remove cross-device fallback (trash-first)
@@ -81,7 +94,12 @@ trash-first + path-traversal safety, no blocking ops, works toward 100K+ images.
 - [x] Move kept → `clean/<album>/`
 - [x] Purge (permanent delete)
 - [x] Filename collision handling (unit-tested)
-- [ ] Benchmark on ~10K images — *validated on 160; larger benchmark pending*
+- [x] Benchmark on ~10K images — *`cargo run --release -p easyclean-core --example bench -- 10000`
+      generates a synthetic library and times scan · detect · the per-screen queries · incremental
+      rescan. 10K: scan 464/s, detect 165/s, queries 2.6–18.7 ms, rescan 105K/s, DB 7.4 MB. Full
+      numbers + caveats in [session-handoff.md](session-handoff.md).*
+- [ ] Benchmark on real 12 MP photos — *synthetic 320×240 images understate decode cost; the honest
+      100K figure needs a real library. Known next lever: O(n²) `group_duplicates` → BK-tree.*
 
 ---
 
@@ -131,6 +149,11 @@ Dev: `cd web && npm run dev` (Vite proxies `/api/*` → `:8080`).
 
 ### Phase 3.1 — App shell & infra
 - [x] Vite + TS + Tailwind CSS (`@tailwindcss/vite`); PWA-ready HTML meta tags
+- [x] **Installable PWA** *(done 2026-08-17)* — `manifest.webmanifest`, icon set (192/512/maskable/
+      apple-touch, generated by `web/scripts/generate-icons.mjs`, no image deps), and a hand-written
+      `sw.js`: network-first navigations with an offline shell, cache-first hashed assets, cached
+      thumbnails (capped at 600), and never-cached API state. Registered only in prod + secure
+      contexts — over plain-HTTP LAN it runs but isn't installable (needs HTTPS via a tunnel)
 - [x] Design tokens (Dark / Light / System + accent); `data-theme` on `<html>`; persisted via Zustand
 - [x] Zustand store (token, server URL, user, theme, accentIndex) — persisted to localStorage
 - [x] Typed API client + 401 auto-logout; Bearer token injection
@@ -169,6 +192,11 @@ Dev: `cd web && npm run dev` (Vite proxies `/api/*` → `:8080`).
 
 ### Rust server wiring
 - [x] `tower-http ServeDir` fallback on `web/dist` (override via `EASYCLEAN_WEB_DIST`)
+- [x] **API base URL defaults to same-origin** *(fixed 2026-08-17)* — the client used to persist a
+      hardcoded `http://localhost:8080`, which on a phone points at the *phone*, so the first screen
+      from a LAN device was always "enter your server address". Verified in a browser: load → Login →
+      scan → thumbnails, with no setup detour. `Settings → Backend URL` remains the override for a
+      split dev setup; a zustand `migrate` clears the stale localhost value from existing clients
 
 ---
 
@@ -197,12 +225,23 @@ Dev: `cd web && npm run dev` (Vite proxies `/api/*` → `:8080`).
 
 ## M5 — Packaging & deploy
 
-### Phase 5.1 — Docker ✅
-- [x] Multi-stage `Dockerfile` (Node web build → Rust release → slim Debian runtime w/ `ffmpeg` + `libheif1`)
-      — server-only workspace manifest swapped in so `desktop/` (GTK/webkit) isn't built; `.dockerignore` added
-- [x] `docker-compose.yml` — media volume **rw** (app moves files), `./data` volume, `${PORT}`, env;
-      requires `EASYCLEAN_SECRET`. `.env` + `.env.example` updated (old Python compose replaced)
+### Phase 5.1 — Docker ✅ *(image actually built + smoke-tested 2026-08-17)*
+- [x] Multi-stage `Dockerfile` (Node web build → Rust release → slim Debian runtime)
+- [x] **Base moved bookworm → trixie** — `libheif-rs` needs libheif ≥ 1.17 and bookworm ships 1.15.
+      Runtime installs `ffmpeg`, `libheif1`, `libheif-plugin-libde265` (the actual HEVC decoder — without
+      the plugin libheif opens an iPhone `.heic` and then fails to decode it) + `libheif-plugin-aomdec`
+- [x] **Fixed: the build never worked.** The stub workspace manifest the Dockerfile wrote dropped
+      `[workspace.dependencies]`, so cargo failed with "error inheriting `serde` from workspace root".
+      Now it copies the real `Cargo.toml` and only strips `desktop` from `members`
+- [x] Server compiled with `--features heic`
+- [x] `docker-compose.yml` — media volume **rw**, `./data` volume, `${PORT}`, env; `EASYCLEAN_SECRET`
+      now optional (server generates + persists one)
 - [x] `HEALTHCHECK` curl `/api/health`; runs as non-root (`easyclean`, uid 10001)
+- [x] **Verified live 2026-08-17** — image built (210 MB) and smoke-tested: health · UI · manifest ·
+      `sw.js` · icons · 401 without a token · login → JWT · uid 10001 · `/data` writable ·
+      `secret.key` created `0600` · ffmpeg 7.1.5 present · both libheif decoder plugins present ·
+      real `.heic`/`.heif` files scanned → blur scores + valid JPEG thumbnails + cross-container
+      duplicate grouping
 
 ### Phase 5.2 — Desktop bundles  *(config + CI ready; signing needs the user's certs)*
 - [x] `tauri.conf.json` `bundle.icon` populated; `bundle.targets: all`; build steps in README
@@ -214,6 +253,21 @@ Dev: `cd web && npm run dev` (Vite proxies `/api/*` → `:8080`).
 - [x] README rewritten: Docker `compose up -d` + desktop build, LAN access, **security notes**
 - [x] `CHANGELOG.md` (Keep a Changelog) + `.github/workflows/release.yml` (tag `v*` → GHCR image + bundles)
 
+### Phase 5.4 — CI/CD to the home server ✅ *(2026-08-17)*
+- [x] `ci.yml` — on every push/PR: `cargo fmt --check`, `clippy -D warnings`, tests (all with
+      `--features heic`), web lint + typecheck + build, PWA-asset check, **Docker build + container
+      smoke test** (health, UI, manifest, 401-without-token, login→token, HEIC-enabled log line)
+- [x] `deploy.yml` — green CI on `main` → build & push `ghcr.io/<owner>/easyclean:sha-<commit>` +
+      `:latest` → roll out on a **self-hosted runner on the home server** (`runs-on:
+      [self-hosted, linux, x64, easyclean]`): `docker compose up -d`, wait for health,
+      **auto-rollback to the previous tag** if it never goes healthy. `environment: production` so a
+      manual approval gate can be switched on
+- [x] `deploy/` production kit — `docker-compose.yml` (pulls GHCR, tag pinned in `.env`),
+      `.env.example`, `install.sh` (creates `/opt/easyclean`, chowns to uid 10001, first boot),
+      `README.md` (runner setup, rollback, backup, security, troubleshooting)
+- [ ] Register the runner on the home server + first live rollout — *needs the server; see
+      [deploy/README.md](../deploy/README.md) §2*
+
 ---
 
 ## M6 — CLIP semantic search (post-MVP)
@@ -222,7 +276,33 @@ Dev: `cd web && npm run dev` (Vite proxies `/api/*` → `:8080`).
 - [ ] `GET /api/search?q=` (text→image) + visually-similar; adjustable threshold
 - [ ] Gallery search UI wired to it
 
-## M7 — Beyond (post-MVP)
-- [ ] Native mobile client
+## M7 — Native mobile app (post-MVP)
+
+Only after the web/PWA MVP has run in daily use on the home server. The API and design system are
+already the contract, so this is a client, not a rewrite — no server work should be needed beyond
+what's listed here.
+
+### Phase 7.1 — Decide the stack
+- [ ] **Flutter vs React Native** — weigh: RN reuses the existing TS API client, component logic, and
+      the team's React knowledge; Flutter gives smoother 60fps swipe physics and one codebase for
+      tablets. Decide before any code.
+- [ ] Spike the swipe deck in the chosen stack — it's the screen that decides how the app *feels*.
+
+### Phase 7.2 — Client parity
+- [ ] Server discovery: manual URL + QR scan (the desktop app already shows one) + mDNS if available
+- [ ] Login → JWT stored in the platform keychain (not plain preferences)
+- [ ] The 5 screens against the same API; design tokens ported from [ui.md](ui.md)
+- [ ] Native-only wins: hardware back/gestures, haptics on swipe, share sheet
+
+### Phase 7.3 — Beyond-the-browser features
+- [ ] Offline queue: swipe without the server reachable, sync on reconnect
+- [ ] Background thumbnail prefetch + on-device cache
+- [ ] Optional: import from the phone's own camera roll into `source/`
+
+### Phase 7.4 — Ship
+- [ ] App Store / Play Store accounts, signing, privacy labels ("no data leaves your LAN")
+- [ ] CI: build both platforms on tag; TestFlight / internal track
+
+## M8 — Beyond (post-MVP)
 - [ ] Remote access (Tailscale / Cloudflare Tunnel, auto-HTTPS)
 - [ ] Cloud upload; multi-tenant hardening

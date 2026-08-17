@@ -11,9 +11,23 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 sqlx = { workspace = true }
-image = "0.25"
+image = "0.25.10"
 walkdir = "2"
 kamadak-exif = "0.5"
 chrono = "0.4"
 bcrypt = "0.15"
 jsonwebtoken = "9"
+getrandom = "0.3"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+# HEIC/HEIF decode. Off by default: it links the system `libheif` (>= 1.17),
+# which not every dev box has. The Docker image builds with it enabled.
+# `v1_17` (not the default `latest`) keeps us compatible with the libheif that
+# Debian ships (1.19.x) instead of requiring 1.21.
+libheif-rs = { version = "2.7", optional = true, default-features = false, features = [
+    "v1_17",
+    "image",
+] }
+
+[features]
+default = []
+heic = ["dep:libheif-rs"]

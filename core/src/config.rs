@@ -1,5 +1,22 @@
 use std::path::PathBuf;
 
+use crate::error::{Error, Result};
+
+/// Filename of the generated JWT secret inside the data dir.
+const SECRET_FILE: &str = "secret.key";
+
+/// Where the JWT signing secret came from. Surfaced at startup so an operator
+/// can tell a configured secret from a generated one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecretOrigin {
+    /// Supplied via `EASYCLEAN_SECRET`.
+    Env,
+    /// Read from `<data_dir>/secret.key` (generated on an earlier run).
+    Loaded,
+    /// Freshly generated and persisted to `<data_dir>/secret.key`.
+    Generated,
+}
+
 /// A user to seed into the DB on first run.
 #[derive(Debug, Clone)]
 pub struct UserSeed {
@@ -26,10 +43,14 @@ pub struct Config {
     pub trash_retention_days: u32,
     /// User served by single-user dev runs / the default seed.
     pub default_user: String,
-    /// JWT signing secret.
+    /// JWT signing secret. Empty until [`Config::resolve_secret`] runs — there
+    /// is deliberately no shared fallback constant (it would be forgeable).
     pub secret: String,
     /// JWT validity in days.
     pub jwt_expire_days: i64,
+    /// Extra browser origins allowed to call the API. Empty ⇒ same-origin only
+    /// (the UI is served by this server, so that is the norm). `*` ⇒ any origin.
+    pub cors_origins: Vec<String>,
     /// Users seeded into the DB when it's empty.
     pub users: Vec<UserSeed>,
 }
@@ -44,8 +65,9 @@ impl Default for Config {
             duplicate_distance_threshold: 10,
             trash_retention_days: 30,
             default_user: "default".into(),
-            secret: "dev-insecure-secret-change-me".into(),
+            secret: String::new(),
             jwt_expire_days: 7,
+            cors_origins: Vec::new(),
             users: vec![UserSeed {
                 username: "default".into(),
                 passcode: "easyclean".into(),
@@ -72,9 +94,15 @@ impl Config {
         };
 
         Config {
-            media_root: var("EASYCLEAN_MEDIA_ROOT").map(PathBuf::from).unwrap_or(d.media_root),
-            data_dir: var("EASYCLEAN_DATA_DIR").map(PathBuf::from).unwrap_or(d.data_dir),
-            port: var("EASYCLEAN_PORT").and_then(|v| v.parse().ok()).unwrap_or(d.port),
+            media_root: var("EASYCLEAN_MEDIA_ROOT")
+                .map(PathBuf::from)
+                .unwrap_or(d.media_root),
+            data_dir: var("EASYCLEAN_DATA_DIR")
+                .map(PathBuf::from)
+                .unwrap_or(d.data_dir),
+            port: var("EASYCLEAN_PORT")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(d.port),
             blur_threshold: var("EASYCLEAN_BLUR_THRESHOLD")
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(d.blur_threshold),
@@ -89,6 +117,9 @@ impl Config {
             jwt_expire_days: var("EASYCLEAN_JWT_EXPIRE_DAYS")
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(d.jwt_expire_days),
+            cors_origins: var("EASYCLEAN_CORS_ORIGINS")
+                .map(|v| parse_origins(&v))
+                .unwrap_or(d.cors_origins),
             users,
         }
     }
@@ -97,6 +128,80 @@ impl Config {
     pub fn db_path(&self) -> PathBuf {
         self.data_dir.join("easyclean.db")
     }
+
+    /// Path of the persisted generated secret.
+    pub fn secret_path(&self) -> PathBuf {
+        self.data_dir.join(SECRET_FILE)
+    }
+
+    /// Make sure `self.secret` holds a real signing key.
+    ///
+    /// Order: `EASYCLEAN_SECRET` (already loaded by [`Config::from_env`]) →
+    /// `<data_dir>/secret.key` from a previous run → a fresh 32-byte random key
+    /// persisted with `0600`. Anyone's photo library sits behind these tokens,
+    /// so there is no shared default to fall back to.
+    pub fn resolve_secret(&mut self) -> Result<SecretOrigin> {
+        if !self.secret.trim().is_empty() {
+            return Ok(SecretOrigin::Env);
+        }
+
+        let path = self.secret_path();
+        if let Ok(existing) = std::fs::read_to_string(&path) {
+            let existing = existing.trim().to_string();
+            if !existing.is_empty() {
+                self.secret = existing;
+                return Ok(SecretOrigin::Loaded);
+            }
+        }
+
+        std::fs::create_dir_all(&self.data_dir)?;
+        let secret = random_hex_32()?;
+        write_secret(&path, &secret)?;
+        self.secret = secret;
+        Ok(SecretOrigin::Generated)
+    }
+}
+
+/// 32 random bytes, hex-encoded (64 chars).
+fn random_hex_32() -> Result<String> {
+    let mut buf = [0u8; 32];
+    getrandom::fill(&mut buf).map_err(|e| Error::Auth(format!("no system randomness: {e}")))?;
+    Ok(buf.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// Write the signing key owner-readable only.
+///
+/// Created with `0600` rather than written and then chmod'ed: the gap between
+/// the two would leave the key briefly world-readable under a permissive umask.
+#[cfg(unix)]
+fn write_secret(path: &std::path::Path, secret: &str) -> Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+    f.write_all(secret.as_bytes())?;
+    // `mode` only applies when the file is created, so tighten an existing one.
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn write_secret(path: &std::path::Path, secret: &str) -> Result<()> {
+    std::fs::write(path, secret)?;
+    Ok(())
+}
+
+/// Parse a comma-separated origin list. `*` anywhere ⇒ allow any origin.
+fn parse_origins(spec: &str) -> Vec<String> {
+    spec.split(',')
+        .map(|s| s.trim().trim_end_matches('/').to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
 }
 
 /// Parse `user:pass[:role],user2:pass2` into seeds.
@@ -131,6 +236,55 @@ mod tests {
         assert_eq!(c.port, 8080);
         assert_eq!(c.trash_retention_days, 30);
         assert_eq!(c.db_path(), PathBuf::from("./data/easyclean.db"));
+    }
+
+    #[test]
+    fn secret_is_generated_then_reused() {
+        let dir = std::env::temp_dir().join(format!("ec-secret-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let mut a = Config {
+            data_dir: dir.clone(),
+            ..Config::default()
+        };
+        assert_eq!(a.resolve_secret().unwrap(), SecretOrigin::Generated);
+        assert_eq!(a.secret.len(), 64, "32 random bytes, hex-encoded");
+
+        // A second boot must reuse it, or every restart invalidates sessions.
+        let mut b = Config {
+            data_dir: dir.clone(),
+            ..Config::default()
+        };
+        assert_eq!(b.resolve_secret().unwrap(), SecretOrigin::Loaded);
+        assert_eq!(a.secret, b.secret);
+
+        // An explicit secret always wins.
+        let mut c = Config {
+            data_dir: dir.clone(),
+            secret: "from-env".into(),
+            ..Config::default()
+        };
+        assert_eq!(c.resolve_secret().unwrap(), SecretOrigin::Env);
+        assert_eq!(c.secret, "from-env");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn no_shared_default_secret() {
+        assert!(Config::default().secret.is_empty());
+    }
+
+    #[test]
+    fn parses_origin_lists() {
+        assert_eq!(
+            parse_origins("http://a.local:5173/, http://b.local"),
+            vec![
+                "http://a.local:5173".to_string(),
+                "http://b.local".to_string()
+            ]
+        );
+        assert!(parse_origins(" , ").is_empty());
     }
 
     #[test]

@@ -60,8 +60,15 @@ fn workspace_root() -> PathBuf {
 
 /// Path to the easyclean-server binary relative to the workspace root.
 fn server_bin() -> PathBuf {
-    let profile = if cfg!(debug_assertions) { "debug" } else { "release" };
-    workspace_root().join("target").join(profile).join("easyclean-server")
+    let profile = if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    };
+    workspace_root()
+        .join("target")
+        .join(profile)
+        .join("easyclean-server")
 }
 
 /// Absolute path to the built web UI the spawned server should serve.
@@ -122,11 +129,9 @@ fn qr_svg(url: &str) -> String {
 async fn pick_folder(app: tauri::AppHandle) -> Option<String> {
     use tauri_plugin_dialog::DialogExt;
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
-    app.dialog()
-        .file()
-        .pick_folder(move |result| {
-            let _ = tx.send(result);
-        });
+    app.dialog().file().pick_folder(move |result| {
+        let _ = tx.send(result);
+    });
     tauri::async_runtime::spawn_blocking(move || rx.recv().ok().flatten())
         .await
         .ok()
@@ -147,8 +152,11 @@ fn load_config(app: tauri::AppHandle) -> AppConfig {
 fn write_config(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), String> {
     let path = config_file(app);
     std::fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
-    std::fs::write(&path, serde_json::to_string_pretty(config).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())
+    std::fs::write(
+        &path,
+        serde_json::to_string_pretty(config).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())
 }
 
 /// Phase 4.5 — Persist config to app data dir.

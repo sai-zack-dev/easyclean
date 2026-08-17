@@ -1,0 +1,138 @@
+name: deploy
+
+# CD: green CI on main → publish the image to GHCR → roll it out on the home
+# server via a self-hosted runner installed there. Nothing needs to reach the
+# server from the internet; the runner dials out.
+#
+# One-time setup on the server: see deploy/README.md.
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Image tag to deploy — defaults to the latest build from main"
+        required: false
+        default: latest
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  # Skip everything when the CI run that triggered us failed.
+  publish:
+    name: publish image → GHCR
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # For workflow_run, check out the exact commit CI validated.
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
+
+      - name: Compute image tag
+        id: tag
+        env:
+          MANUAL_TAG: ${{ inputs.tag }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          if [ -n "${MANUAL_TAG}" ] && [ "${MANUAL_TAG}" != "latest" ]; then
+            echo "tag=${MANUAL_TAG}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=sha-${HEAD_SHA:-$GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ steps.tag.outputs.tag }}
+            ghcr.io/${{ github.repository }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  rollout:
+    name: roll out on the home server
+    needs: publish
+    # Label the runner `easyclean` when registering it, so this only ever lands
+    # on the box that actually holds the photos.
+    runs-on: [self-hosted, linux, x64, easyclean]
+    environment: production
+    steps:
+      - name: Deploy
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}
+          TAG: ${{ needs.publish.outputs.tag }}
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEPLOY_DIR: /opt/easyclean
+        run: |
+          set -euo pipefail
+          cd "$DEPLOY_DIR"
+
+          echo "$REGISTRY_TOKEN" | docker login ghcr.io -u "$REGISTRY_USER" --password-stdin
+
+          # Remember what is running so a bad image can be backed out.
+          PREV_TAG="$(grep -E '^EASYCLEAN_IMAGE_TAG=' .env | cut -d= -f2- || true)"
+          echo "current: ${PREV_TAG:-<none>}  →  new: $TAG"
+
+          docker pull "$IMAGE:$TAG"
+
+          # .env is the single source of truth for which tag runs here.
+          if grep -qE '^EASYCLEAN_IMAGE_TAG=' .env; then
+            sed -i "s|^EASYCLEAN_IMAGE_TAG=.*|EASYCLEAN_IMAGE_TAG=$TAG|" .env
+          else
+            echo "EASYCLEAN_IMAGE_TAG=$TAG" >> .env
+          fi
+
+          docker compose up -d
+
+          # Health-check the port this host actually publishes, not a guess.
+          APP_PORT="$(grep -E '^PORT=' .env | cut -d= -f2- || true)"
+          APP_PORT="${APP_PORT:-8080}"
+
+          echo "waiting for health on :$APP_PORT ..."
+          for i in $(seq 1 60); do
+            if curl -fsS "http://localhost:$APP_PORT/api/health" >/dev/null 2>&1; then
+              echo "healthy after ${i}s"
+              docker image prune -f >/dev/null 2>&1 || true
+              exit 0
+            fi
+            sleep 1
+          done
+
+          echo "::error::new image never became healthy — rolling back"
+          docker compose logs --tail=100 easyclean || true
+          if [ -n "$PREV_TAG" ]; then
+            sed -i "s|^EASYCLEAN_IMAGE_TAG=.*|EASYCLEAN_IMAGE_TAG=$PREV_TAG|" .env
+            docker compose up -d
+            echo "rolled back to $PREV_TAG"
+          fi
+          exit 1
+
+      - name: Report running version
+        if: success()
+        working-directory: /opt/easyclean
+        run: docker compose ps --format '{{.Name}}\t{{.Image}}\t{{.Status}}'

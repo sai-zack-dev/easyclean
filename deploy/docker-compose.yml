@@ -1,0 +1,49 @@
+# EasyClean — production compose for a Linux home server.
+#
+# Lives at /opt/easyclean/docker-compose.yml. Unlike the compose file at the
+# repo root (which builds from source), this one pulls a prebuilt image from
+# GHCR — CI publishes it and the deploy workflow flips EASYCLEAN_IMAGE_TAG here.
+#
+# Install:  see deploy/README.md
+services:
+  easyclean:
+    image: ghcr.io/${GITHUB_REPOSITORY:-sai-zack-dev/easyclean}:${EASYCLEAN_IMAGE_TAG:-latest}
+    container_name: easyclean
+    restart: unless-stopped
+
+    # Runs as uid 10001 inside the image; the host dirs must be owned by it.
+    volumes:
+      # Media is read-WRITE on purpose — EasyClean moves files between
+      # source/ clean/ .trash/. Mounting it ":ro" breaks the whole app.
+      - ${MEDIA_ROOT:?set MEDIA_ROOT in .env}:/media
+      # SQLite index, thumbnail cache, and the generated JWT secret. Losing
+      # this volume means a rescan and logged-out sessions, not lost photos.
+      - ${DATA_DIR:-/opt/easyclean/data}:/data
+
+    environment:
+      EASYCLEAN_USER: ${EASYCLEAN_USER:-admin}
+      EASYCLEAN_PASSCODE: ${EASYCLEAN_PASSCODE:?set EASYCLEAN_PASSCODE in .env}
+      # Optional: omit and the server generates + persists /data/secret.key.
+      EASYCLEAN_SECRET: ${EASYCLEAN_SECRET:-}
+      EASYCLEAN_TRASH_RETENTION_DAYS: ${EASYCLEAN_TRASH_RETENTION_DAYS:-30}
+      EASYCLEAN_BLUR_THRESHOLD: ${EASYCLEAN_BLUR_THRESHOLD:-100}
+      EASYCLEAN_DUPLICATE_DISTANCE_THRESHOLD: ${EASYCLEAN_DUPLICATE_DISTANCE_THRESHOLD:-10}
+      RUST_LOG: ${RUST_LOG:-info}
+
+    # Bind to the LAN interface only by default. EasyClean speaks plain HTTP;
+    # it must never be published straight to the internet (see README security).
+    ports:
+      - "${BIND_ADDRESS:-0.0.0.0}:${PORT:-8080}:8080"
+
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/api/health"]
+      interval: 30s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

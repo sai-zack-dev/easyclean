@@ -32,7 +32,16 @@ pub fn ensure_video_thumb(src: &str, out: &Path) -> Result<bool> {
         None => return Ok(false),
     };
     let status = Command::new("ffmpeg")
-        .args(["-y", "-i", src, "-frames:v", "1", "-vf", "scale=480:-1", out_str])
+        .args([
+            "-y",
+            "-i",
+            src,
+            "-frames:v",
+            "1",
+            "-vf",
+            "scale=480:-1",
+            out_str,
+        ])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();

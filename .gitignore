@@ -14,6 +14,8 @@ web/dist
 # Secrets — .env holds EASYCLEAN_SECRET and the passcode. Commit .env.example.
 .env
 *.db
+# Generated JWT signing key (server writes it into the data dir).
+secret.key
 
 # Tauri generated schemas
 desktop/gen/schemas

@@ -241,7 +241,9 @@ pub async fn toggle_favorite(pool: &Db, user: &str, id: i64) -> Result<bool> {
 
 /// Number of users in the DB.
 pub async fn count_users(pool: &Db) -> Result<i64> {
-    let (n,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM user").fetch_one(pool).await?;
+    let (n,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM user")
+        .fetch_one(pool)
+        .await?;
     Ok(n)
 }
 
@@ -324,8 +326,18 @@ pub async fn timeline_months(pool: &Db, user: &str) -> Result<Vec<TimelineMonth>
 /// `"2026-08"` → `"August 2026"`. Falls back to the raw key if unparseable.
 fn month_label(sort_key: &str) -> String {
     const NAMES: [&str; 12] = [
-        "January", "February", "March", "April", "May", "June", "July", "August", "September",
-        "October", "November", "December",
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
     ];
     match sort_key.split_once('-') {
         Some((year, mon)) => match mon.parse::<usize>() {
@@ -340,12 +352,11 @@ fn month_label(sort_key: &str) -> String {
 
 /// All albums for a user, newest first.
 pub async fn list_albums(pool: &Db, user: &str) -> Result<Vec<Album>> {
-    let rows = sqlx::query_as::<_, Album>(
-        "SELECT * FROM album WHERE user = ? ORDER BY created_at DESC",
-    )
-    .bind(user)
-    .fetch_all(pool)
-    .await?;
+    let rows =
+        sqlx::query_as::<_, Album>("SELECT * FROM album WHERE user = ? ORDER BY created_at DESC")
+            .bind(user)
+            .fetch_all(pool)
+            .await?;
     Ok(rows)
 }
 
@@ -407,13 +418,11 @@ pub async fn get_or_create_album(
 
 /// Add a file to an album (ignored if already present).
 pub async fn add_to_album(pool: &Db, album_id: i64, file_id: i64) -> Result<()> {
-    sqlx::query(
-        "INSERT OR IGNORE INTO album_file (album_id, file_id) VALUES (?, ?)",
-    )
-    .bind(album_id)
-    .bind(file_id)
-    .execute(pool)
-    .await?;
+    sqlx::query("INSERT OR IGNORE INTO album_file (album_id, file_id) VALUES (?, ?)")
+        .bind(album_id)
+        .bind(file_id)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
@@ -511,11 +520,10 @@ pub async fn streak_stats(
         }
     }
 
-    let total: (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM swipe_log WHERE user = ?")
-            .bind(user)
-            .fetch_one(pool)
-            .await?;
+    let total: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM swipe_log WHERE user = ?")
+        .bind(user)
+        .fetch_one(pool)
+        .await?;
 
     Ok(crate::models::StreakStats {
         current_streak: streak,
@@ -536,11 +544,7 @@ pub async fn users_with_trash(pool: &Db) -> Result<Vec<String>> {
 }
 
 /// All trashed files older than `older_than_secs` for a user.
-pub async fn expired_trash(
-    pool: &Db,
-    user: &str,
-    older_than_secs: i64,
-) -> Result<Vec<MediaFile>> {
+pub async fn expired_trash(pool: &Db, user: &str, older_than_secs: i64) -> Result<Vec<MediaFile>> {
     let cutoff = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -559,8 +563,14 @@ pub async fn expired_trash(
 
 /// Delete a media_file row (hard delete; caller is responsible for the file on disk).
 pub async fn delete_media_row(pool: &Db, id: i64) -> Result<()> {
-    sqlx::query("DELETE FROM album_file WHERE file_id = ?").bind(id).execute(pool).await?;
-    sqlx::query("DELETE FROM media_file WHERE id = ?").bind(id).execute(pool).await?;
+    sqlx::query("DELETE FROM album_file WHERE file_id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    sqlx::query("DELETE FROM media_file WHERE id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
