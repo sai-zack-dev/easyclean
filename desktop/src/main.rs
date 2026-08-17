@@ -309,6 +309,16 @@ fn main() {
             child: None,
             url: None,
         })))
+        .setup(|app| {
+            // Dev only: pop the web inspector so JS errors in the control panel
+            // are visible instead of failing silently.
+            #[cfg(debug_assertions)]
+            if let Some(w) = app.get_webview_window("main") {
+                w.open_devtools();
+            }
+            let _ = app;
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             pick_folder,
             load_config,
