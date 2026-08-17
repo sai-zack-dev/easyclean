@@ -269,7 +269,7 @@
       <div class="card">
         <div class="card-row">
           <span id="folderText" class="folder-text">No folder selected…</span>
-          <button class="btn btn-browse" onclick="pickFolder()">Browse</button>
+          <button id="browseBtn" class="btn btn-browse">Browse</button>
         </div>
       </div>
     </div>
@@ -299,7 +299,7 @@
         <div id="dot" class="dot off"></div>
         <span id="statusText" class="status-text">Stopped</span>
       </div>
-      <button id="toggleBtn" class="btn btn-pill btn-start" onclick="toggleServer()">Start</button>
+      <button id="toggleBtn" class="btn btn-pill btn-start">Start</button>
     </div>
 
     <!-- Error banner -->
@@ -309,10 +309,10 @@
     <div id="urlCard" class="url-card">
       <div class="url-line">
         <span id="urlText" class="url-text"></span>
-        <button class="btn btn-copy" onclick="copyUrl()">Copy</button>
+        <button id="copyBtn" class="btn btn-copy">Copy</button>
       </div>
       <div class="qr-wrap" id="qrWrap"></div>
-      <button class="btn btn-open" onclick="openBrowser()">Open in Browser ↗</button>
+      <button id="openBtn" class="btn btn-open">Open in Browser ↗</button>
     </div>
 
     <!-- Credentials note -->
@@ -325,7 +325,24 @@
   <div class="toast" id="toast"></div>
 
   <script>
-    const { invoke } = window.__TAURI__.core;
+    // Surface *any* failure in the banner. Without these, a rejected invoke or a
+    // missing __TAURI__ global fails silently and the buttons just look dead.
+    window.addEventListener('error', (e) => {
+      try { showError('JS error: ' + (e.message || e.error)); } catch {}
+      console.error('[easyclean] error', e.error || e.message);
+    });
+    window.addEventListener('unhandledrejection', (e) => {
+      const r = e.reason;
+      try { showError('IPC failed: ' + (typeof r === 'string' ? r : (r && r.message) || JSON.stringify(r))); } catch {}
+      console.error('[easyclean] unhandled rejection', r);
+    });
+
+    const invoke = window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke;
+    if (!invoke) {
+      console.error('[easyclean] window.__TAURI__ is unavailable', Object.keys(window));
+      window.addEventListener('DOMContentLoaded', () =>
+        showError('Tauri IPC unavailable — window.__TAURI__ is not injected.'));
+    }
 
     let currentUrl = null;
     let config = { media_root: '', port: 8080, username: 'admin', passcode: 'easyclean' };
@@ -508,6 +525,16 @@
         await saveConfig();
       });
     });
+
+    // ── Button wiring ─────────────────────────────────────────────────────────
+    // These MUST be addEventListener, not inline onclick= attributes. Tauri
+    // injects a nonce into the CSP in tauri.conf.json, and per the CSP spec a
+    // nonce makes 'unsafe-inline' be ignored — so inline handlers are silently
+    // refused by the webview and every button appears dead.
+    document.getElementById('browseBtn').addEventListener('click', pickFolder);
+    document.getElementById('toggleBtn').addEventListener('click', toggleServer);
+    document.getElementById('copyBtn').addEventListener('click', copyUrl);
+    document.getElementById('openBtn').addEventListener('click', openBrowser);
 
     // ── Boot ──────────────────────────────────────────────────────────────────
 
