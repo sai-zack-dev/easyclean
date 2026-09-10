@@ -27,16 +27,10 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends libheif-dev pkg-config && \
     rm -rf /var/lib/apt/lists/*
 
-# Copy the whole workspace except the desktop crate (Tauri pulls in GTK/webkit
-# system libs we don't want in a headless build), then drop `desktop` from the
-# members list. We edit the real manifest rather than writing a stub one: the
-# crates inherit `serde`, `tokio`, … from [workspace.dependencies], which a
-# hand-written stub silently loses.
+# The workspace is just core + server, so it copies in as-is.
 COPY Cargo.toml Cargo.lock ./
 COPY core/ ./core/
 COPY server/ ./server/
-RUN sed -i 's/,[[:space:]]*"desktop"//' Cargo.toml && \
-    grep -q '^members = \["core", "server"\]$' Cargo.toml
 
 # libsqlite3-sys vendors SQLite, so no system sqlite needed. Cache mounts keep
 # rebuilds fast; the binary is copied out of the cached target dir immediately,

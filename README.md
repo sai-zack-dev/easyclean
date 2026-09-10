@@ -4,16 +4,12 @@ Self-hosted photo/video cleaner. Point it at a folder, it serves a web UI on you
 keep/delete — with automatic blur detection, duplicate detection, and album organization. Any device on
 the same Wi-Fi can use it from a browser.
 
-**One core, two shells:** a single Rust server (axum) does all the work and serves the web UI + JSON API.
-Ship it two ways:
-
-- **Docker** — for a Linux home server. `docker compose up -d`, browse the port.
-- **Desktop app** (Tauri, Mac/Windows/Linux) — a control panel to pick a folder, Start/Stop the server,
-  and show the LAN URL + QR code for phones.
+A single Rust server (axum) does all the work and serves the web UI + JSON API. It ships as a Docker
+image: set your media path, `docker compose up -d`, and browse the port from any device on the Wi-Fi.
 
 ---
 
-## Option A — Docker (Linux home server)
+## Running it (Docker)
 
 Requires Docker + Docker Compose.
 
@@ -59,32 +55,6 @@ docker compose down                     # stop
 docker compose up -d --build            # rebuild after code changes
 docker compose down && rm data/easyclean.db && docker compose up -d   # wipe DB + rescan
 ```
-
----
-
-## Option B — Desktop app (Mac / Windows / Linux)
-
-A small control-panel window that supervises the same server.
-
-**Run from source (dev):**
-```bash
-cargo build --release -p easyclean-server   # the desktop app spawns this binary
-(cd web && npm ci && npm run build)         # build the UI it serves (needs Node 20.19+ / 22)
-cargo run -p easyclean-desktop
-```
-
-Pick a media folder → **Start** → scan the QR code with your phone (same Wi-Fi) or click **Open in
-Browser**. The app generates and persists a random JWT secret on first run.
-
-**Build installers:**
-```bash
-cargo install tauri-cli --version '^2'
-cargo tauri icon desktop/icons/icon.png     # generate the full macOS/Windows icon set
-cargo tauri build                           # → desktop/target/release/bundle/
-```
-
-Code-signing / notarization needs your own Apple Developer / Windows certificates — see
-[Tauri's signing docs](https://tauri.app/distribute/). Unsigned bundles run locally but warn on download.
 
 ---
 
@@ -139,17 +109,22 @@ EasyClean is **LAN-only by default** and is not hardened for direct internet exp
 core/      Rust engine (scan, decode, thumbnails, blur/dup detection, file ops, albums, DB)
 server/    axum HTTP server (REST + SSE; serves the web UI)
 web/       React 18 + Vite + TS PWA (built → web/dist, served by the server)
-desktop/   Tauri control-panel app (spawns the server, shows LAN URL + QR)
 deploy/    Production kit for /opt/easyclean (compose + install.sh + runbook)
 Dockerfile, docker-compose.yml   Build-from-source deployment
 ```
 
 ### Development
 
+The backend is built and run through Docker — no Rust toolchain needed on your machine. The frontend
+runs on Node directly.
+
 ```bash
-cargo test  --workspace --exclude easyclean-desktop     # 36 tests
-cargo clippy --workspace --exclude easyclean-desktop --all-targets -- -D warnings
+docker compose up -d --build          # backend + bundled web UI
 cd web && npm run lint && npm run build
+
+# With a local Rust toolchain (optional — CI runs these on every push):
+cargo test --workspace                # 36 tests
+cargo clippy --workspace --all-targets -- -D warnings
 
 # Scale check — generates synthetic photos and times scan/detect/queries
 cargo run --release -p easyclean-core --example bench -- 10000

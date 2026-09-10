@@ -1,6 +1,11 @@
 # EasyClean — Roadmap (Milestones · Phases · Tasks)
 
-Rust-only "one core, two shells" (see [CLAUDE.md](CLAUDE.md) / [spec.md](spec.md)); screens & design in
+> **2026-09-09 — the Tauri desktop shell was removed.** M4 Phase 4.2, M5 Phase 5.2, and every other
+> `desktop/` item below are kept as a record of work that was done and then deleted; they are history,
+> not open work. The shipping scope is now the Dockerfile for the backend and `web/` for the frontend.
+> The deleted code is in git history at `da8f7f5`.
+
+Rust-only "one core, one shell" (see [CLAUDE.md](CLAUDE.md) / [spec.md](spec.md)); screens & design in
 [ui.md](ui.md). Task legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 
 **MVP = M0 → M5.** M6+ is post-MVP.
@@ -289,7 +294,7 @@ what's listed here.
 - [ ] Spike the swipe deck in the chosen stack — it's the screen that decides how the app *feels*.
 
 ### Phase 7.2 — Client parity
-- [ ] Server discovery: manual URL + QR scan (the desktop app already shows one) + mDNS if available
+- [ ] Server discovery: manual URL entry + mDNS if available *(the desktop app's QR is gone as of 2026-09-09)*
 - [ ] Login → JWT stored in the platform keychain (not plain preferences)
 - [ ] The 5 screens against the same API; design tokens ported from [ui.md](ui.md)
 - [ ] Native-only wins: hardware back/gestures, haptics on swipe, share sheet
