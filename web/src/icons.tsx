@@ -216,6 +216,19 @@ export const IC = {
       <polyline points="3 3 3 8 8 8" />
     </svg>
   ),
+  eye: () => (
+    <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+      <path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7z" />
+      <circle cx="12" cy="12" r="3" />
+    </svg>
+  ),
+  eyeOff: () => (
+    <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+      <path d="M9.9 5.2A9.9 9.9 0 0112 5c6.4 0 10 7 10 7a18 18 0 01-2.4 3.4M6.2 6.7A18 18 0 002 12s3.6 7 10 7a9.9 9.9 0 004.2-.9" />
+      <path d="M9.9 9.9a3 3 0 004.2 4.2" />
+      <line x1="3" y1="3" x2="21" y2="21" />
+    </svg>
+  ),
 }
 
 export type IconName = keyof typeof IC
