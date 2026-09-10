@@ -100,8 +100,11 @@ Two caveats, stated plainly:
 
 1. **Register the self-hosted runner** on the home server and do the first live rollout —
    [deploy/README.md](../deploy/README.md) §2. Nothing else stands between `git push` and production.
-2. **Verify the Docker image still builds** after the 2026-09-09 desktop removal — the daemon was
-   down when the change was made, so `docker compose up -d --build` is unverified.
+2. ~~Verify the Docker image builds after the desktop removal~~ — **done 2026-09-10**: built clean
+   (`easyclean:verify`, 208 MB, Rust release 9m14s) and passed a 14-check container smoke test —
+   health, UI, PWA manifest/sw/icons, 401 without a token, login → JWT, bad passcode → 401, HEIC
+   decode enabled, ffmpeg present, uid 10001, `secret.key` 0600, and a live scan that indexed 2
+   files, wrote 2 thumbnails, and grouped 1 duplicate. Built arm64 locally; CI publishes amd64.
 
 ## Gotchas (don't relearn these)
 
