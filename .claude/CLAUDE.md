@@ -10,16 +10,19 @@ See [spec.md](spec.md) for architecture/API, [ui.md](ui.md) for the design syste
 > **Source of truth:** the UI prototype images + these specs. No PRD PDF exists; if one arrives later it
 > takes precedence. Read and align with these before writing implementation code.
 
-## Architecture — locked: "one core, two shells"
+## Architecture — locked: "one core, one shell"
 
 A single **Rust** HTTP server (axum) serves the web UI + JSON API and does all the work (scan,
 thumbnails, blur, duplicate detection, albums, trash). It binds `0.0.0.0:PORT` for LAN access. Shipped
-two ways from the same core:
+one way:
 
-- **Desktop (Mac / Windows / Linux):** a **Tauri** app — control panel to pick a folder, Start/Stop, and
-  show the LAN URL + QR code. Embeds the same server.
-- **Linux home server:** the same server binary in a **Docker** image — set the media path in
-  `docker-compose.yml`, `docker compose up -d`, browse the port.
+- **Docker:** the server binary in a **Docker** image — set the media path in `docker-compose.yml`,
+  `docker compose up -d`, browse the port. This is the only shell; the backend is never built on a dev
+  machine, only inside the image.
+
+The **Tauri desktop shell was removed on 2026-09-09** (`desktop/` crate, its release job, and the
+workspace member). It lives in git history at `da8f7f5` if the folder-pick + QR control panel is ever
+wanted back. Scope for now is deliberately: **Dockerfile for the backend, `web/` for the frontend.**
 
 Clients = **any browser on the LAN** (MVP). Mobile = installable **PWA** later; native later still.
 
@@ -28,7 +31,7 @@ Clients = **any browser on the LAN** (MVP). Mobile = installable **PWA** later; 
 - **Backend:** Rust only (axum + tokio). No Python.
 - **AI / CLIP semantic search:** **later phase** (ONNX via `ort`), NOT in MVP.
 - **Frontend:** React 18 + Vite + TS, served as static assets by the Rust server; PWA-capable. Design in [ui.md](ui.md).
-- **Access:** LAN over HTTP; bind `0.0.0.0`; desktop shows IP:port + QR. Remote access later via
+- **Access:** LAN over HTTP; bind `0.0.0.0`. Remote access later via
   Tailscale / Cloudflare Tunnel — never port-forwarding.
 - **Multi-user / auth:** per-user folders + an Admin user (from the prototype). MVP needs at least a
   passcode/PIN — anyone on the Wi-Fi can otherwise see/delete photos.
@@ -39,7 +42,7 @@ Clients = **any browser on the LAN** (MVP). Mobile = installable **PWA** later; 
 
 **In:** scan + index; thumbnails (incl. video first-frame); blur detection (Laplacian variance);
 duplicate detection (pHash + Hamming distance); swipe keep/delete; trash + restore; albums /
-auto-categorization; stats + streaks; Settings; web UI (dark + light); LAN serving + desktop folder-pick.
+auto-categorization; stats + streaks; Settings; web UI (dark + light); LAN serving.
 **Later:** CLIP semantic search; native mobile; remote hosting.
 
 ## Tech stack
@@ -47,9 +50,8 @@ auto-categorization; stats + streaks; Settings; web UI (dark + light); LAN servi
 - **Server:** Rust — axum + tower-http (static + API), tokio. SQLite via `rusqlite` or `sqlx`.
 - **Imaging:** `image` (decode/resize/thumbnails), `img_hash` (pHash), Laplacian blur, `kamadak-exif`
   (EXIF date/GPS), `libheif-rs` (HEIC — needs system libheif), `ffmpeg` (video thumbs / `ffprobe` dates).
-- **Desktop:** Tauri (Rust) — folder-pick dialog, local-IP + QR display, supervises the server.
 - **Frontend:** React 18 + Vite + TypeScript (PWA), Tailwind, Framer Motion (swipe), Zustand. Tokens in [ui.md](ui.md).
-- **Deploy:** Docker + docker-compose (Linux); Tauri bundles for Mac/Windows (code-signing/notarization).
+- **Deploy:** Docker + docker-compose (Linux). No desktop bundles.
 - **Later:** `ort` (ONNX Runtime) + a CLIP model for semantic search.
 
 ## Engineering standards
@@ -77,8 +79,7 @@ strictly.** 5. **Output order:** architecture + data-flow → file structure →
 
 - **HEIC** (iPhone photos) is behind the `heic` cargo feature — it links system `libheif` ≥ 1.17, so
   Debian **trixie**, not bookworm, and the `libheif-plugin-libde265` package must be installed or
-  decode fails at runtime. Desktop bundles build without the feature (would need libheif bundled +
-  signed per platform).
+  decode fails at runtime. The Docker image always builds with it.
 - **Video** needs `ffmpeg` (thumbnails + `ffprobe` dates).
 - **Long work** (scan / thumb / detect) async + progress (SSE/WS); never block at 100K+.
 - **Undo** = last ~10 swipes.

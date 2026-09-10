@@ -15,10 +15,10 @@ code.
 |---|---|
 | M0–M2 core + API | ✅ 36 tests green, clippy `-D warnings` clean, fmt clean |
 | M3 web UI | ✅ builds; lint clean; **now an installable PWA** |
-| M4 Tauri desktop | ✅ code complete; GUI click-through still unrun (needs macOS screen-recording grant) |
+| M4 Tauri desktop | ❌ **removed 2026-09-09** — `desktop/` crate deleted; in git history at `da8f7f5` |
 | M5 Docker | ✅ **image builds and passes a container smoke test** (was broken before today) |
 | M5.4 CI/CD | ✅ workflows written; ⏳ runner not yet registered on the server |
-| HEIC | ✅ decodes via libheif (Docker); desktop bundles still without |
+| HEIC | ✅ decodes via libheif in the Docker image |
 | Scale | ✅ benchmarked at 10K synthetic images (see below) |
 
 ## What changed this session
@@ -26,8 +26,8 @@ code.
 **Blockers**
 1. **Docker image now builds** — verified: `easyclean:test`, 210 MB. It never did before: the Dockerfile
    wrote a stub `Cargo.toml` that dropped `[workspace.dependencies]`, so cargo died on "error
-   inheriting `serde` from workspace root". It now copies the real manifest and strips only `desktop`
-   from `members`. Container smoke test passed: health, UI + manifest + sw.js + icons served, 401
+   inheriting `serde` from workspace root". It now copies the real manifest as-is (since 2026-09-09
+   the workspace is just `core` + `server`, so there is nothing to strip). Container smoke test passed: health, UI + manifest + sw.js + icons served, 401
    without a token, login → JWT, runs as uid 10001, `/data` writable, `secret.key` created `0600`.
 2. **HEIC decode** via `libheif-rs` behind the `heic` cargo feature, registered as an `image`-crate
    decoding hook so `image::open` just works. Base image moved bookworm → **trixie** (libheif 1.19 vs
@@ -100,10 +100,8 @@ Two caveats, stated plainly:
 
 1. **Register the self-hosted runner** on the home server and do the first live rollout —
    [deploy/README.md](../deploy/README.md) §2. Nothing else stands between `git push` and production.
-2. **M4 GUI click-through** — grant Claude Accessibility + Screen Recording, launch
-   `target/debug/easyclean-desktop`, Start, scan the QR from a phone.
-3. **Desktop code-signing** — needs your Apple Developer + Windows certs (CI hooks are in place).
-4. **HEIC in desktop bundles** — would need libheif bundled and signed per platform.
+2. **Verify the Docker image still builds** after the 2026-09-09 desktop removal — the daemon was
+   down when the change was made, so `docker compose up -d --build` is unverified.
 
 ## Gotchas (don't relearn these)
 
@@ -136,13 +134,13 @@ cp .env.example .env && docker compose up -d --build
 
 # Quality gate (what CI runs)
 cargo fmt --all -- --check
-cargo clippy --workspace --exclude easyclean-desktop --all-targets -- -D warnings
-cargo test --workspace --exclude easyclean-desktop
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
 cd web && npm run lint && npm run build
 ```
 
 ## File structure
 
 `core/` (engine: scan · decode · thumbs · detect · fileops · db) · `server/` (axum bin) ·
-`web/` (React/Vite PWA → `web/dist`) · `desktop/` (Tauri) · `deploy/` (production kit for
+`web/` (React/Vite PWA → `web/dist`) · `deploy/` (production kit for
 `/opt/easyclean`) · `.github/workflows/` (ci · deploy · release) · `.claude/` (specs + this file)

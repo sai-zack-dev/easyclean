@@ -1,14 +1,14 @@
 name: release
 
 # Tag a version to cut a release:  git tag v0.1.0 && git push origin v0.1.0
-# Publishes a versioned GHCR image and draft desktop bundles. Day-to-day
-# rollouts to the home server come from deploy.yml, not from here.
+# Publishes a versioned GHCR image. Day-to-day rollouts to the home server
+# come from deploy.yml, not from here.
 on:
   push:
     tags: ["v*"]
 
 permissions:
-  contents: write   # create the GitHub release + upload assets
+  contents: read
   packages: write   # push the Docker image to GHCR
 
 jobs:
@@ -40,42 +40,3 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-  # ── Desktop bundles (Mac / Windows / Linux) ──────────────────────────────
-  desktop:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-latest
-          - os: windows-latest
-          - os: ubuntu-22.04
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      # Linux needs GTK/WebKit system libs for Tauri.
-      - if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
-      - name: Build web UI
-        run: cd web && npm ci && npm run build
-      # Desktop bundles ship without the `heic` feature: it would need libheif
-      # bundled and code-signed per platform. Docker/LAN users get HEIC today;
-      # desktop HEIC is tracked in checklist.md M5.2.
-      - name: Build server binary
-        run: cargo build --release -p easyclean-server
-      - uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          projectPath: desktop
-          tagName: ${{ github.ref_name }}
-          releaseName: "EasyClean ${{ github.ref_name }}"
-          releaseDraft: true
-          # Signing/notarization: add APPLE_*, WINDOWS_CERTIFICATE secrets and
-          # the matching env here to ship trusted bundles.

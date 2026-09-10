@@ -9,9 +9,6 @@ data/
 .m1data/
 tmp/
 
-# The desktop (Tauri) crate isn't part of the headless server image; the
-# Dockerfile drops it from the workspace members list.
-desktop/
 
 # Docs and the deploy kit: consumed on the host, never inside the image.
 deploy/

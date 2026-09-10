@@ -25,6 +25,11 @@ All notable changes to EasyClean are documented here. The format follows
   detection, per-screen queries, and incremental rescan.
 
 ### Changed
+- **Login screen redesign** — ambient gradient backdrop, logo tile, large heading, labeled fields, a
+  passcode reveal toggle, and a footer note, in both themes. `ServerSetup` shares the same shell.
+- **Friendlier auth errors.** `ApiError` now carries the HTTP status and unwraps the server's
+  `{"error": …}` body, so a rate-limited login shows "Too many attempts. Wait 15 minutes and try
+  again." instead of raw JSON, and a bad passcode reads "Incorrect username or passcode."
 - **Detection now runs across all cores.** It awaited each blocking decode before starting the next,
   leaving one core busy and the rest idle; it now keeps `available_parallelism()` files in flight and
   applies results to SQLite as they land. 10 000 images: **168.8s → 60.6s (2.8×)**, identical output.
@@ -64,6 +69,10 @@ All notable changes to EasyClean are documented here. The format follows
 - All `cargo clippy` warnings; `cargo fmt` is clean. `npm audit` reports 0 vulnerabilities.
 
 ### Removed
+- **The Tauri desktop shell.** The `desktop/` crate, its workspace member, its `release.yml` bundle job,
+  and the `--exclude easyclean-desktop` flags in CI are gone; `Cargo.lock` drops 312 packages
+  (660 → 348). EasyClean now ships one way — the Docker image — and the backend is only ever built
+  inside it. The code remains in git history at `da8f7f5`.
 - The superseded prototypes: `frontend/index.html` (single-file React app, now ported to `web/`) and
   the Python FastAPI `backend/`. Both remain in git history at `2763e16`.
 

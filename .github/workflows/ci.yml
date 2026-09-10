@@ -32,8 +32,6 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          # `desktop/` is excluded from these jobs (Tauri needs GTK/WebKit);
-          # keep its cache key separate from the server build's.
           shared-key: server
 
       # HEIC support is compiled in, so clippy/tests see the same code the
@@ -49,13 +47,11 @@ jobs:
 
       - name: Clippy
         run: >
-          cargo clippy --workspace --exclude easyclean-desktop
-          --all-targets --features easyclean-server/heic -- -D warnings
+          cargo clippy --workspace --all-targets
+          --features easyclean-server/heic -- -D warnings
 
       - name: Test
-        run: >
-          cargo test --workspace --exclude easyclean-desktop
-          --features easyclean-server/heic
+        run: cargo test --workspace --features easyclean-server/heic
 
   web:
     name: web — lint · typecheck · build

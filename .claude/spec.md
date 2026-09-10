@@ -15,21 +15,26 @@ system are in [ui.md](ui.md).
               │  • owns SQLite + the media folders    │
               │  • binds 0.0.0.0:PORT                  │
               └───────────────┬──────────────────────┘
-            ┌─────────────────┴──────────────────┐
-            ▼                                      ▼
-  ┌────────────────────┐                ┌────────────────────┐
-  │ Shell A — Tauri     │               │ Shell B — Docker    │
-  │ desktop (Mac/Win/   │               │ (Linux home server) │
-  │ Linux): folder      │               │ same core, headless │
-  │ pick · Start/Stop · │               │ media path + port   │
-  │ show URL + QR       │               │ via compose/env     │
-  └────────────────────┘                └────────────────────┘
-            └───────────────► browsers on the LAN ◄───────────┘
-                          phones · tablets · laptops
+                              │
+                              ▼
+                  ┌────────────────────┐
+                  │ Shell — Docker      │
+                  │ (Linux home server) │
+                  │ same core, headless │
+                  │ media path + port   │
+                  │ via compose/env     │
+                  └─────────┬──────────┘
+                            ▼
+                   browsers on the LAN
+                 phones · tablets · laptops
 ```
 
-The cleaning logic is built **once** (a Rust core crate + an axum server binary). The desktop app and the
-Docker image are two launchers around it — no second backend.
+The cleaning logic is built **once** (a Rust core crate + an axum server binary). The Docker image is the
+only launcher around it — no second backend, and the backend is never built outside the image.
+
+> The Tauri desktop shell (Shell A: folder pick · Start/Stop · URL + QR) was **removed on 2026-09-09**.
+> Its code is in git history at `da8f7f5`. Current scope: Dockerfile for the backend, `web/` for the
+> frontend.
 
 ## Storage model
 
@@ -82,19 +87,12 @@ Every data route: authenticated + path-validated (no `..`, must resolve inside t
 
 ## Networking & access
 
-- Bind `0.0.0.0:PORT` (default `8080`). Detect the primary LAN IPv4; the desktop shell shows
-  `http://<ip>:<port>` + a QR code; "open in browser".
+- Bind `0.0.0.0:PORT` (default `8080`). Reach it at `http://<server-ip>:<port>` from any device on the
+  LAN.
 - Optional nicety: mDNS (`easyclean.local`).
 - **HTTP** is fine on the LAN. **Remote access later:** Tailscale or Cloudflare Tunnel (auto-HTTPS, no
   port-forwarding). Never expose the port directly to the internet.
 - **Auth:** passcode/login required even on LAN; rate-limit login attempts.
-
-## Desktop app (Tauri)
-
-- First run: pick the media folder (becomes the per-user root).
-- Start/Stop the server; show status, the LAN URL, and a QR; open in browser.
-- Runs the same axum core (in-process or as a bundled sidecar binary).
-- Bundles: macOS `.app` (notarized), Windows `.msi/.exe` (signed), Linux AppImage/deb (optional).
 
 ## Docker (Linux server)
 

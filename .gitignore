@@ -18,9 +18,6 @@ web/dist
 # Generated JWT signing key (server writes it into the data dir).
 secret.key
 
-# Tauri generated schemas
-desktop/gen/schemas
-
 # Tooling scratch — Playwright MCP traces, ad-hoc screenshots, stray logs.
 # Screenshots belong in web/public or docs/, never at the repo root.
 .playwright-mcp/
