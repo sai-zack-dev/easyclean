@@ -78,6 +78,34 @@ function getHeaders(): Record<string, string> {
   return h
 }
 
+/**
+ * A failed API call. Carries the HTTP status so a caller can choose wording
+ * that fits its screen — the same 401 means "wrong passcode" on the login
+ * form and "session expired" everywhere else.
+ */
+export class ApiError extends Error {
+  readonly status: number
+
+  constructor(status: number, message: string) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+  }
+}
+
+/** Errors render as `{ "error": "..." }`; unwrap that so raw JSON never
+ *  reaches the UI. Falls back to the body, then the status text. */
+async function errorMessage(res: Response): Promise<string> {
+  const raw = await res.text().catch(() => '')
+  if (!raw) return res.statusText
+  try {
+    const parsed = JSON.parse(raw) as { error?: string }
+    return parsed.error || raw
+  } catch {
+    return raw
+  }
+}
+
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const base = getBase()
   const res = await fetch(`${base}${path}`, {
@@ -87,11 +115,10 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   })
   if (res.status === 401) {
     useSession.getState().logout()
-    throw new Error('Unauthorized')
+    throw new ApiError(401, await errorMessage(res))
   }
   if (!res.ok) {
-    const err = await res.text().catch(() => res.statusText)
-    throw new Error(err)
+    throw new ApiError(res.status, await errorMessage(res))
   }
   return res.json() as Promise<T>
 }

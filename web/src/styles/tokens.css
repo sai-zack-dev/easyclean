@@ -25,6 +25,12 @@
   --ring: rgba(255, 255, 255, 0.12);
   --ring-done: rgba(255, 255, 255, 0.4);
   --tabbar-bg: rgba(15, 15, 15, 0.92);
+  /* Ambient sheen behind the auth screens. Light blooms on a near-black
+     ground in dark; the same blooms read as soft highlights on the grey
+     ground in light, so both themes get depth from one pair of stops. */
+  --auth-sheen: rgba(255, 255, 255, 0.18);
+  --auth-sheen2: rgba(255, 255, 255, 0.09);
+  --auth-sheen-hi: rgba(255, 255, 255, 0.3);
   --font: "Inter", sans-serif;
   --r: 14px;
   --r-lg: 20px;
@@ -57,6 +63,9 @@
   --ring: rgba(0, 0, 0, 0.14);
   --ring-done: rgba(0, 0, 0, 0.4);
   --tabbar-bg: rgba(255, 255, 255, 0.92);
+  --auth-sheen: rgba(255, 255, 255, 0.95);
+  --auth-sheen2: rgba(255, 255, 255, 0.5);
+  --auth-sheen-hi: rgba(255, 255, 255, 1);
 }
 
 /* ── BASE RESET ────────────────────────────────────── */
@@ -1533,91 +1542,216 @@ input[type="range"]::-webkit-slider-thumb {
 
 /* ── AUTH SCREENS ───────────────────────────────────── */
 .auth-screen {
-  height: 100dvh;
+  position: relative;
+  min-height: 100dvh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 24px;
+  background: var(--bg);
+  /* body sets overflow:hidden, so a short viewport has to scroll here. */
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+/* Two soft off-axis blooms — a top-right wedge and a bottom-left one — stand
+   in for the photographic backdrop without shipping an image. The bleed lives
+   on ::before inside a clipped inset:0 box: sizing the bleeding element itself
+   would grow the scroll area and knock the panel off centre. */
+.auth-glow {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.auth-glow::before {
+  content: '';
+  position: absolute;
+  inset: -30% -20%;
+  background:
+    radial-gradient(52% 48% at 88% 6%, var(--auth-sheen) 0%, transparent 66%),
+    radial-gradient(42% 40% at 2% 96%, var(--auth-sheen2) 0%, transparent 64%);
+  filter: blur(30px);
+}
+/* The bright fold: a rotated ellipse whose core is far stronger than the
+   ambient blooms. Without it the backdrop reads as a flat wash. */
+.auth-glow::after {
+  content: '';
+  position: absolute;
+  top: -38%;
+  right: -14%;
+  width: 44%;
+  height: 136%;
+  transform: rotate(22deg);
+  background: radial-gradient(closest-side ellipse, var(--auth-sheen-hi) 0%, transparent 76%);
+  filter: blur(28px);
+}
+.auth-panel {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: 480px;
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
-  padding: 32px 24px;
-  gap: 24px;
-  background: var(--bg);
+  gap: 28px;
 }
 .auth-logo {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 12px;
+  gap: 14px;
 }
 .auth-logo-icon {
-  width: 64px;
-  height: 64px;
-  background: var(--text);
-  border-radius: 18px;
+  width: 56px;
+  height: 56px;
+  background: var(--bg3);
+  border: 1px solid var(--border2);
+  border-radius: 16px;
   display: flex;
   align-items: center;
   justify-content: center;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
 }
 .auth-logo-icon svg {
-  width: 32px;
-  height: 32px;
-  fill: var(--bg);
+  width: 26px;
+  height: 26px;
+  fill: var(--text);
 }
 .auth-title {
-  font-size: 28px;
+  font-size: clamp(26px, 4.4vw, 33px);
   font-weight: 800;
-  letter-spacing: -0.5px;
+  letter-spacing: -0.8px;
+  line-height: 1.15;
+  text-align: center;
 }
 .auth-sub {
-  font-size: 14px;
-  color: var(--text3);
+  font-size: 14.5px;
+  color: var(--text2);
   text-align: center;
 }
 .auth-form {
   width: 100%;
-  max-width: 360px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 16px;
+}
+.auth-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.auth-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text2);
 }
 .auth-input {
   width: 100%;
-  background: var(--bg3);
+  background: var(--fill);
   border: 1px solid var(--border2);
-  border-radius: var(--r);
-  padding: 14px 16px;
+  border-radius: 12px;
+  padding: 13px 15px;
   color: var(--text);
   font-family: var(--font);
   font-size: 15px;
   outline: none;
-  transition: border-color 0.15s;
+  transition:
+    background 0.15s var(--ease),
+    border-color 0.15s var(--ease),
+    box-shadow 0.15s var(--ease);
+}
+.auth-input::placeholder {
+  color: var(--text3);
+}
+.auth-input:hover {
+  background: var(--fill-hi);
 }
 .auth-input:focus {
-  border-color: var(--border2);
+  background: var(--fill-hi);
+  border-color: var(--ring-done);
+  box-shadow: 0 0 0 3px var(--hover);
+}
+/* Passcode field: the reveal toggle sits inside the input's trailing gutter. */
+.auth-input-wrap {
+  position: relative;
+  display: flex;
+}
+.auth-input-wrap .auth-input {
+  padding-right: 46px;
+}
+.auth-reveal {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 34px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  border-radius: 9px;
+  color: var(--text3);
+  cursor: pointer;
+  transition:
+    color 0.15s var(--ease),
+    background 0.15s var(--ease);
+}
+.auth-reveal:hover {
+  color: var(--text2);
+  background: var(--hover);
+}
+.auth-reveal svg {
+  width: 17px;
+  height: 17px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 .auth-btn {
   width: 100%;
-  background: var(--text);
-  color: var(--bg);
-  border: none;
-  border-radius: var(--r);
+  margin-top: 4px;
+  min-height: 50px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg4);
+  color: var(--text);
+  border: 1px solid var(--border2);
+  border-radius: 12px;
   padding: 14px;
   font-size: 15px;
-  font-weight: 700;
+  font-weight: 600;
   cursor: pointer;
   font-family: var(--font);
-  transition: opacity 0.15s;
+  transition:
+    background 0.15s var(--ease),
+    opacity 0.15s var(--ease);
 }
-.auth-btn:active {
+.auth-btn:hover:not(:disabled) {
+  background: var(--surface);
+}
+.auth-btn:active:not(:disabled) {
   opacity: 0.8;
 }
 .auth-btn:disabled {
-  opacity: 0.4;
+  opacity: 0.5;
   cursor: not-allowed;
 }
 .auth-error {
   font-size: 13px;
   color: var(--delete);
   text-align: center;
+}
+.auth-foot {
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text3);
+  text-align: center;
+  max-width: 320px;
 }
 
 /* ── TOAST ──────────────────────────────────────────── */
