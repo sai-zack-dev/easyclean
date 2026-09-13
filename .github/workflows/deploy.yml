@@ -134,6 +134,18 @@ jobs:
 
           docker pull "$IMAGE:$TAG"
 
+          # Snapshot the index before swapping images. A release that adds a
+          # migration changes the database in place, and a migration cannot be
+          # un-applied — so this copy is the only way back to the previous
+          # schema if a rollback ever needs one. Cheap: the DB holds the index
+          # and review history, never the photos. Keeps the last 10.
+          if [ -f data/easyclean.db ]; then
+            mkdir -p data/backups
+            cp data/easyclean.db "data/backups/easyclean-$(date +%Y%m%d-%H%M%S)-pre-$TAG.db"
+            ls -1t data/backups/easyclean-*.db | tail -n +11 | xargs -r rm -f
+            echo "index backed up before rollout"
+          fi
+
           # .env is the single source of truth for which tag runs here.
           pin_tag "$TAG"
 

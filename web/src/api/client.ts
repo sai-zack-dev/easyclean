@@ -15,6 +15,7 @@ export interface MediaFile {
   group_id: number | null
   status: 'pending' | 'keep' | 'trashed'
   thumb_url: string
+  preview_url: string
   raw_url: string
 }
 
@@ -42,6 +43,26 @@ export interface StreakStats {
   total_swipes: number
   /** Swipe counts for the last 7 days; index 0 = 7 days ago, 6 = today. */
   last_7_days: number[]
+}
+
+/** One bar of the Settings "Storage Saved" chart. */
+export interface StorageDay {
+  /** Unix seconds at the start of the day. */
+  day: number
+  bytes: number
+  files: number
+}
+
+export interface StorageSeries {
+  days: StorageDay[]
+  total_bytes: number
+  total_files: number
+}
+
+export interface Settings {
+  /** pHash Hamming distance: higher catches more (looser) duplicates. */
+  duplicate_distance: number
+  duplicate_distance_max: number
 }
 
 export interface TimelineMonth {
@@ -166,13 +187,16 @@ export const api = {
   // `<img>` can't set an Authorization header, so these carry the JWT in the
   // query string — the server's AuthUser extractor accepts either.
   thumbUrl: (id: number) => `${getBase()}/api/media/${id}/thumb?token=${authQuery()}`,
+  /** Full-screen-quality render — use wherever the user actually judges a photo. */
+  previewUrl: (id: number) => `${getBase()}/api/media/${id}/preview?token=${authQuery()}`,
   rawUrl: (id: number) => `${getBase()}/api/media/${id}/raw?token=${authQuery()}`,
 
   favorite: (id: number) =>
     request<{ id: number; is_favorite: boolean }>('POST', `/api/media/${id}/favorite`),
 
   albums: () => request<{ albums: Album[] }>('GET', '/api/albums').then((r) => r.albums ?? []),
-  albumFiles: (id: number, page = 0, size = 50) =>
+  /** `page` is 1-based, matching the server's offset maths. */
+  albumFiles: (id: number, page = 1, size = 50) =>
     request<BatchResult>('GET', `/api/albums/${id}/files?page=${page}&size=${size}`),
   albumsRefresh: () => request<void>('POST', '/api/albums/refresh'),
 
@@ -180,6 +204,16 @@ export const api = {
   statsTimeline: () =>
     request<{ months: TimelineMonth[] }>('GET', '/api/stats/timeline').then((r) => r.months ?? []),
   statsStreak: () => request<StreakStats>('GET', '/api/stats/streak'),
+  statsStorage: (days = 30) =>
+    request<StorageSeries>('GET', `/api/stats/storage?days=${days}`),
+
+  settings: () => request<Settings>('GET', '/api/settings'),
+  saveSettings: (body: { duplicate_distance?: number }) =>
+    request<{ duplicate_distance: number; duplicate_groups: number | null }>(
+      'POST',
+      '/api/settings',
+      body,
+    ),
 
   trash: () => request<{ files: MediaFile[] }>('GET', '/api/trash').then((r) => r.files ?? []),
   trashRestore: (id: number) => request<void>('POST', `/api/trash/restore/${id}`),

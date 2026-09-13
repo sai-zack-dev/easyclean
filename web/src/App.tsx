@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { useSession } from './store/session'
+import { applyAccent } from './theme'
 import { Sidebar, TabBar } from './components/Sidebar'
 import { Toast } from './components/Toast'
 import { LoginScreen } from './screens/LoginScreen'
@@ -20,7 +21,7 @@ interface SwipeTarget {
 }
 
 export function App() {
-  const { token, user, theme, backendUrl } = useSession()
+  const { token, user, theme, accentIndex, backendUrl } = useSession()
   const [tab, setTab] = useState<TabId>('clean')
   const [swipe, setSwipe] = useState<SwipeTarget | null>(null)
   const [trashOpen, setTrashOpen] = useState(false)
@@ -43,6 +44,12 @@ export function App() {
       root.setAttribute('data-theme', theme)
     }
   }, [theme])
+
+  // Re-applied on theme change too: "Default" clears the inline override so the
+  // theme's own --accent takes over, and that has to happen after the swap.
+  useEffect(() => {
+    applyAccent(accentIndex)
+  }, [accentIndex, theme])
 
   useEffect(() => {
     if (import.meta.env.DEV || serverReady) return

@@ -11,7 +11,7 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 sqlx = { workspace = true }
-image = "0.25.10"
+image = { workspace = true }
 walkdir = "2"
 kamadak-exif = "0.5"
 chrono = "0.4"

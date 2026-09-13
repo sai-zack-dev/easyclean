@@ -1,10 +1,11 @@
 import { useState, useEffect } from 'react'
 import { IC } from '../icons'
 import { api, type Album } from '../api/client'
+import { AlbumDetail } from './AlbumDetail'
 
-function AlCard({ album, cls }: { album: Album; cls?: string }) {
+function AlCard({ album, cls, onOpen }: { album: Album; cls?: string; onOpen: () => void }) {
   return (
-    <div className={`al-card ${cls ?? ''}`}>
+    <button className={`al-card ${cls ?? ''}`} onClick={onOpen} aria-label={`Open ${album.name}`}>
       {album.cover_file_id !== null && (
         <img className="al-cover" src={api.thumbUrl(album.cover_file_id)} alt="" loading="lazy" />
       )}
@@ -12,11 +13,21 @@ function AlCard({ album, cls }: { album: Album; cls?: string }) {
         {album.name}
         <span className="al-count">{album.file_count}</span>
       </div>
-    </div>
+    </button>
   )
 }
 
-function Section({ label, albums, cls }: { label: string; albums: Album[]; cls: string }) {
+function Section({
+  label,
+  albums,
+  cls,
+  onOpen,
+}: {
+  label: string
+  albums: Album[]
+  cls: string
+  onOpen: (a: Album) => void
+}) {
   return (
     <>
       <div style={{ padding: '0 16px', marginBottom: 8 }}>
@@ -29,11 +40,11 @@ function Section({ label, albums, cls }: { label: string; albums: Album[]; cls: 
           {cls === 'al-lg' ? (
             <div className="al-2col">
               {albums.map((a) => (
-                <AlCard key={a.id} album={a} cls={cls} />
+                <AlCard key={a.id} album={a} cls={cls} onOpen={() => onOpen(a)} />
               ))}
             </div>
           ) : (
-            albums.map((a) => <AlCard key={a.id} album={a} cls={cls} />)
+            albums.map((a) => <AlCard key={a.id} album={a} cls={cls} onOpen={() => onOpen(a)} />)
           )}
         </div>
       )}
@@ -45,6 +56,7 @@ export function AlbumsTab({ onOpenTrash }: { onOpenTrash: () => void }) {
   const [albums, setAlbums] = useState<Album[]>([])
   const [loaded, setLoaded] = useState(false)
   const [trashCount, setTrashCount] = useState(0)
+  const [open, setOpen] = useState<Album | null>(null)
 
   const load = () => {
     api.albums()
@@ -66,6 +78,12 @@ export function AlbumsTab({ onOpenTrash }: { onOpenTrash: () => void }) {
   const suggested = albums.filter((a) => ['videos', 'screenshots'].includes(a.category_type))
   const memories = albums.filter((a) => ['month', 'year'].includes(a.category_type))
 
+  // Counts and covers can change while the detail view is open (a swipe session
+  // finishing behind it), so reload the list on the way back out.
+  if (open) {
+    return <AlbumDetail album={open} onClose={() => { setOpen(null); load() }} />
+  }
+
   return (
     <div className="screen">
       <div className="page-header">
@@ -81,9 +99,9 @@ export function AlbumsTab({ onOpenTrash }: { onOpenTrash: () => void }) {
         </div>
       ) : (
         <>
-          <Section label="Collections" albums={collections} cls="al-lg" />
-          <Section label="Suggested Collections" albums={suggested} cls="al-sm" />
-          <Section label="Memories" albums={memories} cls="al-sm" />
+          <Section label="Collections" albums={collections} cls="al-lg" onOpen={setOpen} />
+          <Section label="Suggested Collections" albums={suggested} cls="al-sm" onOpen={setOpen} />
+          <Section label="Memories" albums={memories} cls="al-sm" onOpen={setOpen} />
         </>
       )}
 

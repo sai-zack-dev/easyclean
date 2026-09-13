@@ -6,6 +6,27 @@
  */
 /* eslint-disable react-refresh/only-export-components */
 import { MARK_PATH, MARK_VIEWBOX } from './brand'
+import broomUrl from './assets/icons/broom.png'
+import galleryUrl from './assets/icons/gallery.png'
+import settingsUrl from './assets/icons/settings.png'
+import fireUrl from './assets/icons/fire.png'
+import trophyUrl from './assets/icons/trophy.png'
+
+/**
+ * An icon supplied as artwork rather than as a path.
+ *
+ * The designed set arrived as Figma exports that wrap a 90x90 white-on-
+ * transparent PNG — raster, despite the `.svg` extension. Drawing them with
+ * `<img>` would nail them to white, so instead the artwork is used purely as an
+ * alpha *mask* over `currentColor`: the glyph then inherits text colour and
+ * follows the theme and the accent exactly like the hand-drawn paths do.
+ *
+ * 90px of source for an 18-22px icon is ~4x density, so it stays crisp on any
+ * display. Each file is under Vite's inline limit and ships as a data: URI.
+ */
+function maskIcon(url: string) {
+  return () => <span className="ic-mask" style={{ maskImage: `url(${url})`, WebkitMaskImage: `url(${url})` }} />
+}
 
 export const IC = {
   /*
@@ -17,33 +38,22 @@ export const IC = {
       <path d={MARK_PATH} />
     </svg>
   ),
-  broom: () => (
-    <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-      <path d="M3 21l9-9M9.5 3.5l1.5 1.5-7 7-1.5-1.5z" />
-      <path d="M14 4l6 6-9 9H5v-6z" />
-    </svg>
-  ),
-  photo: () => (
-    <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-      <rect x="3" y="3" width="18" height="18" rx="3" />
-      <circle cx="8.5" cy="8.5" r="1.5" />
-      <polyline points="21 15 16 10 5 21" />
-    </svg>
-  ),
+  // Designed artwork (see `maskIcon`). The stroked glyph this replaced read as
+  // a pen, not a broom.
+  broom: maskIcon(broomUrl),
+  photo: maskIcon(galleryUrl),
+  /*
+   * Drawn to sit beside the designed artwork above, which is solid and filled —
+   * the old four-square outline was the odd one out once Clean, Gallery and
+   * Setting went solid. `ic-solid` opts out of the stroked-icon CSS.
+   */
   album: () => (
-    <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-      <rect x="3" y="3" width="7" height="7" rx="1.5" />
-      <rect x="14" y="3" width="7" height="7" rx="1.5" />
-      <rect x="3" y="14" width="7" height="7" rx="1.5" />
-      <rect x="14" y="14" width="7" height="7" rx="1.5" />
+    <svg viewBox="0 0 24 24" className="ic-solid" xmlns="http://www.w3.org/2000/svg">
+      <path d="M7.4 3h13.1A2.5 2.5 0 0123 5.5v9.2a2.5 2.5 0 01-2.5 2.5H7.4a2.5 2.5 0 01-2.5-2.5V5.5A2.5 2.5 0 017.4 3zm11.4 3.6a1.5 1.5 0 100 3 1.5 1.5 0 000-3zM7 14.7h12.3l-3.6-4.3-2.7 3.1-1.9-2-4.1 3.2z" />
+      <path d="M2.6 6.3a1 1 0 011 1v9.5c0 .6.4 1 1 1h13a1 1 0 010 2h-13a3 3 0 01-3-3V7.3a1 1 0 011-1z" opacity=".55" />
     </svg>
   ),
-  settings: () => (
-    <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-      <circle cx="12" cy="12" r="3" />
-      <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z" />
-    </svg>
-  ),
+  settings: maskIcon(settingsUrl),
   scan: () => (
     <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
       <path d="M3 7V5a2 2 0 012-2h2M17 3h2a2 2 0 012 2v2M21 17v2a2 2 0 01-2 2h-2M7 21H5a2 2 0 01-2-2v-2" />
@@ -51,30 +61,39 @@ export const IC = {
     </svg>
   ),
   calendar: () => (
-    <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-      <rect x="3" y="4" width="18" height="18" rx="2" />
-      <line x1="16" y1="2" x2="16" y2="6" />
-      <line x1="8" y1="2" x2="8" y2="6" />
-      <line x1="3" y1="10" x2="21" y2="10" />
+    <svg viewBox="0 0 24 24" className="ic-solid" xmlns="http://www.w3.org/2000/svg">
+      <path d="M8 2a1 1 0 011 1v1h6V3a1 1 0 112 0v1h1.5A2.5 2.5 0 0121 6.5V9H3V6.5A2.5 2.5 0 015.5 4H7V3a1 1 0 011-1z" />
+      <path d="M3 9h18v10.5a2.5 2.5 0 01-2.5 2.5h-13A2.5 2.5 0 013 19.5V9zm4 3a1.2 1.2 0 100 2.4A1.2 1.2 0 007 13zm5 0a1.2 1.2 0 100 2.4 1.2 1.2 0 000-2.4zm5 0a1.2 1.2 0 100 2.4 1.2 1.2 0 000-2.4zM7 17.4a1.2 1.2 0 100 2.4 1.2 1.2 0 000-2.4zm5 0a1.2 1.2 0 100 2.4 1.2 1.2 0 000-2.4z" opacity=".85" />
     </svg>
   ),
   clock: () => (
-    <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-      <circle cx="12" cy="12" r="9" />
-      <polyline points="12 7 12 12 15 15" />
+    <svg viewBox="0 0 24 24" className="ic-solid" xmlns="http://www.w3.org/2000/svg">
+      {/* One path with a hole: `evenodd` knocks the hands out of the disc, so
+          the glyph stays a single colour and still reads at 18px. */}
+      <path
+        fillRule="evenodd"
+        clipRule="evenodd"
+        d="M12 2a10 10 0 100 20 10 10 0 000-20zM11 6.2h2v4.8h4v2h-6V6.2z"
+      />
     </svg>
   ),
+  /*
+   * Drawn rather than taken from `Duplicate Images.svg`: that export layers two
+   * photo glyphs around an opaque #333 card, so as an alpha mask it flattens to
+   * a featureless blob, and the baked dark fill would not survive light mode.
+   */
   copy: () => (
-    <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-      <rect x="9" y="9" width="13" height="13" rx="2" />
-      <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" />
+    <svg viewBox="0 0 24 24" className="ic-solid" xmlns="http://www.w3.org/2000/svg">
+      <path d="M4.3 5.1a1 1 0 01.7 1.23L2.9 14.2a1.5 1.5 0 001.06 1.84l8.2 2.2a1 1 0 11-.52 1.93l-8.2-2.2a3.5 3.5 0 01-2.47-4.29l2.1-7.87a1 1 0 011.23-.71z" opacity=".55" />
+      <path d="M9.5 2h10A2.5 2.5 0 0122 4.5v8.6a2.5 2.5 0 01-2.5 2.5h-10A2.5 2.5 0 017 13.1V4.5A2.5 2.5 0 019.5 2zm8.4 3.2a1.4 1.4 0 100 2.8 1.4 1.4 0 000-2.8zM8.9 13.3h11.2l-3.4-4.1-2.5 2.9-1.8-1.9-3.5 3.1z" />
     </svg>
   ),
   blur: () => (
-    <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-      <circle cx="12" cy="12" r="2" />
-      <circle cx="12" cy="12" r="5" opacity=".4" />
-      <circle cx="12" cy="12" r="8" opacity=".2" />
+    <svg viewBox="0 0 24 24" className="ic-solid" xmlns="http://www.w3.org/2000/svg">
+      {/* Filled rings fading outwards — the softness *is* the metaphor. */}
+      <circle cx="12" cy="12" r="9.5" opacity=".22" />
+      <circle cx="12" cy="12" r="6.2" opacity=".45" />
+      <circle cx="12" cy="12" r="3" />
     </svg>
   ),
   chevRight: () => (
@@ -98,19 +117,8 @@ export const IC = {
       <path d="M3.51 15a9 9 0 102.13-9.36L1 10" />
     </svg>
   ),
-  fire: () => (
-    <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-      <path d="M12 2C6.48 2 2 6.48 2 12c0 2.28.76 4.38 2.02 6.07C5.1 19.5 7 20.5 9 21c-.5-1-.5-2 0-3 1 1.5 3 2 3 2s2-.5 3-2c.5 1 .5 2 0 3 2-.5 3.9-1.5 4.98-2.93A10 10 0 0022 12c0-5.52-4.48-10-10-10z" />
-    </svg>
-  ),
-  trophy: () => (
-    <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-      <polyline points="8 21 12 17 16 21" />
-      <line x1="12" y1="17" x2="12" y2="11" />
-      <path d="M7 4H4v4a4 4 0 004 4h8a4 4 0 004-4V4h-3" />
-      <path d="M7 4h10" />
-    </svg>
-  ),
+  fire: maskIcon(fireUrl),
+  trophy: maskIcon(trophyUrl),
   server: () => (
     <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
       <rect x="2" y="2" width="20" height="8" rx="2" />
@@ -126,8 +134,8 @@ export const IC = {
     </svg>
   ),
   folder: () => (
-    <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-      <path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z" />
+    <svg viewBox="0 0 24 24" className="ic-solid" xmlns="http://www.w3.org/2000/svg">
+      <path d="M2 6.5A2.5 2.5 0 014.5 4h4.2a2 2 0 011.66.89L11.6 7h7.9A2.5 2.5 0 0122 9.5V19a2 2 0 01-2 2H4a2 2 0 01-2-2V6.5z" />
     </svg>
   ),
   sliders: () => (

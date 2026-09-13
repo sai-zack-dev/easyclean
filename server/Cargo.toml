@@ -25,3 +25,6 @@ futures-util = "0.3"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
+# Only for tests: build a fixture photo, then measure the preview that comes
+# back. Decoding in the server itself always goes through easyclean-core.
+image = { workspace = true }

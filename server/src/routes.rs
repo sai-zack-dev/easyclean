@@ -48,6 +48,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/media/swipe", post(swipe))
         .route("/api/media/session/finish", post(session_finish))
         .route("/api/media/:id/thumb", get(thumb))
+        .route("/api/media/:id/preview", get(preview))
         .route("/api/media/:id/raw", get(raw))
         .route("/api/media/:id/favorite", post(favorite))
         // albums
@@ -58,6 +59,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/stats/summary", get(stats))
         .route("/api/stats/streak", get(streak))
         .route("/api/stats/timeline", get(timeline))
+        .route("/api/stats/storage", get(storage))
+        // settings
+        .route("/api/settings", get(settings_get))
+        .route("/api/settings", post(settings_put))
         // trash
         .route("/api/trash", get(trash_list))
         .route("/api/trash/restore/:id", post(trash_restore))
@@ -225,12 +230,13 @@ async fn run_scan(st: AppState, user: String) {
         return;
     }
     let sp = st.scan.clone();
+    let dup_distance = resolve_dup_distance(&st, &user).await;
     match detect::run_detection(
         &st.db,
         &user,
         st.cfg.blur_threshold,
         &thumb_dir,
-        st.cfg.duplicate_distance_threshold,
+        dup_distance,
         move |n| sp.processed.store(n, Ordering::Relaxed),
     )
     .await
@@ -443,6 +449,54 @@ async fn thumb(
     serve_file(FsPath::new(&tp)).await
 }
 
+/// A full-screen-quality JPEG of one file — what the swipe deck and the detail
+/// viewer show.
+///
+/// Neither the thumbnail nor the original will do: a 480px thumb is too soft to
+/// judge sharpness by, and the original can be a 12 MB HEIC no browser decodes.
+/// Previews are rendered once on first request and cached under
+/// `<data_dir>/previews/<id>.jpg`; the pixels never change, so the cache is
+/// valid even after the file moves between `source`, `clean` and `.trash`.
+async fn preview(
+    State(st): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<i64>,
+) -> Result<Response, ApiError> {
+    let m = owned_media(&st, &user, id).await?;
+
+    // Video has no still to enlarge — its ffmpeg first-frame thumbnail is the
+    // best preview available.
+    if m.media_type != "image" {
+        let tp = m
+            .thumb_path
+            .ok_or_else(|| ApiError::not_found("no preview for this video"))?;
+        return serve_file(FsPath::new(&tp)).await;
+    }
+
+    let out = preview_path(&st, id);
+    if !out.exists() {
+        let src = m.path.clone();
+        let dest = out.clone();
+        // Decoding a full-size photo is CPU-heavy and blocking; keep it off the
+        // async runtime or one preview stalls every other in-flight request.
+        let ok = tokio::task::spawn_blocking(move || {
+            easyclean_core::thumbs::ensure_image_preview(FsPath::new(&src), &dest)
+        })
+        .await
+        .unwrap_or(false);
+
+        if !ok {
+            // Undecodable (corrupt, or HEIC without libheif): fall back to the
+            // thumbnail so the card shows something rather than breaking.
+            let tp = m
+                .thumb_path
+                .ok_or_else(|| ApiError::not_found("could not render a preview"))?;
+            return serve_file(FsPath::new(&tp)).await;
+        }
+    }
+    serve_file(&out).await
+}
+
 async fn raw(
     State(st): State<AppState>,
     user: AuthUser,
@@ -516,6 +570,85 @@ async fn streak(State(st): State<AppState>, user: AuthUser) -> Result<Json<Value
     Ok(Json(serde_json::to_value(s).unwrap_or(Value::Null)))
 }
 
+#[derive(Deserialize)]
+struct StorageQuery {
+    days: Option<i64>,
+}
+
+/// Daily "storage saved" series behind the Settings chart.
+async fn storage(
+    State(st): State<AppState>,
+    user: AuthUser,
+    Query(q): Query<StorageQuery>,
+) -> Result<Json<Value>, ApiError> {
+    let days = q.days.unwrap_or(30);
+    let series = db::storage_by_day(&st.db, &user.username, days, now_secs()).await?;
+    let total: i64 = series.iter().map(|d| d.bytes).sum();
+    let files: i64 = series.iter().map(|d| d.files).sum();
+    Ok(Json(
+        json!({ "days": series, "total_bytes": total, "total_files": files }),
+    ))
+}
+
+// ── Settings ──────────────────────────────────────────────────────────────
+
+/// Setting key for the duplicate-detection Hamming distance.
+const KEY_DUP_DISTANCE: &str = "duplicate_distance";
+
+/// Widest Hamming distance the UI may ask for. Two 64-bit dHashes that differ
+/// in more than ~20 bits are not the same photo by any reading, and letting the
+/// value climb further would sweep unrelated shots into one group.
+const DUP_DISTANCE_MAX: u32 = 20;
+
+/// The user's duplicate distance, falling back to
+/// `EASYCLEAN_DUPLICATE_DISTANCE_THRESHOLD` when they have never set one.
+async fn resolve_dup_distance(st: &AppState, user: &str) -> u32 {
+    match db::get_setting(&st.db, user, KEY_DUP_DISTANCE).await {
+        Ok(Some(v)) => v
+            .parse::<u32>()
+            .map(|d| d.min(DUP_DISTANCE_MAX))
+            .unwrap_or(st.cfg.duplicate_distance_threshold),
+        _ => st.cfg.duplicate_distance_threshold,
+    }
+}
+
+async fn settings_get(State(st): State<AppState>, user: AuthUser) -> Result<Json<Value>, ApiError> {
+    Ok(Json(json!({
+        "duplicate_distance": resolve_dup_distance(&st, &user.username).await,
+        "duplicate_distance_max": DUP_DISTANCE_MAX,
+    })))
+}
+
+#[derive(Deserialize)]
+struct SettingsReq {
+    duplicate_distance: Option<u32>,
+}
+
+/// Save settings. Changing the duplicate distance re-clusters immediately —
+/// a setting that only took effect after the next full scan would look broken.
+async fn settings_put(
+    State(st): State<AppState>,
+    user: AuthUser,
+    Json(b): Json<SettingsReq>,
+) -> Result<Json<Value>, ApiError> {
+    let mut groups: Option<usize> = None;
+
+    if let Some(raw) = b.duplicate_distance {
+        if raw > DUP_DISTANCE_MAX {
+            return Err(ApiError::bad(&format!(
+                "duplicate_distance must be 0..={DUP_DISTANCE_MAX}"
+            )));
+        }
+        db::set_setting(&st.db, &user.username, KEY_DUP_DISTANCE, &raw.to_string()).await?;
+        groups = Some(detect::regroup_duplicates(&st.db, &user.username, raw).await?);
+    }
+
+    Ok(Json(json!({
+        "duplicate_distance": resolve_dup_distance(&st, &user.username).await,
+        "duplicate_groups": groups,
+    })))
+}
+
 // ── Trash ─────────────────────────────────────────────────────────────────
 
 async fn trash_list(State(st): State<AppState>, user: AuthUser) -> Result<Json<Value>, ApiError> {
@@ -563,6 +696,7 @@ async fn trash_purge_one(
     }
     fileops::purge(FsPath::new(&m.path)).map_err(ApiError::internal)?;
     db::delete_media_row(&st.db, id).await?;
+    drop_derived(&st, &m);
     Ok(Json(json!({ "purged": id })))
 }
 
@@ -575,6 +709,7 @@ async fn trash_purge_all(
     for f in files {
         fileops::purge(FsPath::new(&f.path)).map_err(ApiError::internal)?;
         db::delete_media_row(&st.db, f.id).await?;
+        drop_derived(&st, &f);
         purged += 1;
     }
     Ok(Json(json!({ "purged": purged })))
@@ -611,6 +746,7 @@ async fn run_retention(st: &AppState) {
                     } else if let Err(e) = db::delete_media_row(&st.db, f.id).await {
                         tracing::warn!("retention db delete {}: {e}", f.id);
                     } else {
+                        drop_derived(st, &f);
                         tracing::info!("retention: purged {}", f.filename);
                     }
                 }
@@ -639,6 +775,21 @@ async fn owned_media(st: &AppState, user: &AuthUser, id: i64) -> Result<MediaFil
     Ok(m)
 }
 
+/// Where the cached preview for `id` lives.
+fn preview_path(st: &AppState, id: i64) -> std::path::PathBuf {
+    st.cfg.data_dir.join("previews").join(format!("{id}.jpg"))
+}
+
+/// Drop the derived files (thumbnail + preview) for a permanently purged id.
+/// Best-effort: a caches miss costs a re-render, a failure here must never fail
+/// the purge itself.
+fn drop_derived(st: &AppState, m: &MediaFile) {
+    if let Some(tp) = &m.thumb_path {
+        let _ = std::fs::remove_file(tp);
+    }
+    let _ = std::fs::remove_file(preview_path(st, m.id));
+}
+
 /// Path relative to the user's root (`source/x.jpg`, `clean/Aug 2026/x.jpg`,
 /// `.trash/x.jpg`) for display. Falls back to the file name if `path` somehow
 /// sits outside the root.
@@ -660,6 +811,10 @@ fn enrich(files: Vec<MediaFile>) -> Vec<Value> {
             let mut v = serde_json::to_value(&f).unwrap_or(Value::Null);
             if let Value::Object(ref mut map) = v {
                 map.insert("thumb_url".into(), json!(format!("/api/media/{id}/thumb")));
+                map.insert(
+                    "preview_url".into(),
+                    json!(format!("/api/media/{id}/preview")),
+                );
                 map.insert("raw_url".into(), json!(format!("/api/media/{id}/raw")));
             }
             v
@@ -1079,6 +1234,347 @@ mod tests {
         }
         out.sort();
         out
+    }
+
+    /// The Gallery must keep showing a photo after you keep it. Every review
+    /// mode is scoped to `pending`, which is right for a swipe deck and wrong
+    /// for a library view — `library` mode is what separates the two.
+    #[tokio::test]
+    async fn library_mode_keeps_reviewed_photos_visible() {
+        let st = test_state().await;
+        let auth = bearer(&st);
+
+        let count = |st: AppState, auth: String, mode: &str| {
+            let uri = format!("/api/media/batch?mode={mode}&size=50");
+            async move {
+                let r = app(st)
+                    .oneshot(
+                        Request::builder()
+                            .uri(uri)
+                            .header("authorization", auth)
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(r.status(), StatusCode::OK);
+                body_json(r).await["files"].as_array().unwrap().len()
+            }
+        };
+
+        assert_eq!(count(st.clone(), auth.clone(), "library").await, 1);
+        assert_eq!(count(st.clone(), auth.clone(), "timeline").await, 1);
+
+        // Keep it: it leaves the review deck but must stay in the library.
+        let r = app(st.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/media/swipe")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"file_id":1,"action":"keep"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+
+        assert_eq!(
+            count(st.clone(), auth.clone(), "timeline").await,
+            0,
+            "a kept photo is out of the review deck"
+        );
+        assert_eq!(
+            count(st.clone(), auth.clone(), "library").await,
+            1,
+            "but it is still in the gallery"
+        );
+
+        // Trashing does remove it from the library — trash has its own screen.
+        let r = app(st.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/media/swipe")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"file_id":1,"action":"delete"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+        assert_eq!(count(st.clone(), auth.clone(), "library").await, 0);
+    }
+
+    /// The Settings slider has to change real behaviour, not just persist a
+    /// number: saving a distance must re-cluster the library immediately.
+    #[tokio::test]
+    async fn duplicate_sensitivity_persists_and_regroups() {
+        let st = test_state().await;
+        let auth = bearer(&st);
+
+        // Two identical hashes plus one far away. At distance 0 the identical
+        // pair groups and the outlier doesn't; the pair is the only group.
+        for (id, phash) in [(1i64, "ffffffffffffffff")] {
+            db::update_analysis(&st.db, id, Some(500.0), false, phash, None)
+                .await
+                .unwrap();
+        }
+        for (path, phash) in [
+            ("media/saiz/dup.jpg", "ffffffffffffffff"),
+            ("media/saiz/other.jpg", "0000000000000000"),
+        ] {
+            let id = db::insert_media(
+                &st.db,
+                &NewMedia {
+                    user: "saiz".into(),
+                    path: st.cfg.data_dir.join(path).to_string_lossy().into(),
+                    rel_path: None,
+                    filename: "f.jpg".into(),
+                    media_type: "image".into(),
+                    size_bytes: 10,
+                    created_at: 1_700_000_000,
+                    gps_lat: None,
+                    gps_lon: None,
+                },
+            )
+            .await
+            .unwrap();
+            db::update_analysis(&st.db, id, Some(500.0), false, phash, None)
+                .await
+                .unwrap();
+        }
+
+        // Default, before anything is saved, is the env/config value.
+        let r = app(st.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/api/settings")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+        assert_eq!(
+            body_json(r).await["duplicate_distance"],
+            json!(st.cfg.duplicate_distance_threshold)
+        );
+
+        // Saving 0 groups only the byte-identical pair.
+        let r = app(st.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/settings")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"duplicate_distance":0}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+        let v = body_json(r).await;
+        assert_eq!(v["duplicate_distance"], json!(0));
+        assert_eq!(v["duplicate_groups"], json!(1), "the identical pair groups");
+
+        // It survives the request — this is the bit the old UI never did.
+        let r = app(st.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/api/settings")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(body_json(r).await["duplicate_distance"], json!(0));
+
+        // At the widest setting everything collapses into one group, proving
+        // the value actually feeds the clustering.
+        let r = app(st.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/settings")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"duplicate_distance":20}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let v = body_json(r).await;
+        assert_eq!(v["duplicate_distance"], json!(20));
+        assert_eq!(v["duplicate_groups"], json!(1));
+
+        // Out-of-range is rejected rather than silently clamped.
+        let r = app(st.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/settings")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"duplicate_distance":64}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// The Settings chart is fed by this endpoint; it used to be a hardcoded
+    /// array of bars. Every day in the window must be present, even empty ones,
+    /// and the totals must add up to what was actually binned.
+    #[tokio::test]
+    async fn storage_series_reports_real_trashed_bytes() {
+        let st = test_state().await;
+        let auth = bearer(&st);
+
+        let r = app(st.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/api/stats/storage?days=30")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+        let v = body_json(r).await;
+        assert_eq!(
+            v["days"].as_array().unwrap().len(),
+            30,
+            "zero-filled window"
+        );
+        assert_eq!(v["total_bytes"], json!(0));
+
+        // Bin the seeded 10-byte file, then it should show up today.
+        let r = app(st.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/media/swipe")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"file_id":1,"action":"delete"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+
+        let r = app(st.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/api/stats/storage?days=30")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let v = body_json(r).await;
+        assert_eq!(v["total_bytes"], json!(10));
+        assert_eq!(v["total_files"], json!(1));
+        let days = v["days"].as_array().unwrap();
+        assert_eq!(days.last().unwrap()["bytes"], json!(10), "landed on today");
+    }
+
+    /// A preview is rendered from the original and cached; it must be bigger
+    /// than the thumbnail, or the swipe deck is no easier to judge than before.
+    #[tokio::test]
+    async fn preview_renders_larger_than_thumb_and_caches() {
+        use image::{Rgb, RgbImage};
+
+        let st = test_state().await;
+        let auth = bearer(&st);
+
+        // Replace the seeded row's path with a real on-disk image bigger than
+        // THUMB_MAX, so the two sizes are actually distinguishable.
+        let media_dir = st.cfg.media_root.join("saiz");
+        std::fs::create_dir_all(&media_dir).unwrap();
+        let src = media_dir.join("big.png");
+        let mut img = RgbImage::new(1200, 800);
+        for (x, y, px) in img.enumerate_pixels_mut() {
+            let v = ((x * 3 + y * 7) % 256) as u8;
+            *px = Rgb([v, v.wrapping_mul(2), 255 - v]);
+        }
+        img.save(&src).unwrap();
+        db::update_path(&st.db, 1, &src.to_string_lossy(), "source/big.png")
+            .await
+            .unwrap();
+
+        let cached = st.cfg.data_dir.join("previews").join("1.jpg");
+        assert!(!cached.exists(), "nothing cached before the first request");
+
+        let r = app(st.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/api/media/1/preview")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(r.into_body(), usize::MAX)
+            .await
+            .unwrap();
+
+        assert!(cached.exists(), "preview cached for the next request");
+        let decoded = image::load_from_memory(&bytes).unwrap();
+        assert!(
+            decoded.width() > easyclean_core::thumbs::THUMB_MAX,
+            "preview ({}px) must beat the {}px thumbnail",
+            decoded.width(),
+            easyclean_core::thumbs::THUMB_MAX
+        );
+        assert!(decoded.width() <= easyclean_core::thumbs::PREVIEW_MAX);
+    }
+
+    /// Another user's id must not be readable through the preview route, the
+    /// same as thumb and raw.
+    #[tokio::test]
+    async fn preview_refuses_another_users_media() {
+        let st = test_state().await;
+        let other = db::insert_media(
+            &st.db,
+            &NewMedia {
+                user: "someone-else".into(),
+                path: "/media/other/secret.jpg".into(),
+                rel_path: None,
+                filename: "secret.jpg".into(),
+                media_type: "image".into(),
+                size_bytes: 10,
+                created_at: 1_700_000_000,
+                gps_lat: None,
+                gps_lon: None,
+            },
+        )
+        .await
+        .unwrap();
+        let auth = bearer(&st);
+
+        let r = app(st)
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/media/{other}/preview"))
+                    .header("authorization", auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

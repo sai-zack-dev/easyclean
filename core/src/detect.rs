@@ -122,6 +122,25 @@ pub async fn run_detection(
     Ok(stats)
 }
 
+/// Re-cluster a user's already-hashed files at a new Hamming distance and
+/// return the number of duplicate groups.
+///
+/// Cheap by design: perceptual hashes are already in the database, so changing
+/// the sensitivity is a regroup, never a re-decode — the expensive part of
+/// [`run_detection`] does not run again. Old group ids are cleared first, or a
+/// file dropped from a group by a stricter setting would keep its stale id.
+pub async fn regroup_duplicates(pool: &Db, user: &str, dup_distance: u32) -> Result<usize> {
+    let hashes = db::all_phashes(pool, user).await?;
+    db::clear_groups(pool, user).await?;
+    let groups = group_duplicates(&hashes, dup_distance);
+    for (gid, ids) in &groups {
+        for id in ids {
+            db::set_group(pool, *id, gid).await?;
+        }
+    }
+    Ok(groups.len())
+}
+
 /// Decode an image once and derive blur score, perceptual hash, and a thumbnail.
 pub fn analyze_image(path: &Path, thumb_out: &Path, blur_threshold: f64) -> Option<Analysis> {
     let img = crate::decode::open_image(path).ok()?;

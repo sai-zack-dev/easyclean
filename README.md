@@ -71,8 +71,16 @@ docker compose down && rm data/easyclean.db && docker compose up -d   # wipe DB 
 | `EASYCLEAN_SECRET` | *generated* | JWT signing secret. Empty ⇒ a random key is generated into `<data>/secret.key` (0600) and reused |
 | `EASYCLEAN_CORS_ORIGINS` | — | Extra allowed browser origins (comma-separated). Empty ⇒ same-origin only |
 | `EASYCLEAN_BLUR_THRESHOLD` | `100.0` | Laplacian-variance blur cutoff |
-| `EASYCLEAN_DUPLICATE_DISTANCE_THRESHOLD` | `10` | Max pHash Hamming distance for duplicates |
+| `EASYCLEAN_DUPLICATE_DISTANCE_THRESHOLD` | `10` | Max pHash Hamming distance for duplicates. **First-run default only** — each user sets this from Settings → Duplicate Sensitivity, which overrides it |
 | `EASYCLEAN_TRASH_RETENTION_DAYS` | `30` | Days in `.trash` before auto-purge |
+
+Settings live in two places, on purpose:
+
+- **Environment variables** are *operator* settings — where the media is, what port to bind, who gets
+  seeded, how long the trash is kept. They apply to the whole server and need a restart.
+- **The app's Settings screen** holds *per-user* preferences, stored in the database and applied
+  immediately. Duplicate Sensitivity is the first of these; the env var above only decides what a
+  brand-new user starts on.
 
 ---
 
