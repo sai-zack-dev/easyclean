@@ -5,7 +5,18 @@
  * reload when this file changes, which is worth the callsite ergonomics.
  */
 /* eslint-disable react-refresh/only-export-components */
+import { MARK_PATH, MARK_VIEWBOX } from './brand'
+
 export const IC = {
+  /*
+   * The brand mark — the only filled glyph in here; the rest are stroked line
+   * icons. Callers colour it with `fill`, same as the others.
+   */
+  mark: () => (
+    <svg viewBox={MARK_VIEWBOX} xmlns="http://www.w3.org/2000/svg">
+      <path d={MARK_PATH} />
+    </svg>
+  ),
   broom: () => (
     <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
       <path d="M3 21l9-9M9.5 3.5l1.5 1.5-7 7-1.5-1.5z" />

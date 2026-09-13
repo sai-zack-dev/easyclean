@@ -14,7 +14,7 @@
  *                          would show stale counts or leak one user's data)
  */
 
-const VERSION = 'v1'
+const VERSION = 'v2'
 const SHELL_CACHE = `easyclean-shell-${VERSION}`
 const ASSET_CACHE = `easyclean-assets-${VERSION}`
 const THUMB_CACHE = `easyclean-thumbs-${VERSION}`

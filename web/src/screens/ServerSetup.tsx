@@ -36,7 +36,7 @@ export function ServerSetup({ onDone }: Props) {
       <div className="auth-panel">
         <div className="auth-logo">
           <div className="auth-logo-icon">
-            <IC.broom />
+            <IC.mark />
           </div>
           <h1 className="auth-title">Connect to EasyClean</h1>
           <p className="auth-sub">Enter your EasyClean server address</p>

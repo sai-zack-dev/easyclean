@@ -125,8 +125,10 @@ body,
   flex-shrink: 0;
 }
 .sidebar-brand-icon svg {
-  width: 18px;
-  height: 18px;
+  /* The brand mark is a tight filled glyph, not a padded line icon, so it wants
+     a smaller box than the icons elsewhere to sit right inside the tile. */
+  width: 16px;
+  height: 16px;
   fill: var(--bg);
 }
 .sidebar-brand-name {
@@ -1613,8 +1615,8 @@ input[type="range"]::-webkit-slider-thumb {
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
 }
 .auth-logo-icon svg {
-  width: 26px;
-  height: 26px;
+  width: 24px;
+  height: 24px;
   fill: var(--text);
 }
 .auth-title {

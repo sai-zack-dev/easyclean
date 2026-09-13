@@ -25,6 +25,11 @@ All notable changes to EasyClean are documented here. The format follows
   detection, per-screen queries, and incremental rescan.
 
 ### Changed
+- **Brand mark** — the isometric "e" logo replaces the placeholder broom glyph and the generated teal
+  sparkle icon. Traced from the source artwork to a single outline in `web/src/brand.ts`, which the
+  React icon and `scripts/generate-icons.mjs` both read, so the in-app logo, favicon and PWA icons
+  can't drift apart. In-app it's coloured by its container and inverts with the theme; the app icons
+  are a white glyph on a true-black tile.
 - **Login screen redesign** — ambient gradient backdrop, logo tile, large heading, labeled fields, a
   passcode reveal toggle, and a footer note, in both themes. `ServerSetup` shares the same shell.
 - **Friendlier auth errors.** `ApiError` now carries the HTTP status and unwraps the server's
