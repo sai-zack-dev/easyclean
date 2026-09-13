@@ -55,7 +55,7 @@ export function LoginScreen({ onLogin }: Props) {
       <div className="auth-panel">
         <div className="auth-logo">
           <div className="auth-logo-icon">
-            <IC.broom />
+            <IC.mark />
           </div>
           <h1 className="auth-title">Log in to EasyClean</h1>
           <p className="auth-sub">Sign in to your account</p>

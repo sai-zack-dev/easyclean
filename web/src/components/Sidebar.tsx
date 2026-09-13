@@ -23,7 +23,7 @@ export function Sidebar({ tab, setTab, username }: Props) {
     <nav className="sidebar">
       <div className="sidebar-brand">
         <div className="sidebar-brand-icon">
-          <IC.broom />
+          <IC.mark />
         </div>
         <div>
           <div className="sidebar-brand-name">EasyClean</div>

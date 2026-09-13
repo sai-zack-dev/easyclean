@@ -57,6 +57,26 @@ Bottom tab bar — floating rounded pill, 4 tabs, active tab gets a raised light
 > URL + Online status) and storage is **per-user, three folders** — `source` (to review), `clean`
 > (kept/organized → physical albums), `.trash` (deleted, retained). Multi-user with an Admin role.
 
+## Brand mark
+
+The logo is an isometric **"e"** — a single filled outline, monochrome, no gradients or accent colour.
+It inverts with the theme like any other token-coloured shape, which is the whole reason it is a bare
+path and not an image.
+
+**One definition:** [`web/src/brand.ts`](../web/src/brand.ts) exports `MARK_PATH` + `MARK_VIEWBOX`
+(a square viewBox, glyph tight and centred — it is taller than it is wide, so it self-pads). React
+reaches it as `IC.mark`; `web/scripts/generate-icons.mjs` reads the same constant to render
+`public/favicon.svg` and the PWA icon set. Change the path, re-run the script — nothing drifts.
+
+**Placement**
+- *In-app* (sidebar brand, auth screens): the path alone, coloured by its container —
+  `fill: var(--bg)` on the inverted `--text` tile in the sidebar, `fill: var(--text)` on the card
+  at login. Size the glyph to ~50% of its tile; it is tight, so it needs a smaller box than the
+  stroked line icons.
+- *Favicon / app icons*: white glyph on a true-black tile (22% corner radius), always — an OS icon
+  sits on a wallpaper or tab strip of someone else's choosing, so it brings its own ground instead of
+  following the theme.
+
 ## Theme system
 
 Three modes — **Dark / Light / System** — plus a user **accent color**. Implement as semantic tokens:

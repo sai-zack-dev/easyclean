@@ -1,93 +1,170 @@
 /**
- * Generates the PWA icon set into web/public/.
+ * Renders the brand mark into `web/public/`: the favicon plus the PWA icon set.
  *
- * Deliberately dependency-free: Node's zlib is enough to write a PNG, and
- * pulling a 30 MB image toolchain into the install just to draw four sparkles
- * is not a trade worth making. Run it when the mark changes:
+ * The mark itself lives in `src/brand.ts` — this script reads MARK_PATH out of
+ * that file so the in-app logo, the tab icon and the installed app icon are all
+ * the same outline. Re-run it whenever the mark changes:
  *
  *   node scripts/generate-icons.mjs
  *
- * Mark: true-black tile + a teal four-pointed sparkle (astroid) with a small
- * white companion — the "cleaned up" metaphor, in the OLED palette from ui.md.
+ * Deliberately dependency-free: the mark traces to a plain M/L/Z polygon, which
+ * a scanline fill and Node's own zlib can turn into a PNG. Pulling a 30 MB
+ * image toolchain into the install to draw one glyph is not a trade worth
+ * making.
+ *
+ * Treatment: the true-black tile and white glyph of the OLED palette in ui.md.
+ * An icon sits on whatever wallpaper or tab strip the OS gives it, so it brings
+ * its own ground rather than inheriting the theme the way the in-app logo does.
  */
 import { deflateSync } from 'node:zlib'
-import { writeFileSync, mkdirSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const OUT = join(dirname(fileURLToPath(import.meta.url)), '..', 'public')
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+const OUT = join(ROOT, 'public')
 
-const BG = [0, 0, 0] //   --bg          true black
-const TEAL = [45, 212, 191] // accent    #2DD4BF
-const WHITE = [255, 255, 255]
+const BG = [0, 0, 0] //      --bg    true black
+const FG = [255, 255, 255] // --text  white
 
-/** 4× supersampling — cheap antialiasing without a rasterizer. */
+/** Corner radius of the tile, as a fraction of its side. */
+const TILE_RADIUS = 0.22
+/** 4× supersampling down the y axis; x coverage is computed exactly. */
 const SS = 4
 
-/** Astroid: |x|^(2/3) + |y|^(2/3) <= r^(2/3). A concave 4-point sparkle. */
-const inSparkle = (dx, dy, r) =>
-  Math.pow(Math.abs(dx), 2 / 3) + Math.pow(Math.abs(dy), 2 / 3) <= Math.pow(r, 2 / 3)
-
-/** Rounded-square coverage test (corner radius as a fraction of the side). */
-function inRoundedSquare(x, y, size, radiusFrac) {
-  const r = size * radiusFrac
-  const cx = Math.min(Math.max(x, r), size - r)
-  const cy = Math.min(Math.max(y, r), size - r)
-  const dx = x - cx
-  const dy = y - cy
-  return dx * dx + dy * dy <= r * r
-}
+// ── The mark ────────────────────────────────────────────────────────────────
 
 /**
- * Draw one icon.
- * @param {number} size   pixel side
- * @param {boolean} maskable  full-bleed square (Android masks it itself) and a
- *                            smaller glyph so nothing lands in the crop zone
+ * Pull MARK_PATH out of src/brand.ts. A build script can't import TypeScript,
+ * and the alternative — a second copy of the path here — is exactly the drift
+ * this script exists to prevent.
  */
-function drawIcon(size, maskable) {
-  const rgba = Buffer.alloc(size * size * 4)
-  // Maskable icons get cropped to as little as 80% — keep the mark well inside.
-  const scale = maskable ? 0.60 : 0.70
-  const bigR = (size * scale) / 2
-  const bigCx = size * 0.46
-  const bigCy = size * 0.54
-  const smallR = bigR * 0.3
-  const smallCx = size * 0.74
-  const smallCy = size * 0.26
+function readMarkPath() {
+  const src = readFileSync(join(ROOT, 'src', 'brand.ts'), 'utf8')
+  const m = src.match(/export const MARK_PATH\s*=\s*'([^']+)'/)
+  if (!m) throw new Error('could not find MARK_PATH in src/brand.ts')
+  return m[1]
+}
 
-  for (let y = 0; y < size; y++) {
+/** Parse the mark's M/L/Z path into closed rings of points. */
+function parsePath(d) {
+  const rings = []
+  let ring = null
+  for (const [, cmd, nums] of d.matchAll(/([MLZ])([-\d. ]*)/g)) {
+    if (cmd === 'Z') {
+      if (ring) rings.push(ring)
+      ring = null
+      continue
+    }
+    const [x, y] = nums.trim().split(/\s+/).map(Number)
+    if (!Number.isFinite(x) || !Number.isFinite(y)) throw new Error(`bad point in path: "${nums}"`)
+    if (cmd === 'M') rings.push((ring = []))
+    ring.push([x, y])
+  }
+  return rings.filter((r) => r.length > 2)
+}
+
+const MARK_PATH = readMarkPath()
+const MARK_RINGS = parsePath(MARK_PATH)
+
+// ── Rasterising ─────────────────────────────────────────────────────────────
+
+/**
+ * Scanline-fill the mark into a coverage map (0..1 per pixel), non-zero winding.
+ * Supersampled down y; across x each span contributes its exact overlap with
+ * the pixel, which is where most of the smoothness comes from.
+ */
+function rasterMark(rings, size, scale, offX, offY) {
+  const cov = new Float32Array(size * size)
+  const edges = []
+  for (const ring of rings) {
+    for (let i = 0; i < ring.length; i++) {
+      const [ax, ay] = ring[i]
+      const [bx, by] = ring[(i + 1) % ring.length]
+      if (ay === by) continue // horizontal edges never cross a scanline
+      edges.push([ax * scale + offX, ay * scale + offY, bx * scale + offX, by * scale + offY])
+    }
+  }
+
+  const xs = []
+  for (let sy = 0; sy < size * SS; sy++) {
+    const y = (sy + 0.5) / SS
+    xs.length = 0
+    for (const [ax, ay, bx, by] of edges) {
+      if (ay <= y === by <= y) continue
+      xs.push([ax + ((y - ay) * (bx - ax)) / (by - ay), by > ay ? 1 : -1])
+    }
+    if (!xs.length) continue
+    xs.sort((p, q) => p[0] - q[0])
+
+    const row = Math.floor(sy / SS) * size
+    let winding = 0
+    for (let i = 0; i < xs.length - 1; i++) {
+      winding += xs[i][1]
+      if (winding === 0) continue
+      const xa = Math.max(xs[i][0], 0)
+      const xb = Math.min(xs[i + 1][0], size)
+      if (xb <= xa) continue
+      // Distribute the span across the pixels it touches, by exact overlap.
+      for (let px = Math.floor(xa); px < xb; px++) {
+        const overlap = Math.min(xb, px + 1) - Math.max(xa, px)
+        if (overlap > 0) cov[row + px] += overlap / SS
+      }
+    }
+  }
+  return cov
+}
+
+/** Coverage of a rounded square, supersampled. */
+function rasterTile(size, radiusFrac) {
+  const cov = new Float32Array(size * size)
+  const r = size * radiusFrac
+  for (let y = 0; y < size; y++)
     for (let x = 0; x < size; x++) {
-      let bgHits = 0
-      let tealHits = 0
-      let whiteHits = 0
-
-      for (let sy = 0; sy < SS; sy++) {
+      if (radiusFrac === 0) {
+        cov[y * size + x] = 1
+        continue
+      }
+      let hits = 0
+      for (let sy = 0; sy < SS; sy++)
         for (let sx = 0; sx < SS; sx++) {
           const px = x + (sx + 0.5) / SS
           const py = y + (sy + 0.5) / SS
-          const inTile = maskable || inRoundedSquare(px, py, size, 0.22)
-          if (!inTile) continue
-          bgHits++
-          if (inSparkle(px - smallCx, py - smallCy, smallR)) whiteHits++
-          else if (inSparkle(px - bigCx, py - bigCy, bigR)) tealHits++
+          const cx = Math.min(Math.max(px, r), size - r)
+          const cy = Math.min(Math.max(py, r), size - r)
+          const dx = px - cx
+          const dy = py - cy
+          if (dx * dx + dy * dy <= r * r) hits++
         }
-      }
-
-      const total = SS * SS
-      const i = (y * size + x) * 4
-      if (bgHits === 0) continue // transparent outside the rounded tile
-
-      // Composite glyph over background, weighted by subsample coverage.
-      const glyphHits = tealHits + whiteHits
-      const plainBg = bgHits - glyphHits
-      const mix = (ch) =>
-        (BG[ch] * plainBg + TEAL[ch] * tealHits + WHITE[ch] * whiteHits) / bgHits
-
-      rgba[i] = Math.round(mix(0))
-      rgba[i + 1] = Math.round(mix(1))
-      rgba[i + 2] = Math.round(mix(2))
-      rgba[i + 3] = Math.round((bgHits / total) * 255)
+      cov[y * size + x] = hits / (SS * SS)
     }
+  return cov
+}
+
+/**
+ * Draw one icon: white mark on a black tile.
+ * @param {number} size        pixel side
+ * @param {boolean} fullBleed  square tile, and a smaller glyph — for maskable
+ *                             icons (Android crops to as little as 80%) and for
+ *                             iOS, which rounds the corners itself.
+ */
+function drawIcon(size, fullBleed) {
+  // Fraction of the tile the mark's height takes up.
+  const markScale = fullBleed ? 0.5 : 0.62
+  const scale = (size * markScale) / 100
+  const off = (size - 100 * scale) / 2
+
+  const tile = rasterTile(size, fullBleed ? 0 : TILE_RADIUS)
+  const mark = rasterMark(MARK_RINGS, size, scale, off, off)
+
+  const rgba = Buffer.alloc(size * size * 4)
+  for (let i = 0; i < size * size; i++) {
+    const a = tile[i]
+    if (a === 0) continue // transparent outside the tile
+    const g = Math.min(mark[i], 1) * a // the glyph can't spill past the tile
+    const p = i * 4
+    for (let ch = 0; ch < 3; ch++) rgba[p + ch] = Math.round((BG[ch] * (a - g) + FG[ch] * g) / a)
+    rgba[p + 3] = Math.round(a * 255)
   }
   return rgba
 }
@@ -146,6 +223,18 @@ function encodePng(rgba, size) {
 
 mkdirSync(OUT, { recursive: true })
 
+// The favicon gets the same tile treatment as the PNGs, so a browser that
+// prefers the SVG and one that falls back to icon-192 show the same thing.
+const markScale = 0.62
+const offset = (100 - 100 * markScale) / 2
+const favicon =
+  `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">` +
+  `<rect width="100" height="100" rx="${100 * TILE_RADIUS}" fill="#000"/>` +
+  `<path transform="translate(${offset} ${offset}) scale(${markScale})" d="${MARK_PATH}" fill="#fff"/>` +
+  `</svg>\n`
+writeFileSync(join(OUT, 'favicon.svg'), favicon)
+console.log('wrote public/favicon.svg')
+
 const icons = [
   ['icon-192.png', 192, false],
   ['icon-512.png', 512, false],
@@ -153,7 +242,7 @@ const icons = [
   ['apple-touch-icon.png', 180, true], // iOS masks it itself; no transparency
 ]
 
-for (const [name, size, maskable] of icons) {
-  writeFileSync(join(OUT, name), encodePng(drawIcon(size, maskable), size))
-  console.log(`wrote public/${name} (${size}×${size}${maskable ? ', maskable' : ''})`)
+for (const [name, size, fullBleed] of icons) {
+  writeFileSync(join(OUT, name), encodePng(drawIcon(size, fullBleed), size))
+  console.log(`wrote public/${name} (${size}×${size}${fullBleed ? ', full-bleed' : ''})`)
 }
