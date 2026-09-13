@@ -107,6 +107,17 @@ pub struct TimelineMonth {
     pub reviewed: i64,
 }
 
+/// One day of the Settings screen's "Storage Saved" chart.
+#[derive(Debug, Default, Clone, Serialize)]
+pub struct StorageDay {
+    /// Unix seconds at the start of the day (UTC).
+    pub day: i64,
+    /// Bytes of media binned that day.
+    pub bytes: i64,
+    /// How many files that was.
+    pub files: i64,
+}
+
 /// Aggregate counts for the stats screen.
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct StatsSummary {

@@ -30,6 +30,7 @@ interface Props {
 
 export function SwipeCard({ file, badge, onKeep, onDelete }: Props) {
   const [imgErr, setImgErr] = useState(false)
+  const [loaded, setLoaded] = useState(false)
   const [fav, setFav] = useState(file.is_favorite)
 
   const toggleFav = () => {
@@ -72,12 +73,21 @@ export function SwipeCard({ file, badge, onKeep, onDelete }: Props) {
           <div className="swipe-card-empty-txt">{file.filename}</div>
         </div>
       ) : (
-        <img
-          src={api.thumbUrl(file.id)}
-          onError={() => setImgErr(true)}
-          draggable={false}
-          alt=""
-        />
+        <div className="swipe-card-img">
+          {/* Two layers, on purpose. The thumbnail is already cached from the
+              batch request, so it paints instantly and the card is never blank;
+              the full preview fades in over it once rendered. Judging sharpness
+              off the 480px thumb alone is exactly what made review unusable. */}
+          <img className="ph" src={api.thumbUrl(file.id)} draggable={false} alt="" aria-hidden="true" />
+          <img
+            className={`full ${loaded ? 'in' : ''}`}
+            src={api.previewUrl(file.id)}
+            onLoad={() => setLoaded(true)}
+            onError={() => setImgErr(true)}
+            draggable={false}
+            alt=""
+          />
+        </div>
       )}
 
       <motion.div className="swipe-overlay kp" style={{ opacity: overlayKpOpacity }}>

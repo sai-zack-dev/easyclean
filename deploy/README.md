@@ -141,6 +141,30 @@ Note the rollout job already backs itself out: if the new image doesn't answer
 `/api/health` within 60s it restores the previous tag on its own. Reaching for
 either of the above means something got past that.
 
+### Rolling back across a database migration
+
+A release that adds a migration changes `data/easyclean.db` in place, and a
+migration cannot be un-applied. Rolling back to an image built **before
+v0.1.1** will fail to start against such a database — sqlx aborts when the
+database carries a migration the binary doesn't know about, so the container
+crash-loops rather than recovering. From v0.1.1 on the server tolerates this
+and an older image boots normally, ignoring tables it doesn't use.
+
+The rollout job snapshots the index into `data/backups/` before every
+deployment (last 10 kept). To go back to a pre-v0.1.1 image:
+
+```bash
+cd /opt/easyclean
+docker compose down
+ls -1t data/backups/                       # pick the snapshot from before the upgrade
+cp data/backups/easyclean-<stamp>-pre-<tag>.db data/easyclean.db
+sudo sed -i 's/^EASYCLEAN_IMAGE_TAG=.*/EASYCLEAN_IMAGE_TAG=0.1.0/' .env
+docker compose up -d
+```
+
+Review decisions made after the upgrade are lost by that restore — the photos
+themselves are untouched, since the database only holds the index.
+
 **Back up** what you can't rebuild:
 
 ```bash

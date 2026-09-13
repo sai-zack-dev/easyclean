@@ -8,6 +8,82 @@ All notable changes to EasyClean are documented here. The format follows
 
 Nothing yet.
 
+## [0.1.1] — 2026-09-13
+
+Review quality, detail views, and settings that actually do something.
+
+### Added
+- **Full-quality previews** (`GET /api/media/:id/preview`) — a 1600px, quality-88 JPEG rendered from
+  the original and cached under `<data_dir>/previews/`. The swipe deck and the new detail viewer use
+  it instead of the 480px thumbnail, which was far too soft to judge a photo by. The thumbnail is
+  still painted first as an instant placeholder and cross-fades out. Videos fall back to their
+  first-frame thumbnail, and an undecodable file falls back rather than breaking the card.
+- **Photo detail viewer** — full-screen view opened from the Gallery grid or from inside an album:
+  arrow-key and on-screen paging across the whole set, Escape to close, favourite toggle, and
+  filename/date/size/flags. Videos play inline.
+- **Album detail view** — album cards open their contents as a grid (paged, 60 at a time), and any
+  photo opens in the viewer.
+- **Real "Storage Saved" chart** (`GET /api/stats/storage?days=N`) — bytes and file counts binned per
+  day, zero-filled across the window. The Settings chart previously drew a hardcoded array of bars
+  and a fake "+12% vs last 30 days".
+- **Per-user settings** (`GET`/`POST /api/settings`, `user_setting` table) — the first key is
+  `duplicate_distance`. `EASYCLEAN_*` env vars remain the fallback for anything never set.
+- **Gallery filename search** — the search button in the Gallery header now filters; it previously
+  did nothing. Semantic search remains a later phase.
+- **Designed icon set.** The supplied Broom, Pictures Folder, Settings, Fire and Trophy artwork now
+  drives Clean/Gallery/Setting in the nav, the streak badges, and the Settings Library rows. The
+  files are Figma exports that wrap a 90x90 white-on-transparent PNG inside an `.svg`, so they are
+  used as CSS alpha *masks* over `currentColor` rather than as images — that is what lets raster
+  artwork follow the theme and the accent. Each is inlined by Vite, so there are no extra requests.
+
+### Fixed
+- **Duplicate Sensitivity now works.** The slider was inert — no `onChange`, no persistence, no
+  effect on detection. It now maps Low/Medium/High to pHash Hamming distances 4/10/16, saves per
+  user, and re-clusters the library immediately via `detect::regroup_duplicates`, which reuses the
+  stored hashes so changing the setting never re-decodes anything.
+- **Accent Color now works.** `--accent` was defined in both themes but referenced by no rule, so
+  picking a swatch changed nothing. It now drives the active nav/tab item, today's streak ring, the
+  storage bars, the selected theme chip, the slider thumb, progress rings and focus outlines. Swatch
+  0 is "Default", meaning *follow the theme* — white on dark, black on light — rather than the old
+  hardcoded `#ffffff`, which was invisible in light mode.
+- **Rollback survives a migration.** sqlx aborts by default when a database
+  carries a migration the binary doesn't know about — exactly the state after deploying a release
+  that adds one. An automatic rollback would then crash-loop instead of restoring service, silently
+  defeating the safety net in `deploy.yml`. Migrations now open with `ignore_missing`, so an older
+  image boots normally against a newer database and ignores tables it doesn't use. `deploy.yml` also
+  snapshots the index into `data/backups/` before every rollout (last 10 kept), and the runbook
+  documents recovery. **Rolling back from 0.1.1 to 0.1.0 still needs that DB restore** — 0.1.0 was
+  built before this fix; from 0.1.1 onwards rollback is clean.
+- **The Clean icon no longer looks like a pen** — it is the supplied broom glyph.
+- **Icon style is consistent per row.** Adopting filled artwork left outline glyphs stranded beside
+  it, so `album`, `calendar`, `clock`, `copy`, `blur` and `folder` were redrawn as filled glyphs.
+  `Calendar.svg` and `Clock.svg` were not used: both are drawn in `#D9D9D9` with colours hardcoded,
+  so they could not follow the theme. `Duplicate Images.svg` was not used either — it layers two
+  photo glyphs around an opaque `#333` card, which flattens to a featureless blob as a mask.
+- **The Gallery no longer hides photos you kept.** `get_batch` scoped every mode to
+  `status = 'pending'`, which is right for a swipe deck and wrong for a library view, so a kept photo
+  vanished from the Gallery. Added `mode=library` (everything except trash) and pointed the Gallery
+  at it.
+- **Progress rings are visible in light mode.** `ProgressRing` hardcoded `rgba(255,255,255,…)`,
+  leaving near-invisible rings on the light theme's white cards; it now uses theme tokens.
+- Purging a file now also deletes its cached thumbnail and preview, instead of leaving them behind.
+
+### Removed
+- Settings rows that told the user nothing actionable: **Server Status**, **Server URL**,
+  **Folder Paths**, and the **Backend URL** input. `ServerSetup` is still the place to point the app
+  at a different backend.
+- **Zoom Sync** — a prototype leftover wired to nothing; there is no zoom feature for it to sync and
+  no cross-device state channel. Its toggle CSS went with it.
+- The Gallery's **Select** button, which had no multi-select or bulk action behind it.
+- **Env-file clutter.** `.env`/`.env.example` are down to the five values you must actually set;
+  anything that only repeated a server default (`EASYCLEAN_TRASH_RETENTION_DAYS`, `RUST_LOG`) is
+  documented as an optional override instead of shipped pre-set. Dropped
+  `EASYCLEAN_CORS_ORIGINS` from `.env.example`, which the local compose file never forwarded, so it
+  silently did nothing. Removed `EASYCLEAN_DUPLICATE_DISTANCE_THRESHOLD` from the production compose
+  and env example now that duplicate sensitivity is a per-user setting — the server still uses it as
+  the first-run default, and the README now spells out which settings are operator-level (env) and
+  which are per-user (Settings screen).
+
 ## [0.1.0] — 2026-09-13
 
 First release deployed to the home server.

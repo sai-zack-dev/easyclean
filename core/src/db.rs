@@ -22,7 +22,18 @@ pub async fn init(db_path: &Path) -> Result<Db> {
         .max_connections(5)
         .connect_with(opts)
         .await?;
-    sqlx::migrate!("./migrations").run(&pool).await?;
+    // `ignore_missing` is what makes a rollback survivable.
+    //
+    // By default sqlx refuses to start when the database carries a migration
+    // the binary doesn't know about — exactly the situation after deploying a
+    // release that adds one and then rolling back. The old image would then
+    // crash-loop instead of restoring service, defeating the auto-rollback in
+    // `deploy.yml`. Migrations here are additive, so an older binary simply
+    // ignoring a newer table is correct; it reads and writes the columns it
+    // knows and leaves the rest alone.
+    let mut migrator = sqlx::migrate!("./migrations");
+    migrator.set_ignore_missing(true);
+    migrator.run(&pool).await?;
     Ok(pool)
 }
 
@@ -159,8 +170,8 @@ pub async fn get_batch(
     Ok(q.fetch_all(pool).await?)
 }
 
-/// How many pending files match a batch mode, ignoring the page size — the
-/// denominator the swipe screen's progress counter needs.
+/// How many files match a batch mode, ignoring the page size — the denominator
+/// the swipe screen's progress counter needs.
 pub async fn count_batch(pool: &Db, user: &str, mode: &str, month: Option<&str>) -> Result<i64> {
     let (filter, month_bind) = batch_filter(mode, month);
     let sql = format!("SELECT COUNT(*) FROM media_file {filter}");
@@ -174,8 +185,16 @@ pub async fn count_batch(pool: &Db, user: &str, mode: &str, month: Option<&str>)
 
 /// Shared `WHERE` clause for `get_batch`/`count_batch`, plus the optional
 /// month value to bind after `user`.
+///
+/// Every review mode is scoped to `pending` — a swipe deck must not re-offer a
+/// photo you already decided on. `library` is the exception: it backs the
+/// Gallery, which is meant to show what you *have*, so it spans pending and
+/// kept alike and only hides what is in the trash.
 fn batch_filter(mode: &str, month: Option<&str>) -> (String, Option<String>) {
-    let mut sql = String::from("WHERE user = ? AND status = 'pending'");
+    let mut sql = match mode {
+        "library" => String::from("WHERE user = ? AND status <> 'trashed'"),
+        _ => String::from("WHERE user = ? AND status = 'pending'"),
+    };
     let mut month_bind: Option<String> = None;
     match mode {
         "blurs" => sql.push_str(" AND is_blurry = 1"),
@@ -596,9 +615,136 @@ pub async fn update_path(pool: &Db, id: i64, new_path: &str, new_rel: &str) -> R
     Ok(())
 }
 
+// ── User settings ─────────────────────────────────────────────────────────
+
+/// Read one setting. `None` means the user never set it — callers fall back to
+/// the `EASYCLEAN_*` config default rather than inventing one here.
+pub async fn get_setting(pool: &Db, user: &str, key: &str) -> Result<Option<String>> {
+    let row: Option<(String,)> =
+        sqlx::query_as("SELECT value FROM user_setting WHERE user = ? AND key = ?")
+            .bind(user)
+            .bind(key)
+            .fetch_optional(pool)
+            .await?;
+    Ok(row.map(|(v,)| v))
+}
+
+/// Write one setting, replacing any previous value.
+pub async fn set_setting(pool: &Db, user: &str, key: &str, value: &str) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO user_setting (user, key, value) VALUES (?, ?, ?) \
+         ON CONFLICT(user, key) DO UPDATE SET value = excluded.value",
+    )
+    .bind(user)
+    .bind(key)
+    .bind(value)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Drop every duplicate-group assignment for a user. Run before re-grouping at
+/// a new sensitivity, or files would keep stale group ids from the old pass.
+pub async fn clear_groups(pool: &Db, user: &str) -> Result<()> {
+    sqlx::query("UPDATE media_file SET group_id = NULL WHERE user = ?")
+        .bind(user)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Bytes sent to the trash per calendar day over the last `days` days, oldest
+/// first, with empty days zero-filled so the caller can render a bar per day.
+///
+/// Reads `trashed_at`, so it only covers files still in the trash: once
+/// retention purges a row the history goes with it. That keeps the series
+/// honest — it is what the trash currently holds, by the day it was binned.
+pub async fn storage_by_day(
+    pool: &Db,
+    user: &str,
+    days: i64,
+    now_secs: i64,
+) -> Result<Vec<crate::models::StorageDay>> {
+    let days = days.clamp(1, 365);
+    let today_bucket = now_secs / 86_400;
+    let first_bucket = today_bucket - (days - 1);
+
+    let rows: Vec<(i64, i64, i64)> = sqlx::query_as(
+        "SELECT (trashed_at / 86400) AS day_bucket, \
+                COALESCE(SUM(size_bytes), 0), \
+                COUNT(*) \
+         FROM media_file \
+         WHERE user = ? AND status = 'trashed' AND trashed_at IS NOT NULL \
+           AND (trashed_at / 86400) >= ? \
+         GROUP BY day_bucket ORDER BY day_bucket ASC",
+    )
+    .bind(user)
+    .bind(first_bucket)
+    .fetch_all(pool)
+    .await?;
+
+    let mut series: Vec<crate::models::StorageDay> = (0..days)
+        .map(|i| crate::models::StorageDay {
+            day: (first_bucket + i) * 86_400,
+            bytes: 0,
+            files: 0,
+        })
+        .collect();
+    for (bucket, bytes, files) in rows {
+        let idx = (bucket - first_bucket) as usize;
+        if let Some(slot) = series.get_mut(idx) {
+            slot.bytes = bytes;
+            slot.files = files;
+        }
+    }
+    Ok(series)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A database carrying a migration this binary has never heard of must
+    /// still open. That is the rollback case: deploy a release that adds a
+    /// migration, roll back, and the older image meets a newer database. sqlx
+    /// aborts on that by default, which would turn an auto-rollback into a
+    /// crash loop instead of a recovery.
+    #[tokio::test]
+    async fn opens_a_database_from_a_newer_version() {
+        let dir = std::env::temp_dir().join("easyclean_db_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let db_path = dir.join("future_migration.db");
+        let _ = std::fs::remove_file(&db_path);
+
+        let pool = init(&db_path).await.expect("first open");
+
+        // Forge a migration from a future release: a higher version than any
+        // file in ./migrations, recorded as applied.
+        let next: i64 =
+            sqlx::query_scalar("SELECT COALESCE(MAX(version), 0) + 1 FROM _sqlx_migrations")
+                .fetch_one(&pool)
+                .await
+                .expect("read applied migrations");
+        sqlx::query(
+            "INSERT INTO _sqlx_migrations \
+             (version, description, installed_on, success, checksum, execution_time) \
+             VALUES (?, 'from the future', CURRENT_TIMESTAMP, 1, X'00', 0)",
+        )
+        .bind(next)
+        .execute(&pool)
+        .await
+        .expect("record future migration");
+        pool.close().await;
+
+        // Re-opening is what an older binary does on rollback.
+        let reopened = init(&db_path)
+            .await
+            .expect("a database from a newer release must still open, or rollback breaks");
+        assert_eq!(count_media(&reopened, "nobody").await.unwrap(), 0);
+        reopened.close().await;
+
+        let _ = std::fs::remove_file(&db_path);
+    }
 
     #[tokio::test]
     async fn migrates_and_inserts() {

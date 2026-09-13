@@ -31,7 +31,9 @@ services:
       EASYCLEAN_SECRET: ${EASYCLEAN_SECRET:-}
       EASYCLEAN_TRASH_RETENTION_DAYS: ${EASYCLEAN_TRASH_RETENTION_DAYS:-30}
       EASYCLEAN_BLUR_THRESHOLD: ${EASYCLEAN_BLUR_THRESHOLD:-100}
-      EASYCLEAN_DUPLICATE_DISTANCE_THRESHOLD: ${EASYCLEAN_DUPLICATE_DISTANCE_THRESHOLD:-10}
+      # No EASYCLEAN_DUPLICATE_DISTANCE_THRESHOLD: duplicate sensitivity moved
+      # to a per-user setting in the app. The server still falls back to its
+      # own default (10) for a user who has never touched that slider.
       RUST_LOG: ${RUST_LOG:-info}
 
     # Bind to the LAN interface only by default. EasyClean speaks plain HTTP;

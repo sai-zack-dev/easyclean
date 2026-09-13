@@ -73,15 +73,27 @@ The media root is mounted read-write. SQLite (in the app data dir) holds metadat
 ```
 POST /api/auth/login   {user, passcode} -> {token}      GET /api/auth/me
 POST /api/scan         (async)                           GET /api/scan/status   (SSE)
-GET  /api/media/batch?mode=timeline|blurs|duplicates&month=&size=
-POST /api/media/swipe  {file_id, action: "keep"|"delete"}
+GET  /api/media/batch?mode=timeline|blurs|duplicates|library&month=&size=
+POST /api/media/swipe  {file_id, action: "keep"|"delete"|"undo"}
 POST /api/media/session/finish     # move kept -> clean/, run categorization
-GET  /api/media/{id}/thumb         GET /api/media/{id}/raw
+GET  /api/media/{id}/thumb         # 480px grid thumbnail
+GET  /api/media/{id}/preview       # 1600px view-quality JPEG, cached in <data>/previews/
+GET  /api/media/{id}/raw           # the original bytes
 GET  /api/albums       GET /api/albums/{id}/files?page=&size=    POST /api/albums/refresh
 GET  /api/trash        POST /api/trash/restore/{id}    DELETE /api/trash/purge[/{id}]
 GET  /api/stats/summary            GET /api/stats/streak
+GET  /api/stats/timeline           GET /api/stats/storage?days=30
+GET  /api/settings     POST /api/settings  {duplicate_distance}   # per-user; re-clusters on save
 POST /api/media/{id}/favorite      # toggle
 ```
+
+`mode` scopes `media/batch`: every review mode returns only `pending` files (a swipe deck must not
+re-offer a decided photo), while `library` — which backs the Gallery — spans pending and kept alike
+and hides only the trash.
+
+Per-user settings live in `user_setting` and override the matching `EASYCLEAN_*` default. Saving
+`duplicate_distance` re-groups from the stored perceptual hashes, so sensitivity changes never
+re-decode the library.
 
 Every data route: authenticated + path-validated (no `..`, must resolve inside the user's root).
 
