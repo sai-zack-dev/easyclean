@@ -1,17 +1,37 @@
 # Deploying EasyClean to a Linux home server
 
-Target layout: the app lives in `/opt/easyclean`, runs as a Docker container from
-a GHCR image, and updates itself whenever `main` goes green — via a GitHub
-Actions **self-hosted runner installed on the server**. Nothing about your server
-is exposed to the internet; the runner dials out to GitHub.
+Target layout: the app lives in `/opt/easyclean` and runs as a Docker container
+from a GHCR image. **Pushing a version tag ships it** — GitHub Actions builds the
+image and rolls it out through a **self-hosted runner installed on the server**.
+Nothing about your server is exposed to the internet; the runner dials out to
+GitHub.
+
+Pushing to `main` runs the quality gate but changes nothing in production.
+Tagging is the promote step, so what's running is always a version you chose to
+ship.
 
 ```
-GitHub push → ci.yml (fmt·clippy·test·web·docker) → deploy.yml
-                                                      ├── publish → ghcr.io/<owner>/easyclean:sha-…
-                                                      └── rollout → self-hosted runner on the server
-                                                                    docker compose up -d + health check
-                                                                    (auto-rollback on failure)
+push to main  → ci.yml (fmt·clippy·test·web·docker)          ← gate only, no deploy
+
+push tag v*   → deploy.yml
+                  ├── gate    → re-runs ci.yml on the tagged commit
+                  ├── publish → ghcr.io/<owner>/easyclean:0.3.1 · :0.3 · :sha-… · :latest
+                  └── rollout → self-hosted runner on the server
+                                docker compose up -d + health check
+                                (auto-rollback to the previous tag on failure)
 ```
+
+## Shipping a release
+
+```bash
+git tag v0.3.1
+git push origin v0.3.1
+```
+
+That's the whole deploy. Watch it in Actions → *deploy*. Tags must start with
+`v`; the image is published under the version without it (`v0.3.1` → `:0.3.1`),
+which is what the server pins in `.env`. A prerelease tag (`v0.4.0-rc1`) deploys
+too but doesn't move `:latest`.
 
 ---
 
@@ -98,19 +118,28 @@ cd /opt/easyclean
 docker compose ps                     # what's running
 docker compose logs -f easyclean      # follow logs
 docker compose restart                # restart
-docker compose pull && docker compose up -d   # manual update to :latest
 ```
 
-**Pin or roll back a version** — every build is tagged `sha-<commit>`:
+`EASYCLEAN_IMAGE_TAG` in `.env` is what pins the running version — the rollout
+job rewrites it. Don't `docker compose pull` to update by hand; that chases
+whatever tag is pinned and won't move you forward. Push a tag instead.
+
+**Roll back** from GitHub: Actions → *deploy* → *Run workflow*, and give it an
+already-published tag (`0.3.0`, or `sha-abc1234` for an exact commit). That path
+skips the build entirely and just re-points the server — so rolling back takes
+seconds, not a rebuild. It's also how you do the very first rollout, before any
+version tag exists.
+
+**Roll back on the box itself**, if GitHub is unreachable:
 
 ```bash
-sudo sed -i 's/^EASYCLEAN_IMAGE_TAG=.*/EASYCLEAN_IMAGE_TAG=sha-abc1234/' .env
+sudo sed -i 's/^EASYCLEAN_IMAGE_TAG=.*/EASYCLEAN_IMAGE_TAG=0.3.0/' .env
 docker compose up -d
 ```
 
-**Deploy manually** from GitHub: Actions → *deploy* → *Run workflow*. Use this for the very first
-rollout: a `workflow_run` trigger only fires once the workflow file is on the default branch, so the
-push that *introduces* `deploy.yml` may not chain automatically.
+Note the rollout job already backs itself out: if the new image doesn't answer
+`/api/health` within 60s it restores the previous tag on its own. Reaching for
+either of the above means something got past that.
 
 **Back up** what you can't rebuild:
 

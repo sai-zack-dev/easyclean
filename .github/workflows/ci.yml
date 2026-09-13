@@ -8,6 +8,9 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  # deploy.yml calls this as the gate on a version tag, so a tagged commit is
+  # held to exactly the same bar as a push to main.
+  workflow_call:
 
 concurrency:
   group: ci-${{ github.ref }}

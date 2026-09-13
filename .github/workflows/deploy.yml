@@ -1,21 +1,25 @@
 name: deploy
 
-# CD: green CI on main → publish the image to GHCR → roll it out on the home
-# server via a self-hosted runner installed there. Nothing needs to reach the
-# server from the internet; the runner dials out.
+# CD: pushing a version tag promotes that commit to production.
+#
+#   git tag v0.3.1 && git push origin v0.3.1
+#
+# The tag re-runs the full CI gate, publishes a versioned image to GHCR, and
+# rolls it out on the home server via a self-hosted runner installed there.
+# Nothing needs to reach the server from the internet; the runner dials out.
+#
+# Pushes to main are gated by ci.yml but do NOT deploy — tagging is the promote
+# step, so what runs in production is always a version you chose to ship.
 #
 # One-time setup on the server: see deploy/README.md.
 on:
-  workflow_run:
-    workflows: [ci]
-    types: [completed]
-    branches: [main]
+  push:
+    tags: ["v*"]
   workflow_dispatch:
     inputs:
       tag:
-        description: "Image tag to deploy — defaults to the latest build from main"
-        required: false
-        default: latest
+        description: "Roll back: an already-published image tag (e.g. 0.3.0 or sha-abc1234). Nothing is rebuilt."
+        required: true
 
 permissions:
   contents: read
@@ -26,32 +30,29 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Skip everything when the CI run that triggered us failed.
+  # A tag push doesn't trigger ci.yml on its own (that watches main and PRs), so
+  # run the same gate here against the tagged commit. Tagging an old or unmerged
+  # commit therefore can't slip past fmt/clippy/tests/web/docker.
+  gate:
+    name: ci gate
+    if: github.event_name == 'push'
+    uses: ./.github/workflows/ci.yml
+
   publish:
     name: publish image → GHCR
-    if: >
-      github.event_name == 'workflow_dispatch' ||
-      github.event.workflow_run.conclusion == 'success'
+    if: github.event_name == 'push'
+    needs: gate
     runs-on: ubuntu-latest
     outputs:
-      tag: ${{ steps.tag.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          # For workflow_run, check out the exact commit CI validated.
-          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
 
-      - name: Compute image tag
-        id: tag
-        env:
-          MANUAL_TAG: ${{ inputs.tag }}
-          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-        run: |
-          if [ -n "${MANUAL_TAG}" ] && [ "${MANUAL_TAG}" != "latest" ]; then
-            echo "tag=${MANUAL_TAG}" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag=sha-${HEAD_SHA:-$GITHUB_SHA}" >> "$GITHUB_OUTPUT"
-          fi
+      # refs/tags/v0.3.1 → 0.3.1. This is the tag the server pins in .env, so
+      # `docker compose ps` on the box reads as the version you shipped.
+      - name: Derive version from the git tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-buildx-action@v3
 
@@ -61,21 +62,37 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ghcr.io/${{ github.repository }}
+          # latest=auto moves :latest only for a real release — a prerelease tag
+          # like v0.4.0-rc1 publishes and deploys, but doesn't claim :latest.
+          flavor: latest=auto
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix=sha-
+
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/amd64
           push: true
-          tags: |
-            ghcr.io/${{ github.repository }}:${{ steps.tag.outputs.tag }}
-            ghcr.io/${{ github.repository }}:latest
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
   rollout:
     name: roll out on the home server
     needs: publish
+    # always(): a manual rollback skips gate+publish entirely, and a skipped
+    # dependency would otherwise skip this job too.
+    if: >
+      always() &&
+      (github.event_name == 'workflow_dispatch' || needs.publish.result == 'success')
     # Label the runner `easyclean` when registering it, so this only ever lands
     # on the box that actually holds the photos.
     runs-on: [self-hosted, linux, x64, easyclean]
@@ -84,7 +101,7 @@ jobs:
       - name: Deploy
         env:
           IMAGE: ghcr.io/${{ github.repository }}
-          TAG: ${{ needs.publish.outputs.tag }}
+          TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || needs.publish.outputs.version }}
           REGISTRY_USER: ${{ github.actor }}
           REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DEPLOY_DIR: /opt/easyclean

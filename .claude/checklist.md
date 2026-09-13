@@ -256,17 +256,19 @@ Dev: `cd web && npm run dev` (Vite proxies `/api/*` → `:8080`).
 
 ### Phase 5.3 — Docs & release ✅
 - [x] README rewritten: Docker `compose up -d` + desktop build, LAN access, **security notes**
-- [x] `CHANGELOG.md` (Keep a Changelog) + `.github/workflows/release.yml` (tag `v*` → GHCR image + bundles)
+- [x] `CHANGELOG.md` (Keep a Changelog) + tag `v*` → GHCR image (was `release.yml`; folded into `deploy.yml`)
 
 ### Phase 5.4 — CI/CD to the home server ✅ *(2026-08-17)*
 - [x] `ci.yml` — on every push/PR: `cargo fmt --check`, `clippy -D warnings`, tests (all with
       `--features heic`), web lint + typecheck + build, PWA-asset check, **Docker build + container
       smoke test** (health, UI, manifest, 401-without-token, login→token, HEIC-enabled log line)
-- [x] `deploy.yml` — green CI on `main` → build & push `ghcr.io/<owner>/easyclean:sha-<commit>` +
-      `:latest` → roll out on a **self-hosted runner on the home server** (`runs-on:
-      [self-hosted, linux, x64, easyclean]`): `docker compose up -d`, wait for health,
-      **auto-rollback to the previous tag** if it never goes healthy. `environment: production` so a
-      manual approval gate can be switched on
+- [x] `deploy.yml` — **push tag `v*`** → re-run the CI gate on the tagged commit → build & push
+      `ghcr.io/<owner>/easyclean:<version>` + `:<major>.<minor>` + `:sha-<commit>` + `:latest` → roll
+      out on a **self-hosted runner on the home server** (`runs-on: [self-hosted, linux, x64,
+      easyclean]`): `docker compose up -d`, wait for health, **auto-rollback to the previous tag** if
+      it never goes healthy. `environment: production` so a manual approval gate can be switched on.
+      Manual dispatch with an existing tag = rollback, no rebuild *(tag-driven since 2026-09-13; was
+      auto-deploy on green `main`)*
 - [x] `deploy/` production kit — `docker-compose.yml` (pulls GHCR, tag pinned in `.env`),
       `.env.example`, `install.sh` (creates `/opt/easyclean`, chowns to uid 10001, first boot),
       `README.md` (runner setup, rollback, backup, security, troubleshooting)

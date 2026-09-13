@@ -101,10 +101,12 @@ Locked, both themes (dark from prototypes, light defined) — see [ui.md](ui.md)
 ## Deployment
 
 Production is a Linux home server at **`/opt/easyclean`**, running the GHCR image via
-`deploy/docker-compose.yml`. CI/CD: `ci.yml` gates every push (fmt · clippy · tests · web · Docker
-build + container smoke test); `deploy.yml` then publishes the image and rolls it out through a
-**self-hosted runner installed on that server**, with a health check and auto-rollback. Setup and
-runbook: [deploy/README.md](../deploy/README.md).
+`deploy/docker-compose.yml`. CI/CD: `ci.yml` gates every push and PR (fmt · clippy · tests · web ·
+Docker build + container smoke test) but deploys nothing. **Pushing a `v*` tag is the promote step** —
+`deploy.yml` re-runs the gate on the tagged commit, publishes the versioned image, and rolls it out
+through a **self-hosted runner installed on that server**, with a health check and auto-rollback.
+Manual dispatch with an existing tag rolls back without rebuilding. Setup and runbook:
+[deploy/README.md](../deploy/README.md).
 
 MVP ships **web + PWA only**. A native mobile client (Flutter or React Native — decision deferred) is
 M7, after the web app has proven itself in daily use.

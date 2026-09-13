@@ -29,8 +29,8 @@ photos get thumbnails, blur scores, and duplicate hashes like anything else). Mi
 the SQLite DB, thumbnail cache, and generated JWT secret live in the `./data` volume.
 
 > **Deploying for real?** [`deploy/README.md`](deploy/README.md) covers the production setup at
-> `/opt/easyclean`: the GHCR image, a self-hosted GitHub Actions runner, and automatic rollout with
-> health check + rollback on every green push to `main`.
+> `/opt/easyclean`: the GHCR image, a self-hosted GitHub Actions runner, and rollout with health
+> check + rollback. Shipping a version is `git push origin v0.3.1` — pushing a tag deploys it.
 
 ### Media folder layout
 
