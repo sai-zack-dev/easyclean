@@ -16,9 +16,12 @@ All notable changes to EasyClean are documented here. The format follows
   never-cached API state.
 - **CI** (`ci.yml`) — fmt, clippy `-D warnings`, tests, web lint/typecheck/build, PWA-asset check, and
   a Docker build whose container is smoke-tested (health, UI, auth enforcement, login, HEIC support).
-- **CD** (`deploy.yml`) — green CI on `main` publishes `ghcr.io/<owner>/easyclean:sha-<commit>` and
-  rolls it out to the home server through a self-hosted runner, with a health check and automatic
-  rollback to the previous tag.
+- **CD** (`deploy.yml`) — pushing a `v*` tag promotes that commit to production: it re-runs the CI
+  gate on the tagged commit, publishes `ghcr.io/<owner>/easyclean` at `:<version>`, `:<major>.<minor>`,
+  `:sha-<commit>` and `:latest`, then rolls it out to the home server through a self-hosted runner,
+  with a health check and automatic rollback to the previous tag. Pushes to `main` are gated but
+  deploy nothing; a manual run with an existing tag rolls back without rebuilding. Replaces the
+  separate `release.yml`, which built the same image on the same trigger.
 - **`deploy/` production kit** for `/opt/easyclean`: GHCR-based compose file, `.env.example`,
   `install.sh`, and a runbook covering runner setup, rollback, backup, and security.
 - **Scale benchmark** (`core/examples/bench.rs`) — generates a synthetic library and times scan,
