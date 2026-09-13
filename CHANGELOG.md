@@ -6,6 +6,12 @@ All notable changes to EasyClean are documented here. The format follows
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.1.0] — 2026-09-13
+
+First release deployed to the home server.
+
 ### Added
 - **HEIC/HEIF decode** (`heic` cargo feature, `libheif-rs`) — iPhone photos now get thumbnails, blur
   scores, and duplicate hashes like any other format. Always enabled in the Docker image.
