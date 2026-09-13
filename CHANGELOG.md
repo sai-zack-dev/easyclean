@@ -6,7 +6,13 @@ All notable changes to EasyClean are documented here. The format follows
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+- **The pre-rollout index backup could not write.** The snapshot step added in 0.1.1 ran `mkdir
+  data/backups` as the deploy user, but the data dir belongs to uid 10001 (the container's user) and
+  that user only owns `.env` — so the rollout aborted with EPERM before touching anything. It now
+  runs inside a container as that uid, and is best-effort: a failed backup warns instead of blocking
+  the deployment. Caught on the v0.1.1 rollout; the server was left untouched on 0.1.0 because the
+  failure happened before the image swap.
 
 ## [0.1.1] — 2026-09-13
 

@@ -139,12 +139,30 @@ jobs:
           # un-applied — so this copy is the only way back to the previous
           # schema if a rollback ever needs one. Cheap: the DB holds the index
           # and review history, never the photos. Keeps the last 10.
-          if [ -f data/easyclean.db ]; then
-            mkdir -p data/backups
-            cp data/easyclean.db "data/backups/easyclean-$(date +%Y%m%d-%H%M%S)-pre-$TAG.db"
-            ls -1t data/backups/easyclean-*.db | tail -n +11 | xargs -r rm -f
-            echo "index backed up before rollout"
-          fi
+          #
+          # Done *inside a container* rather than from this shell: the data dir
+          # belongs to uid 10001 (the container's user, see deploy/README.md)
+          # and the deploy user only owns .env, so a plain `mkdir data/backups`
+          # here fails with EPERM. The app image already runs as that uid.
+          #
+          # Best-effort: insurance must never be what blocks a deployment, so a
+          # failure warns loudly and the rollout continues.
+          backup_index() {
+            docker run --rm -v "$DEPLOY_DIR/data":/data --entrypoint sh "$IMAGE:$TAG" -c '
+              set -e
+              [ -f /data/easyclean.db ] || { echo "no index yet — nothing to back up"; exit 0; }
+              mkdir -p /data/backups
+              cp /data/easyclean.db "/data/backups/easyclean-$(date +%Y%m%d-%H%M%S)-pre-'"$TAG"'.db"
+              # Keep the 10 newest, drop the rest.
+              i=0
+              for f in $(ls -1t /data/backups/easyclean-*.db 2>/dev/null || true); do
+                i=$((i + 1))
+                if [ "$i" -gt 10 ]; then rm -f "$f"; fi
+              done
+              echo "index backed up before rollout"
+            '
+          }
+          backup_index || echo "::warning::could not back up the index — continuing with the rollout"
 
           # .env is the single source of truth for which tag runs here.
           pin_tag "$TAG"
