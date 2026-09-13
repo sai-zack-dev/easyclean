@@ -111,6 +111,23 @@ jobs:
 
           echo "$REGISTRY_TOKEN" | docker login ghcr.io -u "$REGISTRY_USER" --password-stdin
 
+          # Rewrite EASYCLEAN_IMAGE_TAG in .env. Deliberately not `sed -i`: that
+          # writes a temp file alongside .env and renames it, so it needs write
+          # permission on $DEPLOY_DIR itself. Only .env is handed to the deploy
+          # user (see deploy/README.md) and the directory stays root-owned —
+          # writing back through the existing file needs the file alone.
+          pin_tag() {
+            local want="$1" tmp
+            tmp="$(mktemp)"
+            if grep -qE '^EASYCLEAN_IMAGE_TAG=' .env; then
+              sed "s|^EASYCLEAN_IMAGE_TAG=.*|EASYCLEAN_IMAGE_TAG=$want|" .env > "$tmp"
+            else
+              { cat .env; echo "EASYCLEAN_IMAGE_TAG=$want"; } > "$tmp"
+            fi
+            cat "$tmp" > .env
+            rm -f "$tmp"
+          }
+
           # Remember what is running so a bad image can be backed out.
           PREV_TAG="$(grep -E '^EASYCLEAN_IMAGE_TAG=' .env | cut -d= -f2- || true)"
           echo "current: ${PREV_TAG:-<none>}  →  new: $TAG"
@@ -118,11 +135,7 @@ jobs:
           docker pull "$IMAGE:$TAG"
 
           # .env is the single source of truth for which tag runs here.
-          if grep -qE '^EASYCLEAN_IMAGE_TAG=' .env; then
-            sed -i "s|^EASYCLEAN_IMAGE_TAG=.*|EASYCLEAN_IMAGE_TAG=$TAG|" .env
-          else
-            echo "EASYCLEAN_IMAGE_TAG=$TAG" >> .env
-          fi
+          pin_tag "$TAG"
 
           docker compose up -d
 
@@ -143,7 +156,7 @@ jobs:
           echo "::error::new image never became healthy — rolling back"
           docker compose logs --tail=100 easyclean || true
           if [ -n "$PREV_TAG" ]; then
-            sed -i "s|^EASYCLEAN_IMAGE_TAG=.*|EASYCLEAN_IMAGE_TAG=$PREV_TAG|" .env
+            pin_tag "$PREV_TAG"
             docker compose up -d
             echo "rolled back to $PREV_TAG"
           fi
