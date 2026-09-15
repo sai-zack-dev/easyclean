@@ -158,18 +158,27 @@ export const IC = {
       <path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15" />
     </svg>
   ),
+  /*
+   * An artist's palette — the thumb-hole notch is what separates it from a
+   * plain circle of dots, which is what the previous drawing collapsed into at
+   * the 15px these render at.
+   */
   palette: () => (
     <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-      <circle cx="12" cy="12" r="10" />
-      <circle cx="8" cy="10" r="1.5" fill="currentColor" stroke="none" />
-      <circle cx="12" cy="8" r="1.5" fill="currentColor" stroke="none" />
-      <circle cx="16" cy="10" r="1.5" fill="currentColor" stroke="none" />
-      <path d="M12 18c-1.66 0-3-1.34-3-3s1.34-3 3-3" strokeWidth="1.5" />
+      <path d="M12 3a9 9 0 000 18c1.1 0 1.8-.8 1.8-1.7 0-.5-.2-.9-.5-1.2-.3-.3-.5-.7-.5-1.2 0-.9.8-1.7 1.7-1.7H16a5 5 0 005-5c0-4-4-7.2-9-7.2z" />
+      <circle cx="7.6" cy="11.4" r="1.05" fill="currentColor" stroke="none" />
+      <circle cx="10.4" cy="7.6" r="1.05" fill="currentColor" stroke="none" />
+      <circle cx="15" cy="8.4" r="1.05" fill="currentColor" stroke="none" />
     </svg>
   ),
-  drop: () => (
+  /*
+   * Half-filled circle: the standard light/dark mark. Reads at a glance and
+   * survives being 15px, which a sun-and-moon pairing does not.
+   */
+  contrast: () => (
     <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-      <path d="M12 2L5.5 8.5a9.5 9.5 0 1013 0z" />
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 3a9 9 0 010 18z" fill="currentColor" stroke="none" />
     </svg>
   ),
   globe: () => (

@@ -388,7 +388,7 @@ export function SettingsTab({ toast }: Props) {
         <div className="settings-group">
           <div className="srow">
             <div className="srow-left">
-              <div className="srow-icon"><IC.palette /></div>
+              <div className="srow-icon"><IC.contrast /></div>
               <div className="srow-label">Theme</div>
             </div>
             <div className="theme-opts">
@@ -405,7 +405,7 @@ export function SettingsTab({ toast }: Props) {
           </div>
           <div className="srow">
             <div className="srow-left">
-              <div className="srow-icon"><IC.drop /></div>
+              <div className="srow-icon"><IC.palette /></div>
               <div>
                 <div className="srow-label">Accent Color</div>
                 <div className="srow-sub">{ACCENTS[accentIndex]?.name ?? 'Default'}</div>
