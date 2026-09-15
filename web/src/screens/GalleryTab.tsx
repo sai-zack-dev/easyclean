@@ -267,66 +267,71 @@ export function GalleryTab({ toast }: Props) {
 
   return (
     <div className="screen" ref={screenRef} onScroll={onScroll}>
-      <div className="page-header">
-        <div style={{ minWidth: 0 }}>
-          <div className="page-title">Gallery</div>
-          <div className="page-subtitle">
-            {applied
-              ? `${(results?.name_matches.length ?? 0) + (results?.semantic_matches.length ?? 0)} result${
-                  (results?.name_matches.length ?? 0) + (results?.semantic_matches.length ?? 0) === 1 ? '' : 's'
-                } across the whole library`
-              : `${total} item${total === 1 ? '' : 's'}`}
+      {/* Header and tabs pin as one block. Sticking them separately meant the
+          tabs needed to know the header's height, and the guess they used was
+          shorter than the real thing — so they slid up underneath it. */}
+      <div className="page-sticky">
+        <div className="page-header">
+          <div style={{ minWidth: 0 }}>
+            <div className="page-title">Gallery</div>
+            <div className="page-subtitle">
+              {applied
+                ? `${(results?.name_matches.length ?? 0) + (results?.semantic_matches.length ?? 0)} result${
+                    (results?.name_matches.length ?? 0) + (results?.semantic_matches.length ?? 0) === 1 ? '' : 's'
+                  } across the whole library`
+                : `${total} item${total === 1 ? '' : 's'}`}
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            {searching && (
+              <input
+                className="gallery-search"
+                autoFocus
+                value={query}
+                placeholder="Search name, album, or what\u2019s in the photo…"
+                onChange={(e) => setQuery(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Escape') { setQuery(''); setSearching(false) } }}
+              />
+            )}
+            <button
+              className="pill-btn"
+              style={{ padding: '8px 10px' }}
+              aria-label={searching ? 'Close search' : 'Search'}
+              onClick={() => { if (searching) setQuery(''); setSearching((v) => !v) }}
+            >
+              <IC.search />
+            </button>
           </div>
         </div>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          {searching && (
-            <input
-              className="gallery-search"
-              autoFocus
-              value={query}
-              placeholder="Search name, album, or what\u2019s in the photo…"
-              onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Escape') { setQuery(''); setSearching(false) } }}
-            />
-          )}
-          <button
-            className="pill-btn"
-            style={{ padding: '8px 10px' }}
-            aria-label={searching ? 'Close search' : 'Search'}
-            onClick={() => { if (searching) setQuery(''); setSearching((v) => !v) }}
-          >
-            <IC.search />
-          </button>
+
+        <div className="gal-tabs" role="tablist">
+          {TABS.map((t) => (
+            <button
+              key={t.id}
+              role="tab"
+              aria-selected={tab === t.id}
+              className={`gal-tab ${tab === t.id ? 'active' : ''}`}
+              onClick={() => tab !== t.id && restart(() => setTab(t.id))}
+            >
+              {t.label}
+            </button>
+          ))}
+
+          <span className="gal-tab-sep" aria-hidden="true" />
+
+          {/* Media type is a separate axis from the review scope, so these toggle
+              rather than joining the tab group: tapping the active one clears it. */}
+          {([['image', 'Photos'], ['video', 'Videos']] as const).map(([id, label]) => (
+            <button
+              key={id}
+              aria-pressed={type === id}
+              className={`gal-tab ${type === id ? 'active' : ''}`}
+              onClick={() => restart(() => setType((cur) => (cur === id ? '' : id)))}
+            >
+              {label}
+            </button>
+          ))}
         </div>
-      </div>
-
-      <div className="gal-tabs" role="tablist">
-        {TABS.map((t) => (
-          <button
-            key={t.id}
-            role="tab"
-            aria-selected={tab === t.id}
-            className={`gal-tab ${tab === t.id ? 'active' : ''}`}
-            onClick={() => tab !== t.id && restart(() => setTab(t.id))}
-          >
-            {t.label}
-          </button>
-        ))}
-
-        <span className="gal-tab-sep" aria-hidden="true" />
-
-        {/* Media type is a separate axis from the review scope, so these toggle
-            rather than joining the tab group: tapping the active one clears it. */}
-        {([['image', 'Photos'], ['video', 'Videos']] as const).map(([id, label]) => (
-          <button
-            key={id}
-            aria-pressed={type === id}
-            className={`gal-tab ${type === id ? 'active' : ''}`}
-            onClick={() => restart(() => setType((cur) => (cur === id ? '' : id)))}
-          >
-            {label}
-          </button>
-        ))}
       </div>
 
       {applied ? (

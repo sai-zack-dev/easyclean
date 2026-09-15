@@ -45,6 +45,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/scan/status", get(scan_status_sse))
         // media
         .route("/api/media/batch", get(batch))
+        .route("/api/media/duplicates", get(duplicate_groups))
+        .route("/api/media/duplicates/resolve", post(duplicates_resolve))
         .route("/api/media/swipe", post(swipe))
         .route("/api/media/session/finish", post(session_finish))
         .route("/api/media/:id/thumb", get(thumb))
@@ -78,6 +80,41 @@ pub fn router(state: AppState) -> Router {
         .layer(cors_layer(&state.cfg))
         .with_state(state)
         .fallback_service(static_files)
+        .layer(axum::middleware::from_fn(static_cache_control))
+}
+
+/// Cache policy for the static shell.
+///
+/// Without this the browser applies its own heuristic freshness to
+/// `index.html` and `sw.js`, and an installed PWA goes on serving the build it
+/// first saw — the update never arrives, and reinstalling the app is the only
+/// way out. Two rules fix that:
+///
+///   - `/assets/*` is content-hashed by Vite, so it is immutable and cached
+///     for a year; a new build means new filenames.
+///   - everything else (the HTML shell, `sw.js`, the manifest, icons) is
+///     `no-cache`: still cached, but revalidated every time, so a deploy is
+///     picked up on the next launch.
+///
+/// API responses are left alone — they set their own headers, and the service
+/// worker never caches them.
+async fn static_cache_control(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let path = req.uri().path().to_string();
+    let mut res = next.run(req).await;
+    if path.starts_with("/api/") {
+        return res;
+    }
+    let policy = if path.starts_with("/assets/") {
+        "public, max-age=31536000, immutable"
+    } else {
+        "no-cache"
+    };
+    res.headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static(policy));
+    res
 }
 
 /// CORS policy. The UI is served by this same server, so the default is
@@ -114,7 +151,10 @@ fn cors_layer(cfg: &easyclean_core::Config) -> tower_http::cors::CorsLayer {
 }
 
 async fn health() -> Json<Value> {
-    Json(json!({ "status": "ok" }))
+    // The build the server is actually running. The PWA shows this in Setting
+    // and compares it with its own compiled-in version, so "did my deploy
+    // reach this phone?" is answerable without reinstalling the app.
+    Json(json!({ "status": "ok", "version": env!("CARGO_PKG_VERSION") }))
 }
 
 // ── Login rate-limiter ────────────────────────────────────────────────────
@@ -336,6 +376,92 @@ async fn batch(
     // as a progress denominator and the Gallery as a result count.
     let total = db::count_batch(&st.db, &user.username, &query).await?;
     Ok(Json(json!({ "files": enrich(files), "total": total })))
+}
+
+/// Every un-reviewed duplicate cluster, whole.
+///
+/// The compare screen shows a group at a time and asks which copies to keep, so
+/// it needs the members together — a paged flat batch could split a pair across
+/// two pages and ask about each copy in isolation, which is what made the old
+/// duplicate deck no better than an ordinary swipe.
+async fn duplicate_groups(
+    State(st): State<AppState>,
+    user: AuthUser,
+) -> Result<Json<Value>, ApiError> {
+    let files = db::duplicate_clusters(&st.db, &user.username).await?;
+
+    // The query already returns a group's members contiguously, so one pass
+    // folds them into groups without a hash map or a second sort.
+    let total_files = files.len();
+    let mut groups: Vec<Value> = Vec::new();
+    let mut gid = String::new();
+    let mut members: Vec<MediaFile> = Vec::new();
+    for f in files {
+        let g = f.group_id.clone().unwrap_or_default();
+        if g != gid && !members.is_empty() {
+            let done = std::mem::take(&mut members);
+            groups.push(json!({ "group_id": gid, "files": enrich(done) }));
+        }
+        gid = g;
+        members.push(f);
+    }
+    if !members.is_empty() {
+        groups.push(json!({ "group_id": gid, "files": enrich(members) }));
+    }
+
+    let total_groups = groups.len();
+    Ok(Json(
+        json!({ "groups": groups, "total_groups": total_groups, "total_files": total_files }),
+    ))
+}
+
+/// Resolve one duplicate cluster in a single call.
+///
+/// `keep` and `delete` together cover the whole group — the screen never sends
+/// a partial decision, because a copy left `pending` would make the same group
+/// come back on the next pass. `undo` is the group-level counterpart: one tap
+/// put several files away, so one tap has to bring them all back.
+#[derive(Deserialize)]
+struct DupResolveReq {
+    #[serde(default)]
+    keep: Vec<i64>,
+    #[serde(default)]
+    delete: Vec<i64>,
+    #[serde(default)]
+    undo: Vec<i64>,
+}
+
+async fn duplicates_resolve(
+    State(st): State<AppState>,
+    user: AuthUser,
+    Json(r): Json<DupResolveReq>,
+) -> Result<Json<Value>, ApiError> {
+    if r.keep.is_empty() && r.delete.is_empty() && r.undo.is_empty() {
+        return Err(ApiError::bad("nothing to resolve"));
+    }
+    // Undo is its own request shape; mixing it with a decision would mean two
+    // opposite intents racing over the same rows.
+    if !r.undo.is_empty() && !(r.keep.is_empty() && r.delete.is_empty()) {
+        return Err(ApiError::bad("send 'undo' on its own"));
+    }
+    let now = now_secs();
+
+    if !r.undo.is_empty() {
+        let restored =
+            db::set_status_many(&st.db, &user.username, &r.undo, "pending", None).await?;
+        for _ in 0..restored {
+            db::unlog_last_swipe(&st.db, &user.username).await?;
+        }
+        return Ok(Json(json!({ "restored": restored })));
+    }
+
+    let kept = db::set_status_many(&st.db, &user.username, &r.keep, "keep", None).await?;
+    let deleted =
+        db::set_status_many(&st.db, &user.username, &r.delete, "trashed", Some(now)).await?;
+    // Each copy decided is a swipe, so the streak counts the work honestly
+    // whether it was done one card at a time or a group at a time.
+    db::log_swipes(&st.db, &user.username, (kept + deleted) as usize, now).await?;
+    Ok(Json(json!({ "kept": kept, "deleted": deleted })))
 }
 
 #[derive(Deserialize)]
@@ -2158,6 +2284,206 @@ mod tests {
             Some(old_photo),
             "most recently binned comes first, regardless of capture date"
         );
+    }
+
+    /// Helper: insert one photo with an explicit capture time.
+    async fn add_photo(st: &AppState, name: &str, created_at: i64) -> i64 {
+        db::insert_media(
+            &st.db,
+            &NewMedia {
+                user: "saiz".into(),
+                path: format!("/media/saiz/{name}"),
+                rel_path: None,
+                filename: name.into(),
+                media_type: "image".into(),
+                size_bytes: 10,
+                created_at,
+                gps_lat: None,
+                gps_lon: None,
+            },
+        )
+        .await
+        .unwrap()
+    }
+
+    /// Count what a batch mode returns, via the HTTP surface the app uses.
+    async fn batch_total(st: AppState, auth: &str, mode: &str) -> i64 {
+        let r = app(st)
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/media/batch?mode={mode}&size=1"))
+                    .header("authorization", auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+        body_json(r).await["total"].as_i64().unwrap()
+    }
+
+    /// `onthisday` means this calendar day in any year, and `recents` means the
+    /// last week. Both used to fall through to the plain `timeline` branch,
+    /// which is why the two cards showed the same photos as each other and the
+    /// same count as everything else.
+    #[tokio::test]
+    async fn on_this_day_and_recents_filter_by_date() {
+        let st = test_state().await;
+        let auth = bearer(&st);
+
+        let now = now_secs();
+        // The fixture photo from `test_state` is at a fixed 2023 timestamp and
+        // is neither recent nor (all but surely) today's date.
+        let baseline_today = batch_total(st.clone(), &auth, "onthisday").await;
+
+        // Same month-day, four years back → on this day, but not recent.
+        let four_years = 4 * 365 * 86_400 + 86_400; // +1 day for leap years
+        add_photo(&st, "anniversary.jpg", now - four_years).await;
+        // Yesterday → recent, but (almost certainly) not this day-of-year.
+        add_photo(&st, "yesterday.jpg", now - 86_400).await;
+        // Long ago → neither.
+        add_photo(&st, "ancient.jpg", now - 400 * 86_400 - 43_200).await;
+
+        let today = batch_total(st.clone(), &auth, "onthisday").await;
+        let recents = batch_total(st.clone(), &auth, "recents").await;
+        let timeline = batch_total(st.clone(), &auth, "timeline").await;
+
+        assert!(
+            today > baseline_today,
+            "a photo from this day in an earlier year belongs to On This Day"
+        );
+        assert_eq!(recents, 1, "only yesterday's photo is from the last week");
+        assert_eq!(timeline, 4, "timeline is still everything pending");
+        assert!(
+            today < timeline,
+            "On This Day must be a subset, not the whole deck"
+        );
+    }
+
+    /// Duplicates are reviewed as whole clusters — two copies of the same photo
+    /// have to arrive together, or the compare screen can only ask about one of
+    /// them at a time.
+    #[tokio::test]
+    async fn duplicate_groups_arrive_whole_and_resolve_together() {
+        let st = test_state().await;
+        let auth = bearer(&st);
+
+        let a = add_photo(&st, "copy_a.jpg", 1_700_000_100).await;
+        let b = add_photo(&st, "copy_b.jpg", 1_700_000_200).await;
+        let lonely = add_photo(&st, "unique.jpg", 1_700_000_300).await;
+        db::set_group(&st.db, a, "g1").await.unwrap();
+        db::set_group(&st.db, b, "g1").await.unwrap();
+        // A group of one is not a duplicate of anything and must not show up.
+        db::set_group(&st.db, lonely, "g2").await.unwrap();
+
+        let groups = |st: AppState, auth: String| async move {
+            let r = app(st)
+                .oneshot(
+                    Request::builder()
+                        .uri("/api/media/duplicates")
+                        .header("authorization", auth)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(r.status(), StatusCode::OK);
+            body_json(r).await
+        };
+
+        let v = groups(st.clone(), auth.clone()).await;
+        assert_eq!(v["total_groups"], 1, "a cluster of one is not a duplicate");
+        assert_eq!(v["total_files"], 2);
+        assert_eq!(v["groups"][0]["files"].as_array().unwrap().len(), 2);
+
+        // Settle it: keep one copy, bin the other, in a single call.
+        let r = app(st.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/media/duplicates/resolve")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(format!(r#"{{"keep":[{a}],"delete":[{b}]}}"#)))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+        let v = body_json(r).await;
+        assert_eq!(v["kept"], 1);
+        assert_eq!(v["deleted"], 1);
+
+        // The whole group leaves at once — no half-decided cluster comes back.
+        let v = groups(st.clone(), auth.clone()).await;
+        assert_eq!(v["total_groups"], 0);
+
+        // Undo puts both back.
+        let r = app(st.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/media/duplicates/resolve")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(format!(r#"{{"undo":[{a},{b}]}}"#)))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+        assert_eq!(body_json(r).await["restored"], 2);
+        let v = groups(st.clone(), auth.clone()).await;
+        assert_eq!(v["total_groups"], 1, "undo restores the whole cluster");
+    }
+
+    /// The shell must be revalidated on every launch or an installed PWA keeps
+    /// serving the build it first saw; hashed assets are the opposite case.
+    #[tokio::test]
+    async fn static_shell_is_revalidated_and_assets_are_immutable() {
+        let st = test_state().await;
+        let cache = |r: &Response<Body>| {
+            r.headers()
+                .get(header::CACHE_CONTROL)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_string()
+        };
+
+        let r = app(st.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/sw.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(cache(&r), "no-cache");
+
+        let r = app(st.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/assets/index-abc123.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(cache(&r), "public, max-age=31536000, immutable");
+
+        // The API sets its own headers and must not be touched.
+        let r = app(st)
+            .oneshot(
+                Request::builder()
+                    .uri("/api/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(cache(&r), "");
+        assert_eq!(body_json(r).await["version"], env!("CARGO_PKG_VERSION"));
     }
 
     /// The Gallery must keep showing a photo after you keep it. Every review

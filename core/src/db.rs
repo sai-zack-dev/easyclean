@@ -150,8 +150,9 @@ pub async fn get_media(pool: &Db, id: i64) -> Result<Option<MediaFile>> {
     Ok(row)
 }
 
-/// A review batch for one mode: `timeline` (optional `YYYY-MM` month), `blurs`,
-/// or `duplicates`. Only `pending` files are returned, newest first.
+/// A review batch for one mode: `timeline` (optional `YYYY-MM` month),
+/// `onthisday`, `recents`, `blurs` or `duplicates`. Only `pending` files are
+/// returned, newest first.
 /// What a Gallery or review request is asking for.
 ///
 /// Grouped into one struct rather than a growing tail of `Option` arguments:
@@ -159,8 +160,9 @@ pub async fn get_media(pool: &Db, id: i64) -> Result<Option<MediaFile>> {
 /// positional parameter was one more chance to get that order wrong.
 #[derive(Debug, Default, Clone)]
 pub struct BatchQuery<'a> {
-    /// `timeline` | `blurs` | `duplicates` (review decks, pending only)
-    /// · `library` | `original` | `cleaned` (Gallery scopes).
+    /// `timeline` | `onthisday` | `recents` | `blurs` | `duplicates` (review
+    /// decks, pending only) · `library` | `original` | `cleaned` (Gallery
+    /// scopes).
     pub mode: &'a str,
     /// `YYYY-MM`, restricting to one month.
     pub month: Option<&'a str>,
@@ -194,10 +196,15 @@ fn like_pattern(raw: &str) -> String {
     out
 }
 
+/// How far back `recents` reaches: the last seven days, matching the
+/// "This week" label the Clean tab puts on that card.
+pub const RECENT_WINDOW_SECS: i64 = 7 * 86_400;
+
 /// Shared `WHERE` clause for `get_batch`/`count_batch`.
 ///
-/// Review modes (`timeline`, `blurs`, `duplicates`) are scoped to `pending` — a
-/// swipe deck must not re-offer a photo you already decided on.
+/// Review modes (`timeline`, `onthisday`, `recents`, `blurs`, `duplicates`) are
+/// scoped to `pending` — a swipe deck must not re-offer a photo you already
+/// decided on.
 ///
 /// The Gallery scopes are the exception; they show what you *have*, and map to
 /// its All / Original / Cleaned tabs:
@@ -216,6 +223,17 @@ fn batch_filter(q: &BatchQuery<'_>) -> Filter {
     match q.mode {
         "blurs" => sql.push_str(" AND is_blurry = 1"),
         "duplicates" => sql.push_str(" AND group_id IS NOT NULL"),
+        // The same calendar day in *any* year — that's what makes it a memory
+        // rather than a second copy of Recents, which is what it was while
+        // both modes fell through to the unfiltered `timeline` branch below.
+        "onthisday" => sql
+            .push_str(" AND strftime('%m-%d', created_at, 'unixepoch') = strftime('%m-%d', 'now')"),
+        // Shot in the last week. `strftime('%s')` returns TEXT, and SQLite
+        // sorts every integer below every string, so the CAST is what makes
+        // this a date comparison instead of one that matches everything.
+        "recents" => sql.push_str(&format!(
+            " AND created_at >= CAST(strftime('%s', 'now') AS INTEGER) - {RECENT_WINDOW_SECS}"
+        )),
         _ => {
             if let Some(m) = q.month {
                 sql.push_str(" AND strftime('%Y-%m', created_at, 'unixepoch') = ?");
@@ -282,6 +300,31 @@ pub async fn count_batch(pool: &Db, user: &str, query: &BatchQuery<'_>) -> Resul
     Ok(stmt.fetch_one(pool).await?)
 }
 
+/// Every un-reviewed file that belongs to a duplicate cluster, ordered so a
+/// group's members arrive together.
+///
+/// The compare screen needs whole groups, not a flat deck: deciding between two
+/// near-identical photos means seeing both at once, and a paged batch can't
+/// promise that the other copy is on the same page. Groups are ordered by their
+/// newest member so the most recent pile-ups come first, and members within a
+/// group oldest-first — the original before the copies of it.
+pub async fn duplicate_clusters(pool: &Db, user: &str) -> Result<Vec<MediaFile>> {
+    let rows = sqlx::query_as::<_, MediaFile>(
+        "SELECT m.* FROM media_file m \
+         JOIN (SELECT group_id, MAX(created_at) AS newest FROM media_file \
+               WHERE user = ? AND status = 'pending' AND group_id IS NOT NULL \
+               GROUP BY group_id HAVING COUNT(*) > 1) g \
+           ON g.group_id = m.group_id \
+         WHERE m.user = ? AND m.status = 'pending' AND m.group_id IS NOT NULL \
+         ORDER BY g.newest DESC, m.group_id, m.created_at ASC, m.id ASC",
+    )
+    .bind(user)
+    .bind(user)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
 /// List a user's files in a given status (e.g. `trashed`), newest first.
 ///
 /// Ordered by *when it was binned*, falling back to capture date. The trash is
@@ -315,6 +358,32 @@ pub async fn set_status(
         .execute(pool)
         .await?;
     Ok(())
+}
+
+/// Move several files to one status at once; returns how many actually moved.
+///
+/// One statement rather than a loop of [`set_status`]: resolving a duplicate
+/// group decides every copy at once, so the update that carries it out should
+/// be one round trip rather than one per file.
+pub async fn set_status_many(
+    pool: &Db,
+    user: &str,
+    ids: &[i64],
+    status: &str,
+    trashed_at: Option<i64>,
+) -> Result<u64> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let holes = vec!["?"; ids.len()].join(",");
+    let sql = format!(
+        "UPDATE media_file SET status = ?, trashed_at = ? WHERE user = ? AND id IN ({holes})"
+    );
+    let mut q = sqlx::query(&sql).bind(status).bind(trashed_at).bind(user);
+    for id in ids {
+        q = q.bind(id);
+    }
+    Ok(q.execute(pool).await?.rows_affected())
 }
 
 /// Flip a file's favorite flag (scoped to the owning user); returns the new value.

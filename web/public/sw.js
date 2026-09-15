@@ -14,7 +14,7 @@
  *                          would show stale counts or leak one user's data)
  */
 
-const VERSION = 'v2'
+const VERSION = 'v3'
 const SHELL_CACHE = `easyclean-shell-${VERSION}`
 const ASSET_CACHE = `easyclean-assets-${VERSION}`
 const THUMB_CACHE = `easyclean-thumbs-${VERSION}`
@@ -24,13 +24,22 @@ const THUMB_LIMIT = 600
 
 const SHELL_URLS = ['/', '/index.html', '/manifest.webmanifest', '/icon-192.png']
 
+/*
+ * No `skipWaiting()` here on purpose.
+ *
+ * Taking over immediately swapped the worker under a page that was still
+ * running the previous build's JavaScript, and left no "waiting" worker for the
+ * app to notice — so an update was invisible and, in a standalone PWA that is
+ * resumed rather than reloaded, effectively never arrived. Now a new worker
+ * waits, the page sees it and offers to reload, and `skipWaiting` happens on
+ * that tap (see the `message` handler below).
+ */
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches
       .open(SHELL_CACHE)
       // Best-effort: a missing shell entry must not fail the whole install.
-      .then((cache) => Promise.allSettled(SHELL_URLS.map((u) => cache.add(u))))
-      .then(() => self.skipWaiting()),
+      .then((cache) => Promise.allSettled(SHELL_URLS.map((u) => cache.add(u)))),
   )
 })
 
@@ -90,10 +99,21 @@ function thumbCacheKey(url) {
   return new Request(url.origin + url.pathname)
 }
 
-/** Network-first with an offline fallback to the cached shell. */
+/**
+ * Network-first with an offline fallback to the cached shell.
+ *
+ * A successful fetch also refreshes the cached copy, so the offline shell is
+ * the last build seen rather than the one installed months ago — the stale
+ * copy was part of why a deploy never seemed to land.
+ */
 async function navigationHandler(request) {
   try {
-    return await fetch(request)
+    const fresh = await fetch(request)
+    if (fresh.ok) {
+      const copy = fresh.clone()
+      caches.open(SHELL_CACHE).then((c) => c.put('/index.html', copy)).catch(() => {})
+    }
+    return fresh
   } catch {
     const cache = await caches.open(SHELL_CACHE)
     const shell = (await cache.match('/index.html')) || (await cache.match('/'))
@@ -132,7 +152,12 @@ self.addEventListener('fetch', (event) => {
   }
 })
 
-/** Lets the page trigger an immediate update after a deploy. */
+/**
+ * Lets the page trigger an immediate update after a deploy.
+ *
+ * The page posts this when the user taps Update; the worker activates, claims
+ * the open clients, and the page reloads on `controllerchange`.
+ */
 self.addEventListener('message', (event) => {
   if (event.data === 'skip-waiting') self.skipWaiting()
 })

@@ -89,7 +89,14 @@ export function AlbumsTab({ onOpenTrash }: { onOpenTrash: () => void }) {
   return (
     <div className="screen" ref={screenRef} onScroll={onScroll}>
       <div className="page-header">
-        <div className="page-title">Albums</div>
+        <div style={{ minWidth: 0 }}>
+          <div className="page-title">Albums</div>
+          {/* Same shape as Gallery's "1045 items" — a count of what's on this
+              page, not a label for the first section below it. */}
+          <div className="page-subtitle">
+            {albums.length} collection{albums.length === 1 ? '' : 's'}
+          </div>
+        </div>
         <button className="pill-btn" onClick={refresh} title="Rebuild albums">
           <IC.plus />
         </button>
