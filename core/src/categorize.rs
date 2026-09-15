@@ -4,6 +4,8 @@ use crate::models::MediaFile;
 
 /// All category-type keys used in `album.category_type`.
 pub mod cat {
+    /// No longer produced — kept so the cleanup migration and any old row that
+    /// predates it still have a name for what they are removing.
     pub const MONTH: &str = "month";
     pub const YEAR: &str = "year";
     pub const VIDEOS: &str = "videos";
@@ -13,13 +15,18 @@ pub mod cat {
 }
 
 /// Return every category key that `mf` belongs to.
-/// e.g. `["month:2026-05", "year:2026", "type:videos"]`
+/// e.g. `["year:2026", "type:videos"]`
+///
+/// Years only, not months. Emitting both filed every photo twice and left
+/// Memories showing "Nov 2023" next to "2023" — the same pictures under two
+/// headings, which is noise rather than two ways in. The Clean tab's month
+/// checklist is unaffected: it queries `created_at` directly and never reads
+/// albums.
 pub fn categories_for(mf: &MediaFile) -> Vec<String> {
     let mut cats: Vec<String> = Vec::new();
 
     let dt = DateTime::<Utc>::from_timestamp(mf.created_at, 0).unwrap_or(DateTime::UNIX_EPOCH);
 
-    cats.push(format!("month:{}", dt.format("%Y-%m")));
     cats.push(format!("year:{}", dt.format("%Y")));
 
     if mf.media_type == "video" {
@@ -103,10 +110,13 @@ mod tests {
     }
 
     #[test]
-    fn image_gets_month_and_year() {
+    fn image_gets_a_year_and_no_month() {
         let cats = categories_for(&mf("photo.jpg", 1_746_057_600, "image")); // 2025-05-01
-        assert!(cats.iter().any(|c| c.starts_with("month:")));
         assert!(cats.iter().any(|c| c.starts_with("year:")));
+        assert!(
+            !cats.iter().any(|c| c.starts_with("month:")),
+            "months duplicate the year album and clutter Memories"
+        );
         assert!(!cats.iter().any(|c| c.contains("videos")));
     }
 
