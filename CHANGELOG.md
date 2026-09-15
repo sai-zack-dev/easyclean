@@ -6,6 +6,16 @@ All notable changes to EasyClean are documented here. The format follows
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.2.1] — 2026-09-15
+
+Phone-testing fixes: duplicates you can actually compare, date decks that filter by date, and an
+installed PWA that picks up a deploy.
+
+Patch rather than minor: nothing changes shape for existing data — no migration, no schema change,
+and every endpoint that existed still answers the same way.
+
 ### Added
 - **Duplicates get their own compare screen.** Reviewing copies in the one-card swipe deck asked
   "keep this?" about a photo whose only problem was that another copy existed — and never showed you
