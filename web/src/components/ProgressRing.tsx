@@ -15,6 +15,8 @@ export function ProgressRing({ val, total, size = 28 }: Props) {
   const r = size / 2 - 3
   const c = 2 * Math.PI * r
 
+  // Finished: filled with the accent, matching the streak rings. A grey outline
+  // with a coloured tick read as "not quite done" next to them.
   if (pct >= 1) {
     return (
       <div
@@ -22,7 +24,8 @@ export function ProgressRing({ val, total, size = 28 }: Props) {
           width: size,
           height: size,
           borderRadius: '50%',
-          border: '2px solid var(--ring-done)',
+          background: 'var(--accent)',
+          border: '2px solid var(--accent)',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
@@ -33,7 +36,7 @@ export function ProgressRing({ val, total, size = 28 }: Props) {
           width={12}
           height={12}
           style={{
-            stroke: 'var(--accent)',
+            stroke: 'var(--accent-on)',
             fill: 'none',
             strokeWidth: 3,
             strokeLinecap: 'round',

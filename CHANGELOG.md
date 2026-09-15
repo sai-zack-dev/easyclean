@@ -46,6 +46,17 @@ All notable changes to EasyClean are documented here. The format follows
   can't do anything is worse than no control. It comes back when there's a second language.
 
 ### Fixed
+- **Share dumped you on a blank "Open in Preview" page.** `navigator.share` needs a secure context,
+  which plain HTTP on a LAN is not, so the button always fell through to an `<a download>` — and iOS
+  Safari answers that with a file-info page rather than a save. Replaced by the share sheet above.
+- **The dashboard's weekday row was wrong six days out of seven.** It read Mon…Sat + Today, hardcoded,
+  which is only correct if today is a Sunday. The labels are derived from the date now.
+- **Finished days and cleaned months weren't accent-coloured.** Today's ring was filled with the
+  accent while a day you had actually cleaned got a grey outline, so done and untouched looked
+  nearly alike. Both now fill with the accent; today-with-nothing-swiped keeps an unfilled ring,
+  because filling it would claim work that hasn't happened.
+- **The viewer's drawers appeared and vanished instantly.** They slide up on open and back down on
+  close, continuing from wherever a drag left them rather than snapping.
 - **An album you created never appeared.** `Add to album` files into a `manual` album, but the
   Albums tab bucketed only `favorites`/`place`, `videos`/`screenshots` and `month`/`year` — so a
   manual album existed, held its photos, and was rendered nowhere. Collections shows them now.
@@ -77,6 +88,18 @@ Patch rather than minor: nothing changes shape for existing data — no migratio
 and every endpoint that existed still answers the same way.
 
 ### Added
+- **Select mode in the Gallery.** A Select button beside Search turns the grid into a picker: tap
+  photos to choose them, and the tab bar is replaced by Share · *N* selected · Album · Delete. Select
+  becomes Cancel, so the way in and the way out are one control. Ticks use the accent colour, like
+  every other chosen state in the app.
+- **A share sheet that offers what actually works.** Save to Photos (opens the original so a
+  long-press can add it to the camera roll — the route that works on iOS), Download, and the
+  device's own share sheet when the connection is secure enough to allow it. When it isn't, the
+  sheet says so instead of leaving a gap.
+- **Swipe up on a photo opens its details**, the counterpart to pulling the drawer back down.
+- **The Albums "+" creates an album.** It previously called `albums/refresh`, which recomputes
+  counts and covers — invisible work that looked exactly like a broken button. New endpoint
+  `POST /api/albums`, since an album could only be created as a side effect of filing a photo.
 - **Details lists the albums a photo is in**, as chips, fetched per photo when the panel opens
   (`GET /api/media/:id/albums`) rather than joined into every Gallery row.
 - **Duplicates get their own compare screen.** Reviewing copies in the one-card swipe deck asked

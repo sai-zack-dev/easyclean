@@ -57,6 +57,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/media/:id/trash", post(trash_one))
         // albums
         .route("/api/albums", get(albums_list))
+        .route("/api/albums", post(album_create))
         .route("/api/albums/refresh", post(albums_refresh))
         .route("/api/albums/:id/files", get(album_files))
         .route("/api/albums/add", post(album_add))
@@ -788,6 +789,33 @@ async fn albums_refresh(
 /// `category_type` for an album the user made themselves, as opposed to one
 /// `categorize` derives. Only these accept a manual add.
 const MANUAL_ALBUM: &str = "manual";
+
+#[derive(Deserialize)]
+struct AlbumCreateReq {
+    name: String,
+}
+
+/// Make an empty album.
+///
+/// `albums/add` can only create one as a side effect of filing a photo, which
+/// is no use to the "+" in the Albums tab — there you are making the shelf
+/// before you have anything to put on it.
+async fn album_create(
+    State(st): State<AppState>,
+    user: AuthUser,
+    Json(b): Json<AlbumCreateReq>,
+) -> Result<Json<Value>, ApiError> {
+    let name = b.name.trim();
+    if name.is_empty() {
+        return Err(ApiError::bad("an album needs a name"));
+    }
+    if name.chars().count() > 80 {
+        return Err(ApiError::bad("that name is too long"));
+    }
+    let id =
+        db::get_or_create_album(&st.db, &user.username, name, MANUAL_ALBUM, now_secs()).await?;
+    Ok(Json(json!({ "album_id": id, "name": name })))
+}
 
 #[derive(Deserialize)]
 struct AlbumAddReq {
