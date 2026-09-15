@@ -1,34 +1,242 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { IC } from '../icons'
-import { api, type MediaFile } from '../api/client'
+import { api, type MediaFile, type SearchResult, type SearchHit } from '../api/client'
 import { PhotoViewer } from './PhotoViewer'
+import { Spinner } from '../components/Spinner'
+import { useStickyHeader } from '../hooks/useStickyHeader'
 
-export function GalleryTab() {
+/**
+ * The three Gallery scopes, mapped to the server's batch modes.
+ *
+ * "Original" is the app's own word for un-reviewed — a photo still sitting in
+ * `source/` exactly as the camera left it. "Cleaned" is one you kept, filed
+ * into `clean/<album>/`. "All" is both, and never the trash.
+ */
+const TABS = [
+  { id: 'library', label: 'All' },
+  { id: 'original', label: 'Original' },
+  { id: 'cleaned', label: 'Cleaned' },
+] as const
+
+type TabId = (typeof TABS)[number]['id']
+type TypeFilter = '' | 'image' | 'video'
+
+/** Rows per request. Enough to fill a screen, small enough to stay snappy. */
+const PAGE_SIZE = 120
+/** Wait for a pause in typing before asking the server again. */
+const SEARCH_DEBOUNCE_MS = 300
+
+/** A labelled grid of search hits. */
+function HitGrid({
+  files,
+  onOpen,
+}: {
+  files: SearchHit[]
+  onOpen: (i: number) => void
+}) {
+  return (
+    <div className="gallery-grid">
+      {files.map((f, i) => (
+        <button key={f.id} className="g-cell" onClick={() => onOpen(i)} aria-label={`Open ${f.filename}`}>
+          <img
+            src={api.thumbUrl(f.id)}
+            alt=""
+            loading="lazy"
+            onError={(e) => {
+              (e.currentTarget.parentNode as HTMLElement).classList.add('g-cell-ph')
+            }}
+          />
+          {f.media_type !== 'image' && <span className="g-cell-vid" aria-hidden="true" />}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+/**
+ * Search output: exact matches, then photos that merely look like the query.
+ *
+ * They stay in separate groups rather than one blended ranking because they
+ * answer different questions — a name match is a fact, a visual match is a
+ * guess, and mixing them would hide which is which.
+ */
+function SearchResults({
+  results,
+  query,
+  loading,
+  onOpen,
+}: {
+  results: SearchResult | null
+  query: string
+  loading: boolean
+  onOpen: (list: SearchHit[], index: number) => void
+}) {
+  if (loading && !results) {
+    return (
+      <div style={{ display: 'flex', justifyContent: 'center', padding: 40 }}>
+        <Spinner />
+      </div>
+    )
+  }
+  if (!results) return null
+
+  const { name_matches: named, semantic_matches: alike, semantic_available, semantic_confident } = results
+  if (named.length === 0 && alike.length === 0) {
+    return (
+      <div style={{ color: 'var(--text3)', textAlign: 'center', padding: '56px 24px', fontSize: 13, lineHeight: 1.6 }}>
+        Nothing matching “{query}”.
+        {!semantic_available && (
+          <>
+            <br />
+            Searching by what’s <em>in</em> a photo needs an index — build it in Setting.
+          </>
+        )}
+      </div>
+    )
+  }
+
+  return (
+    <>
+      {named.length > 0 && (
+        <>
+          <div className="gallery-date-hdr">
+            Name matches<span className="hit-count">{named.length}</span>
+          </div>
+          <HitGrid files={named} onOpen={(i) => onOpen(named, i)} />
+        </>
+      )}
+      {alike.length > 0 && (
+        <>
+          <div className="gallery-date-hdr">
+            {semantic_confident ? `Looks like “${query}”` : 'Closest guesses'}
+            <span className="hit-count">{alike.length}</span>
+          </div>
+          {!semantic_confident && (
+            <div className="hit-note">Nothing clearly matches — these are just the nearest.</div>
+          )}
+          <HitGrid files={alike} onOpen={(i) => onOpen(alike, i)} />
+        </>
+      )}
+      {!semantic_available && named.length > 0 && (
+        <div className="gal-end">
+          Only filenames were searched — build the photo index in Setting to search by content.
+        </div>
+      )}
+    </>
+  )
+}
+
+interface Props {
+  toast: (msg: string) => void
+}
+
+export function GalleryTab({ toast }: Props) {
+  const [tab, setTab] = useState<TabId>('library')
+  const [type, setType] = useState<TypeFilter>('')
   const [files, setFiles] = useState<MediaFile[]>([])
-  const [query, setQuery] = useState('')
+  const [total, setTotal] = useState(0)
+  const [page, setPage] = useState(1)
+  const [loading, setLoading] = useState(true)
+  const [done, setDone] = useState(false)
   const [searching, setSearching] = useState(false)
   const [viewing, setViewing] = useState<number | null>(null)
 
+  /** What's in the box, updated on every keystroke. */
+  const [query, setQuery] = useState('')
+  /** What the server has actually been asked for — `query` after the debounce. */
+  const [applied, setApplied] = useState('')
+  /** Merged name + semantic results; null while browsing. */
+  const [results, setResults] = useState<SearchResult | null>(null)
+  /** Which list the viewer pages through — a search group, or the browse grid. */
+  const [resultList, setResultList] = useState<MediaFile[] | null>(null)
+
+  const { ref: screenRef, onScroll } = useStickyHeader()
+  const sentinel = useRef<HTMLDivElement>(null)
+
+  // Debounce the box into `applied`, so a five-letter word is one request
+  // rather than five. Resetting the page is what makes a new query start from
+  // the top instead of appending to the previous results.
   useEffect(() => {
-    // `library` mode, not the default review deck: the Gallery shows everything
-    // you still have — kept photos included — and only hides the trash.
-    api.mediaBatch({ mode: 'library', size: 500 })
-      .then((d) => setFiles(d.files))
-      .catch(() => {})
-  }, [])
+    if (query === applied) return
+    const t = setTimeout(() => {
+      setApplied(query)
+      setResults(null)
+      setFiles([])
+      setPage(1)
+      setDone(false)
+      setLoading(true)
+      screenRef.current?.scrollTo({ top: 0 })
+    }, SEARCH_DEBOUNCE_MS)
+    return () => clearTimeout(t)
+  }, [query, applied, screenRef])
 
-  // Filename match only — semantic search is a later phase (see CLAUDE.md).
-  const shown = useMemo(() => {
-    const q = query.trim().toLowerCase()
-    if (!q) return files
-    return files.filter((f) => f.filename.toLowerCase().includes(q))
-  }, [files, query])
+  // A response landing after the filters moved on would splice the wrong rows
+  // in, so each request remembers what it asked for.
+  const reqKey = useRef('')
 
-  // The viewer pages across the whole visible set, not just one date group, so
-  // arrowing right at the end of a day continues into the next one.
+  useEffect(() => {
+    const key = `${tab}|${type}|${applied}`
+    reqKey.current = key
+    let cancelled = false
+
+    // Searching and browsing are different shapes: browsing pages forever,
+    // a search returns one merged, ranked set.
+    if (applied) {
+      api.search({ q: applied, mode: tab, type: type || undefined })
+        .then((r) => {
+          if (cancelled || reqKey.current !== key) return
+          setResults(r)
+          setDone(true)
+        })
+        .catch(() => { if (!cancelled) toast('Search failed') })
+        .finally(() => { if (!cancelled) setLoading(false) })
+      return () => { cancelled = true }
+    }
+
+    api.mediaBatch({ mode: tab, size: PAGE_SIZE, page, type: type || undefined })
+      .then((d) => {
+        if (cancelled || reqKey.current !== key) return
+        setTotal(d.total)
+        setFiles((prev) => (page === 1 ? d.files : [...prev, ...d.files]))
+        if (d.files.length < PAGE_SIZE) setDone(true)
+      })
+      .catch(() => { if (!cancelled) toast('Could not load the gallery') })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [tab, type, applied, page, toast])
+
+  // Pull the next page when the sentinel scrolls into view. This is what lets
+  // the Gallery hold a 100K-photo library instead of the first 500.
+  useEffect(() => {
+    const el = sentinel.current
+    if (!el || done || loading || applied) return
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) {
+          setLoading(true)
+          setPage((p) => p + 1)
+        }
+      },
+      { root: screenRef.current, rootMargin: '600px' },
+    )
+    io.observe(el)
+    return () => io.disconnect()
+  }, [done, loading, files.length, applied, screenRef])
+
+  /** Apply a filter change and start the list over from page 1. */
+  const restart = (fn: () => void) => {
+    fn()
+    setResults(null)
+    setFiles([])
+    setPage(1)
+    setDone(false)
+    setLoading(true)
+    screenRef.current?.scrollTo({ top: 0 })
+  }
+
   const groups = useMemo(() => {
     const out: { date: string; files: MediaFile[] }[] = []
-    shown.forEach((f) => {
+    files.forEach((f) => {
       const key = new Date(f.created_at * 1000).toLocaleDateString('en-US', {
         day: '2-digit', month: 'long', year: 'numeric',
       })
@@ -37,18 +245,37 @@ export function GalleryTab() {
       else out.push({ date: key, files: [f] })
     })
     return out
-  }, [shown])
+  }, [files])
 
-  // Running index into `shown`, so a cell knows its position in the flat list.
+  const dropFile = (id: number) => {
+    setFiles((fs) => fs.filter((f) => f.id !== id))
+    setTotal((t) => Math.max(t - 1, 0))
+  }
+
+  const pending = query !== applied
   let flat = -1
 
+  const emptyMessage = applied
+    ? `Nothing matching “${applied}”.`
+    : type === 'video'
+      ? 'No videos here.'
+      : tab === 'cleaned'
+        ? 'Nothing cleaned yet — keep some photos and finish a session.'
+        : tab === 'original'
+          ? 'Nothing left to review. All caught up.'
+          : 'No photos yet. Use Scan in the Clean tab.'
+
   return (
-    <div className="screen">
+    <div className="screen" ref={screenRef} onScroll={onScroll}>
       <div className="page-header">
-        <div>
+        <div style={{ minWidth: 0 }}>
           <div className="page-title">Gallery</div>
           <div className="page-subtitle">
-            {shown.length} {shown.length === 1 ? 'item' : 'items'}
+            {applied
+              ? `${(results?.name_matches.length ?? 0) + (results?.semantic_matches.length ?? 0)} result${
+                  (results?.name_matches.length ?? 0) + (results?.semantic_matches.length ?? 0) === 1 ? '' : 's'
+                } across the whole library`
+              : `${total} item${total === 1 ? '' : 's'}`}
           </div>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -57,30 +284,61 @@ export function GalleryTab() {
               className="gallery-search"
               autoFocus
               value={query}
-              placeholder="Search filenames…"
+              placeholder="Search name, album, or what\u2019s in the photo…"
               onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Escape') { setQuery(''); setSearching(false) }
-              }}
+              onKeyDown={(e) => { if (e.key === 'Escape') { setQuery(''); setSearching(false) } }}
             />
           )}
           <button
             className="pill-btn"
             style={{ padding: '8px 10px' }}
             aria-label={searching ? 'Close search' : 'Search'}
-            onClick={() => {
-              if (searching) setQuery('')
-              setSearching((s) => !s)
-            }}
+            onClick={() => { if (searching) setQuery(''); setSearching((v) => !v) }}
           >
             <IC.search />
           </button>
         </div>
       </div>
 
-      {groups.length === 0 ? (
+      <div className="gal-tabs" role="tablist">
+        {TABS.map((t) => (
+          <button
+            key={t.id}
+            role="tab"
+            aria-selected={tab === t.id}
+            className={`gal-tab ${tab === t.id ? 'active' : ''}`}
+            onClick={() => tab !== t.id && restart(() => setTab(t.id))}
+          >
+            {t.label}
+          </button>
+        ))}
+
+        <span className="gal-tab-sep" aria-hidden="true" />
+
+        {/* Media type is a separate axis from the review scope, so these toggle
+            rather than joining the tab group: tapping the active one clears it. */}
+        {([['image', 'Photos'], ['video', 'Videos']] as const).map(([id, label]) => (
+          <button
+            key={id}
+            aria-pressed={type === id}
+            className={`gal-tab ${type === id ? 'active' : ''}`}
+            onClick={() => restart(() => setType((cur) => (cur === id ? '' : id)))}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {applied ? (
+        <SearchResults
+          results={results}
+          query={applied}
+          loading={loading || pending}
+          onOpen={(list, i) => { setResultList(list); setViewing(i) }}
+        />
+      ) : groups.length === 0 && !loading ? (
         <div style={{ color: 'var(--text3)', textAlign: 'center', padding: '64px 24px', fontSize: 13 }}>
-          {query ? `Nothing matching “${query}”.` : 'No photos yet. Use Scan in the Clean tab.'}
+          {emptyMessage}
         </div>
       ) : (
         groups.map((g) => (
@@ -94,7 +352,7 @@ export function GalleryTab() {
                   <button
                     key={f.id}
                     className="g-cell"
-                    onClick={() => setViewing(at)}
+                    onClick={() => { setResultList(null); setViewing(at) }}
                     aria-label={`Open ${f.filename}`}
                   >
                     <img
@@ -113,14 +371,30 @@ export function GalleryTab() {
           </div>
         ))
       )}
+
+      {/* Infinite-scroll trigger; also the "that's everything" marker. */}
+      <div ref={sentinel} />
+      {!applied && loading && (
+        <div style={{ display: 'flex', justifyContent: 'center', padding: 24 }}>
+          <Spinner />
+        </div>
+      )}
+      {!applied && done && files.length > 0 && (
+        <div className="gal-end">
+          {files.length === total ? `All ${total} shown` : `${files.length} of ${total} shown`}
+        </div>
+      )}
+
       <div className="pb16" />
 
       {viewing !== null && (
         <PhotoViewer
-          files={shown}
+          files={resultList ?? files}
           index={viewing}
           onIndex={setViewing}
           onClose={() => setViewing(null)}
+          onRemoved={dropFile}
+          toast={toast}
         />
       )}
     </div>

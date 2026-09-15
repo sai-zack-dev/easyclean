@@ -151,15 +151,45 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let t = Instant::now();
-    let batch = db::get_batch(&pool, user, "timeline", None, 200).await?;
+    let batch = db::get_batch(
+        &pool,
+        user,
+        &db::BatchQuery {
+            mode: "timeline",
+            ..Default::default()
+        },
+        200,
+        1,
+    )
+    .await?;
     q("batch(timeline,200)", t.elapsed().as_secs_f64() * 1000.0);
 
     let t = Instant::now();
-    let _ = db::get_batch(&pool, user, "duplicates", None, 200).await?;
+    let _ = db::get_batch(
+        &pool,
+        user,
+        &db::BatchQuery {
+            mode: "duplicates",
+            ..Default::default()
+        },
+        200,
+        1,
+    )
+    .await?;
     q("batch(duplicates,200)", t.elapsed().as_secs_f64() * 1000.0);
 
     let t = Instant::now();
-    let _ = db::get_batch(&pool, user, "blurs", None, 200).await?;
+    let _ = db::get_batch(
+        &pool,
+        user,
+        &db::BatchQuery {
+            mode: "blurs",
+            ..Default::default()
+        },
+        200,
+        1,
+    )
+    .await?;
     q("batch(blurs,200)", t.elapsed().as_secs_f64() * 1000.0);
 
     let t = Instant::now();

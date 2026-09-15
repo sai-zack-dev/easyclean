@@ -14,6 +14,8 @@ export interface MediaFile {
   blur_score: number | null
   group_id: number | null
   status: 'pending' | 'keep' | 'trashed'
+  /** Unix seconds the file was binned; null unless `status` is `trashed`. */
+  trashed_at: number | null
   thumb_url: string
   preview_url: string
   raw_url: string
@@ -59,10 +61,42 @@ export interface StorageSeries {
   total_files: number
 }
 
+/** One photo from a search, with its similarity score when semantic. */
+export interface SearchHit extends MediaFile {
+  /** Cosine similarity, present only on semantic matches. */
+  score?: number
+}
+
+export interface SearchResult {
+  /** Filename / album-path matches — exact, and always available. */
+  name_matches: SearchHit[]
+  /** Ranked by what the photo looks like. Empty until an index exists. */
+  semantic_matches: SearchHit[]
+  /** False when no index has been built, so the UI can offer to build one. */
+  semantic_available: boolean
+  /** False when nothing stood out — results are guesses, and labelled as such. */
+  semantic_confident: boolean
+}
+
+export interface SearchStatus {
+  model_ready: boolean
+  download_bytes: number
+  indexed: number
+  indexable: number
+  running: boolean
+  /** "download" | "embed" | "" */
+  phase: string
+  done: number
+  total: number
+  error: string | null
+}
+
 export interface Settings {
   /** pHash Hamming distance: higher catches more (looser) duplicates. */
   duplicate_distance: number
   duplicate_distance_max: number
+  /** Days a file survives in the trash — drives the countdown on that screen. */
+  trash_retention_days: number
 }
 
 export interface TimelineMonth {
@@ -160,12 +194,29 @@ export const api = {
 
   scan: () => request<{ job_id: string }>('POST', '/api/scan'),
 
-  mediaBatch: (params: { mode?: string; month?: string; size?: number }) => {
-    const q = new URLSearchParams()
-    if (params.mode) q.set('mode', params.mode)
-    if (params.month) q.set('month', params.month)
-    if (params.size) q.set('size', String(params.size))
-    return request<BatchResult>('GET', `/api/media/batch?${q}`)
+  /**
+   * `mode`: timeline | blurs | duplicates (review decks, pending only)
+   * · library | original | cleaned (Gallery tabs). `page` is 1-based.
+   *
+   * `q` and `type` are applied by the database across the whole library, not
+   * by the browser across the pages it happens to have loaded.
+   */
+  mediaBatch: (params: {
+    mode?: string
+    month?: string
+    size?: number
+    page?: number
+    q?: string
+    type?: 'image' | 'video'
+  }) => {
+    const p = new URLSearchParams()
+    if (params.mode) p.set('mode', params.mode)
+    if (params.month) p.set('month', params.month)
+    if (params.size) p.set('size', String(params.size))
+    if (params.page) p.set('page', String(params.page))
+    if (params.q?.trim()) p.set('q', params.q.trim())
+    if (params.type) p.set('type', params.type)
+    return request<BatchResult>('GET', `/api/media/batch?${p}`)
   },
 
   swipe: (file_id: number, action: 'keep' | 'delete') =>
@@ -191,6 +242,10 @@ export const api = {
   previewUrl: (id: number) => `${getBase()}/api/media/${id}/preview?token=${authQuery()}`,
   rawUrl: (id: number) => `${getBase()}/api/media/${id}/raw?token=${authQuery()}`,
 
+  /** Bin a file immediately (Gallery / viewer), rather than marking a swipe. */
+  trashOne: (id: number) =>
+    request<{ id: number; status: string; trashed_at: number }>('POST', `/api/media/${id}/trash`),
+
   favorite: (id: number) =>
     request<{ id: number; is_favorite: boolean }>('POST', `/api/media/${id}/favorite`),
 
@@ -199,6 +254,9 @@ export const api = {
   albumFiles: (id: number, page = 1, size = 50) =>
     request<BatchResult>('GET', `/api/albums/${id}/files?page=${page}&size=${size}`),
   albumsRefresh: () => request<void>('POST', '/api/albums/refresh'),
+  /** File a photo under an existing album, or a new one by name. */
+  albumAdd: (body: { file_id: number; album_id?: number; name?: string }) =>
+    request<{ album_id: number; file_id: number }>('POST', '/api/albums/add', body),
 
   statsSummary: () => request<StatsSummary>('GET', '/api/stats/summary'),
   statsTimeline: () =>
@@ -206,6 +264,16 @@ export const api = {
   statsStreak: () => request<StreakStats>('GET', '/api/stats/streak'),
   statsStorage: (days = 30) =>
     request<StorageSeries>('GET', `/api/stats/storage?days=${days}`),
+
+  /** Merged search: exact name matches, then photos that look like the query. */
+  search: (params: { q: string; mode?: string; type?: 'image' | 'video' }) => {
+    const p = new URLSearchParams({ q: params.q })
+    if (params.mode) p.set('mode', params.mode)
+    if (params.type) p.set('type', params.type)
+    return request<SearchResult>('GET', `/api/search?${p}`)
+  },
+  searchStatus: () => request<SearchStatus>('GET', '/api/search/status'),
+  searchIndex: () => request<{ started: boolean; reason?: string }>('POST', '/api/search/index'),
 
   settings: () => request<Settings>('GET', '/api/settings'),
   saveSettings: (body: { duplicate_distance?: number }) =>

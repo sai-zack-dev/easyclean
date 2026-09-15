@@ -29,7 +29,9 @@ Clients = **any browser on the LAN** (MVP). Mobile = installable **PWA** later; 
 ## Decisions (locked)
 
 - **Backend:** Rust only (axum + tokio). No Python.
-- **AI / CLIP semantic search:** **later phase** (ONNX via `ort`), NOT in MVP.
+- **AI / CLIP semantic search:** **built** (CLIP ViT-B/32 int8 ONNX via `ort`). Weights are
+  downloaded at runtime into `<data_dir>/models/`, never baked into the image. Vectors live in
+  SQLite as int8 BLOBs and are scanned exactly — no vector database, no ANN index.
 - **Frontend:** React 18 + Vite + TS, served as static assets by the Rust server; PWA-capable. Design in [ui.md](ui.md).
 - **Access:** LAN over HTTP; bind `0.0.0.0`. Remote access later via
   Tailscale / Cloudflare Tunnel — never port-forwarding.
@@ -40,10 +42,10 @@ Clients = **any browser on the LAN** (MVP). Mobile = installable **PWA** later; 
 
 ## MVP scope
 
-**In:** scan + index; thumbnails (incl. video first-frame); blur detection (Laplacian variance);
+**In:** scan + index; semantic search; thumbnails (incl. video first-frame); blur detection (Laplacian variance);
 duplicate detection (pHash + Hamming distance); swipe keep/delete; trash + restore; albums /
 auto-categorization; stats + streaks; Settings; web UI (dark + light); LAN serving.
-**Later:** CLIP semantic search; native mobile; remote hosting.
+**Later:** native mobile; remote hosting.
 
 ## Tech stack
 
@@ -52,7 +54,8 @@ auto-categorization; stats + streaks; Settings; web UI (dark + light); LAN servi
   (EXIF date/GPS), `libheif-rs` (HEIC — needs system libheif), `ffmpeg` (video thumbs / `ffprobe` dates).
 - **Frontend:** React 18 + Vite + TypeScript (PWA), Tailwind, Framer Motion (swipe), Zustand. Tokens in [ui.md](ui.md).
 - **Deploy:** Docker + docker-compose (Linux). No desktop bundles.
-- **Later:** `ort` (ONNX Runtime) + a CLIP model for semantic search.
+- **Semantic search:** `ort` (ONNX Runtime, statically linked) + CLIP ViT-B/32 int8, `tokenizers`
+  for the CLIP BPE vocabulary, `ureq` to fetch the weights on first use.
 
 ## Engineering standards
 

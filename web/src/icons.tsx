@@ -229,6 +229,21 @@ export const IC = {
       <line x1="14" y1="11" x2="14" y2="17" />
     </svg>
   ),
+  share: () => (
+    <svg viewBox="0 0 24 24" className="ic-solid" xmlns="http://www.w3.org/2000/svg">
+      <path d="M12 2.6a1 1 0 01.7.29l4.2 4.2a1 1 0 01-1.42 1.42L13 5.99V15a1 1 0 11-2 0V5.99L8.5 8.51A1 1 0 017.1 7.09l4.2-4.2a1 1 0 01.7-.29z" />
+      <path d="M4.5 12.4a1 1 0 011 1v5.1a.5.5 0 00.5.5h12a.5.5 0 00.5-.5v-5.1a1 1 0 112 0v5.1a2.5 2.5 0 01-2.5 2.5H6a2.5 2.5 0 01-2.5-2.5v-5.1a1 1 0 011-1z" />
+    </svg>
+  ),
+  info: () => (
+    <svg viewBox="0 0 24 24" className="ic-solid" xmlns="http://www.w3.org/2000/svg">
+      <path
+        fillRule="evenodd"
+        clipRule="evenodd"
+        d="M12 2a10 10 0 100 20 10 10 0 000-20zm0 3.6a1.4 1.4 0 110 2.8 1.4 1.4 0 010-2.8zM10.8 10.6h2.4v7.2h-2.4v-7.2z"
+      />
+    </svg>
+  ),
   restore: () => (
     <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
       <path d="M3 12a9 9 0 109-9 9 9 0 00-6.36 2.64L3 8" />

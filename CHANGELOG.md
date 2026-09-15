@@ -6,7 +6,85 @@ All notable changes to EasyClean are documented here. The format follows
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.2.0] — 2026-09-15
+
+Semantic search, a real photo viewer, and a Gallery that holds the whole library.
+
+Minor rather than patch: this adds a database migration and changes what the Gallery shows.
+
+### Added
+- **Semantic photo search.** Type what a photo *shows* — "a crane at a harbour", "green rolling
+  hills" — and find it regardless of its filename. CLIP ViT-B/32 (int8 ONNX) embeds every photo and
+  your query into the same 512-dimension space; the closest vectors are the results.
+
+  One search box, two kinds of answer: exact filename/album matches first (that search always works),
+  then photos that merely look like the query, de-duplicated against the first group.
+
+  Design notes, since each was a real decision:
+  - **No vector database.** Benchmarked on this stack: an exact scan of 100K vectors is 15ms (int8),
+    less than the 23ms the text encoder spends on the query itself. Qdrant or Milvus would add a
+    second service and a sync problem to optimise the cheap half, and would break the locked
+    "one core, one shell" architecture. Vectors are int8 BLOBs in the existing SQLite.
+  - **Embeddings come from the cached thumbnail**, not the original — CLIP downsamples to 224x224
+    regardless, so re-decoding a 12MB HEIC would be pure waste. Indexing measured 27.6ms per photo.
+  - **Weights download on first use** (~149MB) into `<data_dir>/models/`, so the image grew only
+    48MB (ONNX Runtime, statically linked) and the Docker build stays offline and reproducible.
+    `EASYCLEAN_CLIP_BASE_URL` retargets it at a mirror.
+  - **The relevance cut-off is relative.** CLIP similarities bunch in 0.15-0.30 whatever you ask, so
+    an absolute threshold is meaningless. Results are kept by z-score against the library's own
+    distribution for that query: subjects actually present measured z = 2.3-2.7, while gibberish and
+    absent-but-valid subjects ("a giraffe in a spacesuit") measured 1.5-1.6. Below z=2 results are
+    still shown, labelled "closest guesses" — a ranking that silently returns nothing is worse than
+    one that admits it is unsure.
+
+  New endpoints: `GET /api/search`, `GET /api/search/status`, `POST /api/search/index`. Settings
+  gains a Photo Search panel with the download/index progress.
+- **Pinch-to-zoom and swipe navigation in the photo viewer.** Two fingers zoom (up to 6x, double-tap
+  toggles), one finger pans when zoomed, swipes left/right between photos when not, and swipes down
+  to dismiss with the backdrop fading as it goes. The `<` `>` arrows are gone; arrow keys still work.
+  Only the photo transforms — the top bar and action bar stay pixel-identical at full zoom, and the
+  browser's own pinch stays disabled.
+- **Viewer action bar**, shaped like the tab bar it replaces while the viewer is open: Share, Info,
+  Album, Delete. In the trash it becomes Put back, Info, Delete forever, and the favourite button is
+  hidden — favouriting is a review signal that means nothing for a binned file. Share uses the Web
+  Share API where the browser offers it and otherwise downloads the original; on plain-HTTP LAN the
+  API is unavailable (it needs a secure context), so the download is what actually runs today.
+- **Gallery search runs on the server, across the whole library** (`q=`), matching the filename and
+  the path a photo is filed under — so an album name finds its contents. It replaces a browser-side
+  filter that could only see the pages already scrolled through: on a 213-photo fixture with 120
+  loaded, searching now finds a file sitting at row ~213. Typing is debounced, so a six-letter word
+  is one request. `%` and `_` are escaped rather than left to act as LIKE wildcards — searching
+  `IMG_2203` no longer also matches `IMG-2203`.
+- **Photos / Videos filter** (`type=`) beside the Gallery tabs, toggling off when tapped again. An
+  unknown type is a 400 rather than a silent empty result.
+- **Gallery tabs — All / Original / Cleaned** (`mode=library|original|cleaned`), so un-reviewed
+  photos and filed ones can be told apart at a glance.
+- **Manual album filing** (`POST /api/albums/add`): file a photo under an existing album or a new one
+  by name, alongside the automatic categorisation that runs at session finish.
+- **Bin a photo straight from the Gallery or viewer** (`POST /api/media/:id/trash`) — a swipe only
+  records a decision for session finish, and there is no session to finish here. Still trash-first.
+- **Days-left countdown in the trash**, turning red in the last three days, with `trash_retention_days`
+  now exposed on `/api/settings`.
+
+### Changed
+- **Page headers are sticky.** Clean, Gallery, Albums, Setting and album detail keep their title bar
+  pinned while the content scrolls, with a hairline appearing once something has scrolled under it.
+- **The trash is ordered by when each file was binned**, not when the photo was taken — a 2019 photo
+  deleted a minute ago belongs at the top, and `created_at` buried it. Rows open the viewer.
+
 ### Fixed
+- **The Gallery stopped at 500 photos.** `/api/media/batch` had no pagination, so the Gallery asked
+  for the server's maximum page and showed only that. It now pages (`page`, 1-based) and loads more as
+  you scroll. The ordering gained an `id` tie-break: without it two photos sharing a timestamp were
+  free to swap places between pages, so one could appear twice and another never.
+- **The page scrolled behind the open photo viewer.** The lock set `body { overflow: hidden }`, but
+  the scrolling element is `.screen` — the app is a flex column that owns its own overflow — so it
+  did nothing. A class on `<body>` now freezes whichever `.screen` is mounted.
+- **A pinch behaved like a one-finger drag.** `setPointerCapture` ran before the pointer was
+  registered and throws `NotFoundError` for a pointer the browser no longer considers active, which
+  aborted the handler before the two-finger state was set up. It now runs last, inside a try/catch.
 - **The pre-rollout index backup could not write.** The snapshot step added in 0.1.1 ran `mkdir
   data/backups` as the deploy user, but the data dir belongs to uid 10001 (the container's user) and
   that user only owns `.env` — so the rollout aborted with EPERM before touching anything. It now

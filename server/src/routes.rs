@@ -21,7 +21,7 @@ use easyclean_core::categorize;
 use easyclean_core::fileops;
 use easyclean_core::models::MediaFile;
 use easyclean_core::storage::UserRoot;
-use easyclean_core::{db, detect, scan};
+use easyclean_core::{db, detect, embed, scan};
 
 use crate::auth::AuthUser;
 use crate::error::ApiError;
@@ -51,15 +51,21 @@ pub fn router(state: AppState) -> Router {
         .route("/api/media/:id/preview", get(preview))
         .route("/api/media/:id/raw", get(raw))
         .route("/api/media/:id/favorite", post(favorite))
+        .route("/api/media/:id/trash", post(trash_one))
         // albums
         .route("/api/albums", get(albums_list))
         .route("/api/albums/refresh", post(albums_refresh))
         .route("/api/albums/:id/files", get(album_files))
+        .route("/api/albums/add", post(album_add))
         // stats
         .route("/api/stats/summary", get(stats))
         .route("/api/stats/streak", get(streak))
         .route("/api/stats/timeline", get(timeline))
         .route("/api/stats/storage", get(storage))
+        // semantic search
+        .route("/api/search", get(search))
+        .route("/api/search/status", get(search_status))
+        .route("/api/search/index", post(search_index_start))
         // settings
         .route("/api/settings", get(settings_get))
         .route("/api/settings", post(settings_put))
@@ -291,6 +297,16 @@ struct BatchQuery {
     mode: Option<String>,
     month: Option<String>,
     size: Option<i64>,
+    /// 1-based page. The Gallery pages through a library of any size rather
+    /// than asking for all of it at once.
+    page: Option<i64>,
+    /// Free text, matched against filename and library path. Searching here
+    /// rather than in the browser is the point: the client only ever holds the
+    /// pages it has scrolled through, so filtering there missed the rest.
+    q: Option<String>,
+    /// `image` or `video`.
+    #[serde(rename = "type")]
+    media_type: Option<String>,
 }
 
 async fn batch(
@@ -298,12 +314,27 @@ async fn batch(
     user: AuthUser,
     Query(q): Query<BatchQuery>,
 ) -> Result<Json<Value>, ApiError> {
-    let mode = q.mode.as_deref().unwrap_or("timeline");
     let size = q.size.unwrap_or(50).clamp(1, 500);
-    let files = db::get_batch(&st.db, &user.username, mode, q.month.as_deref(), size).await?;
-    // `total` is every pending match for the mode, not just this page — the UI
-    // shows it as the review-progress denominator.
-    let total = db::count_batch(&st.db, &user.username, mode, q.month.as_deref()).await?;
+    let page = q.page.unwrap_or(1).max(1);
+    // Reject anything that isn't a media type we index, rather than quietly
+    // returning nothing for a typo.
+    let media_type = match q.media_type.as_deref() {
+        Some("image") | Some("video") => q.media_type.as_deref(),
+        Some(other) if !other.is_empty() => {
+            return Err(ApiError::bad("type must be 'image' or 'video'"))
+        }
+        _ => None,
+    };
+    let query = db::BatchQuery {
+        mode: q.mode.as_deref().unwrap_or("timeline"),
+        month: q.month.as_deref(),
+        q: q.q.as_deref(),
+        media_type,
+    };
+    let files = db::get_batch(&st.db, &user.username, &query, size, page).await?;
+    // `total` is every match, not just this page — the review screen shows it
+    // as a progress denominator and the Gallery as a result count.
+    let total = db::count_batch(&st.db, &user.username, &query).await?;
     Ok(Json(json!({ "files": enrich(files), "total": total })))
 }
 
@@ -516,6 +547,42 @@ async fn raw(
     serve_file(p).await
 }
 
+/// Bin one file straight from the Gallery or the detail viewer.
+///
+/// Unlike a swipe — which only marks a decision, to be carried out when the
+/// session is finished — this moves the file to `.trash/` now, because there is
+/// no session to finish here and the user expects it gone. Still trash-first:
+/// the bytes survive until an explicit purge or retention cleanup.
+async fn trash_one(
+    State(st): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<i64>,
+) -> Result<Json<Value>, ApiError> {
+    let m = owned_media(&st, &user, id).await?;
+    if m.status == "trashed" {
+        return Err(ApiError::bad("file is already in the trash"));
+    }
+    let root = UserRoot::new(&st.cfg.media_root, &user.username).map_err(ApiError::internal)?;
+    root.ensure().map_err(ApiError::internal)?;
+
+    let src = FsPath::new(&m.path);
+    if src.exists() && !src.starts_with(root.trash()) {
+        let dest = fileops::to_trash(&root, src).map_err(ApiError::internal)?;
+        db::update_path(
+            &st.db,
+            id,
+            &dest.to_string_lossy(),
+            &rel_to_root(&root, &dest),
+        )
+        .await?;
+    }
+    let now = now_secs();
+    db::set_status(&st.db, &user.username, id, "trashed", Some(now)).await?;
+    Ok(Json(
+        json!({ "id": id, "status": "trashed", "trashed_at": now }),
+    ))
+}
+
 // ── Albums ────────────────────────────────────────────────────────────────
 
 async fn albums_list(State(st): State<AppState>, user: AuthUser) -> Result<Json<Value>, ApiError> {
@@ -551,6 +618,46 @@ async fn albums_refresh(
         db::refresh_album_meta(&st.db, a.id).await?;
     }
     Ok(Json(json!({ "refreshed": albums.len() })))
+}
+
+#[derive(Deserialize)]
+struct AlbumAddReq {
+    file_id: i64,
+    /// Existing album to file it under, or a name to create one.
+    album_id: Option<i64>,
+    name: Option<String>,
+}
+
+/// Put one file in an album, creating the album if only a name was given.
+///
+/// Albums are otherwise built by `categorize` at session finish; this is the
+/// manual path, for filing a photo somewhere the rules would never put it.
+/// Category type `manual` keeps those out of the auto-rebuild's way.
+async fn album_add(
+    State(st): State<AppState>,
+    user: AuthUser,
+    Json(b): Json<AlbumAddReq>,
+) -> Result<Json<Value>, ApiError> {
+    // Ownership check: never let one user file another's photo.
+    let _ = owned_media(&st, &user, b.file_id).await?;
+
+    let album_id = match (b.album_id, b.name.as_deref().map(str::trim)) {
+        (Some(id), _) => {
+            let albums = db::list_albums(&st.db, &user.username).await?;
+            if !albums.iter().any(|a| a.id == id) {
+                return Err(ApiError::not_found("album not found"));
+            }
+            id
+        }
+        (None, Some(name)) if !name.is_empty() => {
+            db::get_or_create_album(&st.db, &user.username, name, "manual", now_secs()).await?
+        }
+        _ => return Err(ApiError::bad("need an album_id or a name")),
+    };
+
+    db::add_to_album(&st.db, album_id, b.file_id).await?;
+    db::refresh_album_meta(&st.db, album_id).await?;
+    Ok(Json(json!({ "album_id": album_id, "file_id": b.file_id })))
 }
 
 // ── Stats ─────────────────────────────────────────────────────────────────
@@ -590,6 +697,294 @@ async fn storage(
     ))
 }
 
+// ── Semantic search ───────────────────────────────────────────────────────
+
+/// How many nearest photos a semantic query returns.
+const SEMANTIC_LIMIT: usize = 60;
+
+/// Keep candidates standing this many standard deviations above the mean score.
+///
+/// CLIP similarities bunch between roughly 0.15 and 0.30 no matter what you ask,
+/// so an absolute cut-off is meaningless — 0.22 is a strong match for one query
+/// and noise for another. What separates a hit from a miss is how far the best
+/// score stands out *from the rest of this library, for this query*.
+const Z_KEEP: f32 = 1.0;
+
+/// Below this, the top result doesn't stand out enough to call it a match.
+///
+/// Measured: subjects actually present scored z = 2.3 to 2.7, while gibberish
+/// and absent-but-valid subjects ("a giraffe in a spacesuit") scored 1.5 to 1.6.
+/// Results below this are still returned — labelled as guesses rather than
+/// hidden, because a ranking that silently returns nothing is worse than one
+/// that admits it is unsure.
+const Z_CONFIDENT: f32 = 2.0;
+
+/// Get the model, loading it once on first use.
+async fn clip_model(st: &AppState) -> Result<Arc<embed::Clip>, ApiError> {
+    let data_dir = st.cfg.data_dir.clone();
+    let cell = st.clip.clone();
+    cell.get_or_try_init(|| async move {
+        tokio::task::spawn_blocking(move || embed::Clip::load(&data_dir))
+            .await
+            .map_err(|e| ApiError::internal(format!("model load panicked: {e}")))?
+            .map(Arc::new)
+            .map_err(ApiError::internal)
+    })
+    .await
+    .cloned()
+}
+
+async fn search_status(
+    State(st): State<AppState>,
+    user: AuthUser,
+) -> Result<Json<Value>, ApiError> {
+    let (indexed, total) = db::embedding_stats(&st.db, &user.username, embed::MODEL_ID).await?;
+    let running = st.index.running.load(Ordering::Relaxed);
+    Ok(Json(json!({
+        "model_ready": embed::is_downloaded(&st.cfg.data_dir),
+        "download_bytes": embed::DOWNLOAD_BYTES,
+        "indexed": indexed,
+        "indexable": total,
+        "running": running,
+        "phase": st.index.phase.lock().ok().map(|p| p.clone()).unwrap_or_default(),
+        "done": st.index.done.load(Ordering::Relaxed),
+        "total": st.index.total.load(Ordering::Relaxed),
+        "error": st.index.error.lock().ok().and_then(|e| e.clone()),
+    })))
+}
+
+/// Kick off "download the model if needed, then embed everything un-embedded".
+async fn search_index_start(State(st): State<AppState>, user: AuthUser) -> Json<Value> {
+    if st.index.running.swap(true, Ordering::SeqCst) {
+        return Json(json!({ "started": false, "reason": "already running" }));
+    }
+    st.index.done.store(0, Ordering::Relaxed);
+    st.index.total.store(0, Ordering::Relaxed);
+    *st.index.error.lock().unwrap() = None;
+    tokio::spawn(run_index(st.clone(), user.username));
+    Json(json!({ "started": true }))
+}
+
+async fn run_index(st: AppState, user: String) {
+    let set_phase = |p: &str| {
+        if let Ok(mut g) = st.index.phase.lock() {
+            *g = p.to_string();
+        }
+    };
+    let fail = |msg: String| {
+        if let Ok(mut g) = st.index.error.lock() {
+            *g = Some(msg);
+        }
+    };
+
+    // ── 1. Weights
+    if !embed::is_downloaded(&st.cfg.data_dir) {
+        set_phase("download");
+        let data_dir = st.cfg.data_dir.clone();
+        let (done, total) = (st.index.done.clone(), st.index.total.clone());
+        let res = tokio::task::spawn_blocking(move || {
+            embed::download(&data_dir, |d, t| {
+                done.store(d as usize, Ordering::Relaxed);
+                total.store(t as usize, Ordering::Relaxed);
+            })
+        })
+        .await;
+        match res {
+            Ok(Ok(())) => tracing::info!("CLIP weights downloaded"),
+            Ok(Err(e)) => {
+                fail(format!("download: {e}"));
+                set_phase("");
+                st.index.running.store(false, Ordering::SeqCst);
+                return;
+            }
+            Err(e) => {
+                fail(format!("download panicked: {e}"));
+                set_phase("");
+                st.index.running.store(false, Ordering::SeqCst);
+                return;
+            }
+        }
+    }
+
+    // ── 2. Embed
+    set_phase("embed");
+    let clip = match clip_model(&st).await {
+        Ok(c) => c,
+        Err(e) => {
+            fail(format!("loading model: {}", e.1));
+            set_phase("");
+            st.index.running.store(false, Ordering::SeqCst);
+            return;
+        }
+    };
+
+    let pending = match db::files_needing_embedding(&st.db, &user, embed::MODEL_ID).await {
+        Ok(p) => p,
+        Err(e) => {
+            fail(format!("listing files: {e}"));
+            set_phase("");
+            st.index.running.store(false, Ordering::SeqCst);
+            return;
+        }
+    };
+    st.index.done.store(0, Ordering::Relaxed);
+    st.index.total.store(pending.len(), Ordering::Relaxed);
+
+    let mut n = 0usize;
+    for (id, thumb) in pending {
+        let clip = clip.clone();
+        // Embed from the cached thumbnail: CLIP downsamples to 224 anyway, so
+        // re-decoding the original would cost far more for identical pixels.
+        let embedded = tokio::task::spawn_blocking(move || {
+            embed::embed_image_at(&clip, std::path::Path::new(&thumb))
+        })
+        .await;
+
+        match embedded {
+            Ok(Ok(vec)) => {
+                let (bytes, scale) = embed::quantize(&vec);
+                if let Err(e) = db::upsert_embedding(
+                    &st.db,
+                    id,
+                    embed::MODEL_ID,
+                    vec.len() as i64,
+                    scale as f64,
+                    &bytes,
+                    now_secs(),
+                )
+                .await
+                {
+                    tracing::warn!("storing embedding for {id}: {e}");
+                }
+            }
+            // One unreadable thumbnail must not abandon the whole pass.
+            Ok(Err(e)) => tracing::warn!("embedding {id}: {e}"),
+            Err(e) => tracing::warn!("embedding {id} panicked: {e}"),
+        }
+        n += 1;
+        st.index.done.store(n, Ordering::Relaxed);
+    }
+
+    set_phase("");
+    st.index.running.store(false, Ordering::SeqCst);
+    tracing::info!("semantic index: embedded {n} file(s)");
+}
+
+#[derive(Deserialize)]
+struct SearchQuery {
+    q: String,
+    mode: Option<String>,
+    #[serde(rename = "type")]
+    media_type: Option<String>,
+}
+
+/// One search box, two kinds of answer.
+///
+/// Exact name/path matches come first — that search always works and is what
+/// you want when you know the filename. Photos that merely *look* like the
+/// query follow, ranked, and only when an index exists. Anything already listed
+/// as a name match is not repeated.
+async fn search(
+    State(st): State<AppState>,
+    user: AuthUser,
+    Query(q): Query<SearchQuery>,
+) -> Result<Json<Value>, ApiError> {
+    let text = q.q.trim();
+    if text.is_empty() {
+        return Err(ApiError::bad("q must not be empty"));
+    }
+    let media_type = match q.media_type.as_deref() {
+        Some("image") | Some("video") => q.media_type.as_deref(),
+        Some(other) if !other.is_empty() => {
+            return Err(ApiError::bad("type must be 'image' or 'video'"))
+        }
+        _ => None,
+    };
+    let mode = q.mode.as_deref().unwrap_or("library");
+
+    // ── exact matches
+    let name_hits = db::get_batch(
+        &st.db,
+        &user.username,
+        &db::BatchQuery {
+            mode,
+            q: Some(text),
+            media_type,
+            ..Default::default()
+        },
+        200,
+        1,
+    )
+    .await?;
+    let name_ids: std::collections::HashSet<i64> = name_hits.iter().map(|m| m.id).collect();
+
+    // ── semantic matches
+    let mut semantic: Vec<Value> = Vec::new();
+    let mut searched = false;
+    let mut confident = false;
+    if embed::is_downloaded(&st.cfg.data_dir) {
+        let rows = db::all_embeddings(&st.db, &user.username, embed::MODEL_ID).await?;
+        if !rows.is_empty() {
+            searched = true;
+            let clip = clip_model(&st).await?;
+            let phrase = text.to_string();
+            let qvec = tokio::task::spawn_blocking(move || clip.embed_text(&phrase))
+                .await
+                .map_err(|e| ApiError::internal(format!("query encode panicked: {e}")))?
+                .map_err(ApiError::internal)?;
+
+            let mut scored: Vec<(f32, i64)> = rows
+                .iter()
+                .filter(|(id, _, _)| !name_ids.contains(id))
+                .map(|(id, scale, v)| (embed::similarity(&qvec, v, *scale as f32), *id))
+                .collect();
+            // How far the best score stands out, in standard deviations across
+            // the whole candidate set — computed before truncation, so the
+            // baseline is the library rather than the shortlist.
+            let n = scored.len().max(1) as f32;
+            let mean = scored.iter().map(|(s, _)| *s).sum::<f32>() / n;
+            let sd = (scored.iter().map(|(s, _)| (s - mean).powi(2)).sum::<f32>() / n)
+                .sqrt()
+                .max(1e-6);
+            let top = scored.iter().map(|(s, _)| *s).fold(f32::MIN, f32::max);
+            confident = (top - mean) / sd >= Z_CONFIDENT;
+
+            scored.retain(|(s, _)| (s - mean) / sd >= Z_KEEP);
+            scored.sort_unstable_by(|a, b| {
+                b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            scored.truncate(SEMANTIC_LIMIT);
+
+            let ids: Vec<i64> = scored.iter().map(|(_, id)| *id).collect();
+            let files = db::media_by_ids(&st.db, &user.username, &ids).await?;
+            let scores: std::collections::HashMap<i64, f32> =
+                scored.iter().map(|(s, id)| (*id, *s)).collect();
+            semantic = enrich(files)
+                .into_iter()
+                .map(|mut v| {
+                    let id = v.get("id").and_then(|i| i.as_i64());
+                    if let (Value::Object(map), Some(id)) = (&mut v, id) {
+                        map.insert(
+                            "score".into(),
+                            json!(scores.get(&id).copied().unwrap_or(0.0)),
+                        );
+                    }
+                    v
+                })
+                .collect();
+        }
+    }
+
+    Ok(Json(json!({
+        "name_matches": enrich(name_hits),
+        "semantic_matches": semantic,
+        "semantic_available": searched,
+        // False when nothing stood out — the UI then says "closest guesses"
+        // rather than claiming a match.
+        "semantic_confident": confident,
+    })))
+}
+
 // ── Settings ──────────────────────────────────────────────────────────────
 
 /// Setting key for the duplicate-detection Hamming distance.
@@ -616,6 +1011,9 @@ async fn settings_get(State(st): State<AppState>, user: AuthUser) -> Result<Json
     Ok(Json(json!({
         "duplicate_distance": resolve_dup_distance(&st, &user.username).await,
         "duplicate_distance_max": DUP_DISTANCE_MAX,
+        // Operator policy, not a preference — the trash screen needs it to
+        // count down how long each file has left.
+        "trash_retention_days": st.cfg.trash_retention_days,
     })))
 }
 
@@ -885,6 +1283,8 @@ mod tests {
             cfg: Arc::new(cfg),
             scan: Default::default(),
             rate_limiter: Default::default(),
+            index: Default::default(),
+            clip: Default::default(),
         }
     }
 
@@ -1234,6 +1634,530 @@ mod tests {
         }
         out.sort();
         out
+    }
+
+    /// Without an index, search still works — it just answers with names only
+    /// and says so, rather than erroring or pretending to understand pictures.
+    #[tokio::test]
+    async fn search_without_an_index_falls_back_to_names() {
+        let st = test_state().await;
+        let auth = bearer(&st);
+
+        let r = app(st.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/api/search?q=x.jpg")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+        let v = body_json(r).await;
+        assert_eq!(
+            v["name_matches"].as_array().unwrap().len(),
+            1,
+            "the seeded x.jpg"
+        );
+        assert_eq!(v["semantic_matches"].as_array().unwrap().len(), 0);
+        assert_eq!(
+            v["semantic_available"],
+            json!(false),
+            "no model, no vectors"
+        );
+        assert_eq!(v["semantic_confident"], json!(false));
+
+        // An empty query is a bad request, not an expensive scan of everything.
+        let r = app(st.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/api/search?q=%20%20")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// The index status drives the Settings panel, so its shape matters even
+    /// before a single photo has been embedded.
+    #[tokio::test]
+    async fn search_status_reports_an_empty_index() {
+        let st = test_state().await;
+        let auth = bearer(&st);
+        let r = app(st.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/api/search/status")
+                    .header("authorization", auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+        let v = body_json(r).await;
+        assert_eq!(v["model_ready"], json!(false));
+        assert_eq!(v["indexed"], json!(0));
+        assert_eq!(v["running"], json!(false));
+        // The seeded file has no thumbnail, so it isn't yet indexable.
+        assert!(v["indexable"].as_i64().is_some());
+    }
+
+    /// Embeddings are derived data keyed by file id. Purging a photo has to
+    /// take its vector with it, or a recycled id inherits a stranger's meaning.
+    #[tokio::test]
+    async fn purging_a_file_drops_its_embedding() {
+        let st = test_state().await;
+        let vec = vec![7u8; easyclean_core::embed::DIM];
+        db::upsert_embedding(
+            &st.db,
+            1,
+            easyclean_core::embed::MODEL_ID,
+            512,
+            0.01,
+            &vec,
+            0,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            db::all_embeddings(&st.db, "saiz", easyclean_core::embed::MODEL_ID)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+
+        db::delete_media_row(&st.db, 1).await.unwrap();
+        assert!(
+            db::all_embeddings(&st.db, "saiz", easyclean_core::embed::MODEL_ID)
+                .await
+                .unwrap()
+                .is_empty(),
+            "the vector must not outlive the photo"
+        );
+    }
+
+    /// Search ranks by similarity, so the fetch that turns ids back into rows
+    /// must preserve that order rather than SQLite's.
+    #[tokio::test]
+    async fn media_by_ids_keeps_the_callers_ranking() {
+        let st = test_state().await;
+        let mut ids = vec![1i64];
+        for i in 0..4 {
+            ids.push(
+                db::insert_media(
+                    &st.db,
+                    &NewMedia {
+                        user: "saiz".into(),
+                        path: format!("/media/saiz/r{i}.jpg"),
+                        rel_path: None,
+                        filename: format!("r{i}.jpg"),
+                        media_type: "image".into(),
+                        size_bytes: 1,
+                        created_at: 1_700_000_000 + i,
+                        gps_lat: None,
+                        gps_lon: None,
+                    },
+                )
+                .await
+                .unwrap(),
+            );
+        }
+        ids.reverse();
+        let rows = db::media_by_ids(&st.db, "saiz", &ids).await.unwrap();
+        assert_eq!(
+            rows.iter().map(|m| m.id).collect::<Vec<_>>(),
+            ids,
+            "ranking order must survive the id lookup"
+        );
+
+        // Another user's ids simply aren't returned.
+        let rows = db::media_by_ids(&st.db, "someone-else", &ids)
+            .await
+            .unwrap();
+        assert!(rows.is_empty());
+    }
+
+    /// Search runs in the database over the whole library, not in the browser
+    /// over whatever pages it happens to have loaded.
+    #[tokio::test]
+    async fn search_matches_across_the_whole_library() {
+        let st = test_state().await;
+        let auth = bearer(&st);
+
+        for (name, rel, kind) in [
+            ("IMG_2201.jpg", "clean/Trip 2026/IMG_2201.jpg", "image"),
+            ("IMG_2202.jpg", "source/IMG_2202.jpg", "image"),
+            ("sunset.mp4", "clean/Trip 2026/sunset.mp4", "video"),
+            ("100%_done.jpg", "source/100%_done.jpg", "image"),
+            ("IMG-2203.jpg", "source/IMG-2203.jpg", "image"),
+        ] {
+            let id = db::insert_media(
+                &st.db,
+                &NewMedia {
+                    user: "saiz".into(),
+                    path: format!("/media/saiz/{name}"),
+                    rel_path: Some(rel.into()),
+                    filename: name.into(),
+                    media_type: kind.into(),
+                    size_bytes: 10,
+                    created_at: 1_700_000_000,
+                    gps_lat: None,
+                    gps_lon: None,
+                },
+            )
+            .await
+            .unwrap();
+            assert!(id > 0);
+        }
+
+        let search = |st: AppState, auth: String, qs: String| async move {
+            let r = app(st)
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/api/media/batch?mode=library&{qs}"))
+                        .header("authorization", auth)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(r.status(), StatusCode::OK);
+            let v = body_json(r).await;
+            let names: Vec<String> = v["files"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|f| f["filename"].as_str().unwrap().to_string())
+                .collect();
+            (v["total"].as_i64().unwrap(), names)
+        };
+
+        // Filename substring.
+        let (total, names) = search(st.clone(), auth.clone(), "size=50&q=IMG_22".into()).await;
+        assert_eq!(total, 2, "both IMG_22xx, and not IMG-2203");
+        assert!(names.iter().all(|n| n.starts_with("IMG_22")));
+
+        // The path counts too, so an album name finds what's filed under it.
+        let (total, _) = search(st.clone(), auth.clone(), "size=50&q=Trip%202026".into()).await;
+        assert_eq!(total, 2, "the photo and the video in that album");
+
+        // `_` is a LIKE wildcard; unescaped, this would also match IMG-2203.
+        let (total, names) = search(st.clone(), auth.clone(), "size=50&q=IMG_2203".into()).await;
+        assert_eq!(
+            total, 0,
+            "underscore is literal, not 'any character': {names:?}"
+        );
+
+        // `%` likewise must not mean "everything".
+        let (total, names) = search(st.clone(), auth.clone(), "size=50&q=100%25_done".into()).await;
+        assert_eq!(total, 1, "percent is literal: {names:?}");
+        assert_eq!(names, vec!["100%_done.jpg"]);
+
+        // Type narrows independently of the text.
+        let (total, names) = search(st.clone(), auth.clone(), "size=50&type=video".into()).await;
+        assert_eq!(total, 1, "{names:?}");
+        assert_eq!(names, vec!["sunset.mp4"]);
+
+        // ...and the two compose.
+        let (total, _) = search(st.clone(), auth.clone(), "size=50&q=Trip&type=image".into()).await;
+        assert_eq!(total, 1, "the album's photo, not its video");
+
+        // A search finds matches beyond the first page, which is the whole
+        // point — page 2 of a 1-per-page search still reports the full total.
+        let (total, names) =
+            search(st.clone(), auth.clone(), "q=IMG_22&size=1&page=2".into()).await;
+        assert_eq!(total, 2, "total is every match, not the page");
+        assert_eq!(names.len(), 1, "and page 2 holds the second one");
+
+        // A junk type is refused rather than silently matching nothing.
+        let r = app(st.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/api/media/batch?mode=library&type=gif")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// The Gallery's three tabs must actually separate cleaned from not.
+    #[tokio::test]
+    async fn gallery_scopes_split_original_from_cleaned() {
+        let st = test_state().await;
+        let auth = bearer(&st);
+
+        let count = |st: AppState, auth: String, mode: &str| {
+            let uri = format!("/api/media/batch?mode={mode}&size=50");
+            async move {
+                let r = app(st)
+                    .oneshot(
+                        Request::builder()
+                            .uri(uri)
+                            .header("authorization", auth)
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                body_json(r).await["files"].as_array().unwrap().len()
+            }
+        };
+
+        assert_eq!(count(st.clone(), auth.clone(), "original").await, 1);
+        assert_eq!(count(st.clone(), auth.clone(), "cleaned").await, 0);
+
+        app(st.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/media/swipe")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"file_id":1,"action":"keep"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            count(st.clone(), auth.clone(), "original").await,
+            0,
+            "no longer original"
+        );
+        assert_eq!(
+            count(st.clone(), auth.clone(), "cleaned").await,
+            1,
+            "now cleaned"
+        );
+        assert_eq!(
+            count(st.clone(), auth.clone(), "library").await,
+            1,
+            "still in All"
+        );
+    }
+
+    /// Paging must cover every row exactly once — the Gallery stopped at 500
+    /// before, and a page that repeats or skips is worse than a cap.
+    #[tokio::test]
+    async fn paging_walks_every_row_once() {
+        let st = test_state().await;
+        let auth = bearer(&st);
+
+        // Seed enough rows to need several pages, all sharing a timestamp so
+        // the tie-break in the ORDER BY is what has to keep paging stable.
+        for i in 0..25 {
+            db::insert_media(
+                &st.db,
+                &NewMedia {
+                    user: "saiz".into(),
+                    path: format!("/media/saiz/p{i}.jpg"),
+                    rel_path: None,
+                    filename: format!("p{i}.jpg"),
+                    media_type: "image".into(),
+                    size_bytes: 10,
+                    created_at: 1_700_000_000,
+                    gps_lat: None,
+                    gps_lon: None,
+                },
+            )
+            .await
+            .unwrap();
+        }
+
+        let mut seen: Vec<i64> = Vec::new();
+        for page in 1..=5 {
+            let r = app(st.clone())
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/api/media/batch?mode=library&size=6&page={page}"))
+                        .header("authorization", &auth)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let v = body_json(r).await;
+            assert_eq!(
+                v["total"],
+                json!(26),
+                "total is the whole set, not the page"
+            );
+            for f in v["files"].as_array().unwrap() {
+                seen.push(f["id"].as_i64().unwrap());
+            }
+        }
+
+        let mut uniq = seen.clone();
+        uniq.sort_unstable();
+        uniq.dedup();
+        assert_eq!(seen.len(), 26, "every row returned");
+        assert_eq!(uniq.len(), 26, "and none of them twice");
+    }
+
+    /// Deleting from the Gallery bins the file immediately — there is no
+    /// session to finish there — and Put back returns it to `source/` as
+    /// unreviewed, not into the cleaned folder.
+    #[tokio::test]
+    async fn gallery_delete_then_put_back_lands_in_original() {
+        let st = test_state().await;
+        let auth = bearer(&st);
+
+        // A real file on disk, so the move is exercised rather than skipped.
+        let src_dir = st.cfg.media_root.join("saiz").join("source");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        let src = src_dir.join("shot.jpg");
+        std::fs::write(&src, b"not really a jpeg").unwrap();
+        db::update_path(&st.db, 1, &src.to_string_lossy(), "source/shot.jpg")
+            .await
+            .unwrap();
+
+        let r = app(st.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/media/1/trash")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+        assert_eq!(body_json(r).await["status"], json!("trashed"));
+
+        let moved = db::get_media(&st.db, 1).await.unwrap().unwrap();
+        assert!(
+            moved.path.contains("/.trash/"),
+            "moved to .trash now: {}",
+            moved.path
+        );
+        assert!(
+            moved.trashed_at.is_some(),
+            "clock started for the countdown"
+        );
+        assert!(!src.exists(), "gone from source/");
+
+        // Put back.
+        let r = app(st.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/trash/restore/1")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+
+        let back = db::get_media(&st.db, 1).await.unwrap().unwrap();
+        assert_eq!(back.status, "pending", "unreviewed again, not cleaned");
+        assert!(
+            back.path.contains("/source/"),
+            "back in source/: {}",
+            back.path
+        );
+        assert!(
+            !back.path.contains("/clean/"),
+            "never into the cleaned folder"
+        );
+    }
+
+    /// Manual album filing, used by the viewer's Album action.
+    #[tokio::test]
+    async fn album_add_creates_then_reuses() {
+        let st = test_state().await;
+        let auth = bearer(&st);
+
+        let add = |st: AppState, auth: String, body: &'static str| async move {
+            app(st)
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/api/albums/add")
+                        .header("authorization", auth)
+                        .header("content-type", "application/json")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+        };
+
+        let r = add(st.clone(), auth.clone(), r#"{"file_id":1,"name":"Trip"}"#).await;
+        assert_eq!(r.status(), StatusCode::OK);
+        let album_id = body_json(r).await["album_id"].as_i64().unwrap();
+
+        let albums = db::list_albums(&st.db, "saiz").await.unwrap();
+        let made = albums
+            .iter()
+            .find(|a| a.id == album_id)
+            .expect("album created");
+        assert_eq!(made.name, "Trip");
+        assert_eq!(made.file_count, 1, "count refreshed on add");
+
+        // Filing the same photo again must not duplicate the membership row.
+        let r = add(st.clone(), auth.clone(), r#"{"file_id":1,"name":"Trip"}"#).await;
+        assert_eq!(r.status(), StatusCode::OK);
+        let albums = db::list_albums(&st.db, "saiz").await.unwrap();
+        assert_eq!(albums.iter().filter(|a| a.name == "Trip").count(), 1);
+        assert_eq!(
+            albums.iter().find(|a| a.id == album_id).unwrap().file_count,
+            1
+        );
+
+        // Neither an id nor a name is a bad request, not a silent no-op.
+        let r = add(st.clone(), auth.clone(), r#"{"file_id":1}"#).await;
+        assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// The trash reads as a history of what you just deleted, so it must be
+    /// ordered by deletion time — not by when the photo was taken.
+    #[tokio::test]
+    async fn trash_lists_newest_deletion_first() {
+        let st = test_state().await;
+
+        // An old photo binned recently must outrank a new photo binned earlier.
+        let old_photo = db::insert_media(
+            &st.db,
+            &NewMedia {
+                user: "saiz".into(),
+                path: "/media/saiz/ancient.jpg".into(),
+                rel_path: None,
+                filename: "ancient.jpg".into(),
+                media_type: "image".into(),
+                size_bytes: 10,
+                created_at: 1_000_000_000, // taken long ago
+                gps_lat: None,
+                gps_lon: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        db::set_status(&st.db, "saiz", 1, "trashed", Some(1_700_000_100))
+            .await
+            .unwrap();
+        db::set_status(&st.db, "saiz", old_photo, "trashed", Some(1_700_000_900))
+            .await
+            .unwrap();
+
+        let listed = db::list_status(&st.db, "saiz", "trashed").await.unwrap();
+        assert_eq!(
+            listed.first().map(|f| f.id),
+            Some(old_photo),
+            "most recently binned comes first, regardless of capture date"
+        );
     }
 
     /// The Gallery must keep showing a photo after you keep it. Every review
