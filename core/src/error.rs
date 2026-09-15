@@ -23,6 +23,12 @@ pub enum Error {
 
     #[error("path traversal rejected: {0:?}")]
     PathTraversal(String),
+
+    /// Model loading, inference, or weight download. Carries the underlying
+    /// message rather than wrapping `ort`'s error type, so the public API
+    /// doesn't leak the inference backend.
+    #[error("{0}")]
+    Other(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

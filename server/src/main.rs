@@ -59,6 +59,8 @@ async fn main() -> anyhow::Result<()> {
         cfg: Arc::new(cfg),
         scan: Default::default(),
         rate_limiter: LoginRateLimiter::default(),
+        index: Default::default(),
+        clip: Default::default(),
     };
 
     // Start the 30-day retention purge task (runs every hour).

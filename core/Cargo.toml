@@ -19,6 +19,12 @@ bcrypt = "0.15"
 jsonwebtoken = "9"
 getrandom = "0.3"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
+# Semantic search. ONNX Runtime links statically, so the runtime image needs no
+# extra shared library; the weights themselves are fetched at runtime into the
+# data dir rather than baked into the image.
+ort = "2.0.0-rc.13"
+tokenizers = { version = "0.20", default-features = false, features = ["onig"] }
+ureq = "2"
 # HEIC/HEIF decode. Off by default: it links the system `libheif` (>= 1.17),
 # which not every dev box has. The Docker image builds with it enabled.
 # `v1_17` (not the default `latest`) keeps us compatible with the libheif that

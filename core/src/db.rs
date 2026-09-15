@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
@@ -152,67 +152,145 @@ pub async fn get_media(pool: &Db, id: i64) -> Result<Option<MediaFile>> {
 
 /// A review batch for one mode: `timeline` (optional `YYYY-MM` month), `blurs`,
 /// or `duplicates`. Only `pending` files are returned, newest first.
-pub async fn get_batch(
-    pool: &Db,
-    user: &str,
-    mode: &str,
-    month: Option<&str>,
-    size: i64,
-) -> Result<Vec<MediaFile>> {
-    let (filter, month_bind) = batch_filter(mode, month);
-    let sql = format!("SELECT * FROM media_file {filter} ORDER BY created_at DESC LIMIT ?");
-
-    let mut q = sqlx::query_as::<_, MediaFile>(&sql).bind(user);
-    if let Some(m) = &month_bind {
-        q = q.bind(m);
-    }
-    q = q.bind(size);
-    Ok(q.fetch_all(pool).await?)
-}
-
-/// How many files match a batch mode, ignoring the page size — the denominator
-/// the swipe screen's progress counter needs.
-pub async fn count_batch(pool: &Db, user: &str, mode: &str, month: Option<&str>) -> Result<i64> {
-    let (filter, month_bind) = batch_filter(mode, month);
-    let sql = format!("SELECT COUNT(*) FROM media_file {filter}");
-
-    let mut q = sqlx::query_scalar::<_, i64>(&sql).bind(user);
-    if let Some(m) = &month_bind {
-        q = q.bind(m);
-    }
-    Ok(q.fetch_one(pool).await?)
-}
-
-/// Shared `WHERE` clause for `get_batch`/`count_batch`, plus the optional
-/// month value to bind after `user`.
+/// What a Gallery or review request is asking for.
 ///
-/// Every review mode is scoped to `pending` — a swipe deck must not re-offer a
-/// photo you already decided on. `library` is the exception: it backs the
-/// Gallery, which is meant to show what you *have*, so it spans pending and
-/// kept alike and only hides what is in the trash.
-fn batch_filter(mode: &str, month: Option<&str>) -> (String, Option<String>) {
-    let mut sql = match mode {
+/// Grouped into one struct rather than a growing tail of `Option` arguments:
+/// the binds have to line up with the `?`s in the generated SQL, and every new
+/// positional parameter was one more chance to get that order wrong.
+#[derive(Debug, Default, Clone)]
+pub struct BatchQuery<'a> {
+    /// `timeline` | `blurs` | `duplicates` (review decks, pending only)
+    /// · `library` | `original` | `cleaned` (Gallery scopes).
+    pub mode: &'a str,
+    /// `YYYY-MM`, restricting to one month.
+    pub month: Option<&'a str>,
+    /// Free text matched against the filename and the path inside the library.
+    pub q: Option<&'a str>,
+    /// `image` or `video`.
+    pub media_type: Option<&'a str>,
+}
+
+/// The `WHERE` clause for a batch, plus its binds in the order they appear.
+struct Filter {
+    sql: String,
+    binds: Vec<String>,
+}
+
+/// Escape a user's text for a `LIKE` pattern.
+///
+/// Without this, typing `%` matches everything and `_` matches any character —
+/// so a search for `IMG_01` would also hit `IMG-01`, and a lone `%` would look
+/// like the filter silently did nothing.
+fn like_pattern(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len() + 2);
+    out.push('%');
+    for c in raw.chars() {
+        if c == '%' || c == '_' || c == '\\' {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out.push('%');
+    out
+}
+
+/// Shared `WHERE` clause for `get_batch`/`count_batch`.
+///
+/// Review modes (`timeline`, `blurs`, `duplicates`) are scoped to `pending` — a
+/// swipe deck must not re-offer a photo you already decided on.
+///
+/// The Gallery scopes are the exception; they show what you *have*, and map to
+/// its All / Original / Cleaned tabs:
+///   - `library`  — everything except the trash
+///   - `original` — not reviewed yet, still in `source/`
+///   - `cleaned`  — kept, filed into `clean/<album>/` at session finish
+fn batch_filter(q: &BatchQuery<'_>) -> Filter {
+    let mut sql = match q.mode {
         "library" => String::from("WHERE user = ? AND status <> 'trashed'"),
+        "original" => String::from("WHERE user = ? AND status = 'pending'"),
+        "cleaned" => String::from("WHERE user = ? AND status = 'keep'"),
         _ => String::from("WHERE user = ? AND status = 'pending'"),
     };
-    let mut month_bind: Option<String> = None;
-    match mode {
+    let mut binds: Vec<String> = Vec::new();
+
+    match q.mode {
         "blurs" => sql.push_str(" AND is_blurry = 1"),
         "duplicates" => sql.push_str(" AND group_id IS NOT NULL"),
         _ => {
-            if let Some(m) = month {
+            if let Some(m) = q.month {
                 sql.push_str(" AND strftime('%Y-%m', created_at, 'unixepoch') = ?");
-                month_bind = Some(m.to_string());
+                binds.push(m.to_string());
             }
         }
     }
-    (sql, month_bind)
+
+    if let Some(t) = q.media_type.filter(|t| !t.is_empty()) {
+        sql.push_str(" AND media_type = ?");
+        binds.push(t.to_string());
+    }
+
+    // Searching `rel_path` as well as the filename means a query can name the
+    // album a photo was filed into, not just the file itself.
+    if let Some(text) = q.q.map(str::trim).filter(|t| !t.is_empty()) {
+        sql.push_str(
+            " AND (filename LIKE ? ESCAPE '\\' OR COALESCE(rel_path, '') LIKE ? ESCAPE '\\')",
+        );
+        let pat = like_pattern(text);
+        binds.push(pat.clone());
+        binds.push(pat);
+    }
+
+    Filter { sql, binds }
+}
+
+/// One page of a batch. `page` is 1-based; the Gallery walks it to load a
+/// library far larger than any single response should carry.
+pub async fn get_batch(
+    pool: &Db,
+    user: &str,
+    query: &BatchQuery<'_>,
+    size: i64,
+    page: i64,
+) -> Result<Vec<MediaFile>> {
+    let f = batch_filter(query);
+    // `id` breaks ties: two photos sharing a timestamp would otherwise be free
+    // to swap places between pages, so one could appear twice and another not
+    // at all while paging.
+    let sql = format!(
+        "SELECT * FROM media_file {} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+        f.sql
+    );
+
+    let mut stmt = sqlx::query_as::<_, MediaFile>(&sql).bind(user);
+    for b in &f.binds {
+        stmt = stmt.bind(b);
+    }
+    stmt = stmt.bind(size).bind((page.max(1) - 1) * size);
+    Ok(stmt.fetch_all(pool).await?)
+}
+
+/// How many files match a batch, ignoring the page size — the denominator the
+/// swipe screen's progress counter and the Gallery's result count need.
+pub async fn count_batch(pool: &Db, user: &str, query: &BatchQuery<'_>) -> Result<i64> {
+    let f = batch_filter(query);
+    let sql = format!("SELECT COUNT(*) FROM media_file {}", f.sql);
+
+    let mut stmt = sqlx::query_scalar::<_, i64>(&sql).bind(user);
+    for b in &f.binds {
+        stmt = stmt.bind(b);
+    }
+    Ok(stmt.fetch_one(pool).await?)
 }
 
 /// List a user's files in a given status (e.g. `trashed`), newest first.
+///
+/// Ordered by *when it was binned*, falling back to capture date. The trash is
+/// read as a history of what you just deleted, so a photo from 2019 deleted a
+/// minute ago belongs at the top; `created_at` alone buried it.
 pub async fn list_status(pool: &Db, user: &str, status: &str) -> Result<Vec<MediaFile>> {
     let rows = sqlx::query_as::<_, MediaFile>(
-        "SELECT * FROM media_file WHERE user = ? AND status = ? ORDER BY created_at DESC",
+        "SELECT * FROM media_file WHERE user = ? AND status = ? \
+         ORDER BY COALESCE(trashed_at, created_at) DESC, id DESC",
     )
     .bind(user)
     .bind(status)
@@ -586,6 +664,12 @@ pub async fn delete_media_row(pool: &Db, id: i64) -> Result<()> {
         .bind(id)
         .execute(pool)
         .await?;
+    // The embedding is derived data keyed by file id; leaving it behind would
+    // both leak rows and let a recycled id inherit a stranger's vector.
+    sqlx::query("DELETE FROM media_embedding WHERE file_id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?;
     sqlx::query("DELETE FROM media_file WHERE id = ?")
         .bind(id)
         .execute(pool)
@@ -698,6 +782,133 @@ pub async fn storage_by_day(
         }
     }
     Ok(series)
+}
+
+// ── Embeddings (semantic search) ──────────────────────────────────────────
+
+/// Store (or replace) one file's embedding.
+pub async fn upsert_embedding(
+    pool: &Db,
+    file_id: i64,
+    model: &str,
+    dim: i64,
+    scale: f64,
+    vec: &[u8],
+    now: i64,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO media_embedding (file_id, model, dim, scale, vec, created_at) \
+         VALUES (?, ?, ?, ?, ?, ?) \
+         ON CONFLICT(file_id) DO UPDATE SET \
+           model = excluded.model, dim = excluded.dim, scale = excluded.scale, \
+           vec = excluded.vec, created_at = excluded.created_at",
+    )
+    .bind(file_id)
+    .bind(model)
+    .bind(dim)
+    .bind(scale)
+    .bind(vec)
+    .bind(now)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Drop one file's embedding — used when the file itself is purged.
+pub async fn delete_embedding(pool: &Db, file_id: i64) -> Result<()> {
+    sqlx::query("DELETE FROM media_embedding WHERE file_id = ?")
+        .bind(file_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Files still needing an embedding for `model`: `(id, thumb_path, path)`.
+///
+/// Only images, and only ones that already have a thumbnail — the embedding is
+/// taken from that cached 224-ish render rather than by decoding the original
+/// again. Anything not yet thumbnailed is picked up on the next pass, after
+/// detection has produced one.
+pub async fn files_needing_embedding(
+    pool: &Db,
+    user: &str,
+    model: &str,
+) -> Result<Vec<(i64, String)>> {
+    let rows = sqlx::query_as::<_, (i64, String)>(
+        "SELECT m.id, m.thumb_path FROM media_file m \
+         LEFT JOIN media_embedding e ON e.file_id = m.id AND e.model = ? \
+         WHERE m.user = ? AND m.status <> 'trashed' AND m.media_type = 'image' \
+           AND m.thumb_path IS NOT NULL AND e.file_id IS NULL \
+         ORDER BY m.created_at DESC",
+    )
+    .bind(model)
+    .bind(user)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+/// How many of a user's searchable files carry an embedding, and how many could.
+pub async fn embedding_stats(pool: &Db, user: &str, model: &str) -> Result<(i64, i64)> {
+    let indexed: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM media_embedding e JOIN media_file m ON m.id = e.file_id \
+         WHERE m.user = ? AND m.status <> 'trashed' AND e.model = ?",
+    )
+    .bind(user)
+    .bind(model)
+    .fetch_one(pool)
+    .await?;
+    let total: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM media_file \
+         WHERE user = ? AND status <> 'trashed' AND media_type = 'image' \
+           AND thumb_path IS NOT NULL",
+    )
+    .bind(user)
+    .fetch_one(pool)
+    .await?;
+    Ok((indexed.0, total.0))
+}
+
+/// Every embedding for a user, as `(file_id, scale, int8 vector)`.
+///
+/// Deliberately the whole set: an exact scan of 100K vectors costs about 15ms,
+/// less than the text encoder spends on the query, so there is nothing for an
+/// approximate index to buy at this scale.
+pub async fn all_embeddings(
+    pool: &Db,
+    user: &str,
+    model: &str,
+) -> Result<Vec<(i64, f64, Vec<u8>)>> {
+    let rows = sqlx::query_as::<_, (i64, f64, Vec<u8>)>(
+        "SELECT e.file_id, e.scale, e.vec FROM media_embedding e \
+         JOIN media_file m ON m.id = e.file_id \
+         WHERE m.user = ? AND m.status <> 'trashed' AND e.model = ?",
+    )
+    .bind(user)
+    .bind(model)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+/// Fetch specific files by id, preserving the caller's ordering.
+///
+/// Search ranks by similarity, and `WHERE id IN (...)` would hand them back in
+/// whatever order SQLite likes — so the ranking is re-applied here.
+pub async fn media_by_ids(pool: &Db, user: &str, ids: &[i64]) -> Result<Vec<MediaFile>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let places = vec!["?"; ids.len()].join(",");
+    let sql = format!("SELECT * FROM media_file WHERE user = ? AND id IN ({places})");
+    let mut q = sqlx::query_as::<_, MediaFile>(&sql).bind(user);
+    for id in ids {
+        q = q.bind(id);
+    }
+    let rows = q.fetch_all(pool).await?;
+
+    let mut by_id: HashMap<i64, MediaFile> = rows.into_iter().map(|m| (m.id, m)).collect();
+    Ok(ids.iter().filter_map(|id| by_id.remove(id)).collect())
 }
 
 #[cfg(test)]

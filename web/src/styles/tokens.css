@@ -292,11 +292,37 @@ body,
 .page-pad {
   padding: 0 16px;
 }
+/*
+ * Sticky, not fixed: it scrolls inside `.screen` and pins at the top, so it
+ * needs no height reservation and keeps working when the sidebar collapses.
+ * The opaque ground matters — content scrolling under a transparent header
+ * reads as a rendering bug.
+ */
 .page-header {
   padding: 16px 20px 12px;
   display: flex;
   align-items: flex-end;
   justify-content: space-between;
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: var(--bg);
+  gap: 12px;
+}
+/* A hairline only once something has scrolled beneath it. */
+.page-header::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1px;
+  background: var(--border);
+  opacity: 0;
+  transition: opacity 0.15s var(--ease);
+}
+.screen.scrolled .page-header::after {
+  opacity: 1;
 }
 .page-title {
   font-size: 32px;
@@ -1890,34 +1916,54 @@ input[type="range"]:disabled {
 }
 
 /* ── PHOTO DETAIL VIEWER ────────────────────────────── */
+/*
+ * Freezes the page behind the viewer. `.screen` is the scrolling element here,
+ * not <body> — the app is a flex column that owns its own overflow — so
+ * `body { overflow: hidden }` had no effect and the grid scrolled underneath.
+ */
+body.viewer-open .screen {
+  overflow: hidden !important;
+}
+body.viewer-open .tabbar {
+  display: none !important;
+}
+
 .viewer {
   position: fixed;
   inset: 0;
   z-index: 60;
   display: flex;
   flex-direction: column;
-  /* Near-opaque rather than themed: a photo is judged against a neutral dark
-     ground in either theme, the way every photo viewer does it. */
-  background: rgba(0, 0, 0, 0.94);
+  /* Neutral dark ground in either theme — a photo is judged against one, the
+     way every photo viewer does it. Dims as the photo is flung away. */
+  background: rgba(0, 0, 0, calc(0.94 * var(--viewer-dim, 1)));
   backdrop-filter: blur(8px);
+  overscroll-behavior: contain;
 }
 .viewer-top {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 14px 16px;
+  padding: calc(10px + env(safe-area-inset-top)) 16px 10px;
   flex-shrink: 0;
+  z-index: 2;
 }
-.viewer-count {
+.viewer-when {
   font-size: 13px;
   font-weight: 600;
-  color: rgba(255, 255, 255, 0.7);
-  font-variant-numeric: tabular-nums;
+  color: rgba(255, 255, 255, 0.78);
+  text-align: center;
+  flex: 1;
+  min-width: 0;
 }
-.viewer-btn {
+.viewer-btn,
+.viewer-btn-spacer {
   width: 38px;
   height: 38px;
+  flex-shrink: 0;
+}
+.viewer-btn {
   border-radius: 50%;
   border: none;
   background: rgba(255, 255, 255, 0.1);
@@ -1926,7 +1972,6 @@ input[type="range"]:disabled {
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  flex-shrink: 0;
   transition: background 0.15s var(--ease);
 }
 .viewer-btn:hover {
@@ -1945,14 +1990,30 @@ input[type="range"]:disabled {
   fill: var(--delete);
   stroke: var(--delete);
 }
+
 .viewer-stage {
   flex: 1;
   position: relative;
   min-height: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
   overflow: hidden;
+}
+/*
+ * The transformed layer. `touch-action: none` hands every touch to the pointer
+ * handlers — without it the browser claims horizontal drags for back-navigation
+ * and vertical ones for scroll, and the pinch never reaches us.
+ */
+.viewer-frame {
+  position: absolute;
+  inset: 0;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  will-change: transform;
+  transform-origin: center center;
+  cursor: grab;
+}
+.viewer-frame:active {
+  cursor: grabbing;
 }
 .viewer-media {
   position: absolute;
@@ -1963,6 +2024,8 @@ input[type="range"]:disabled {
   width: auto;
   height: auto;
   object-fit: contain;
+  -webkit-user-drag: none;
+  pointer-events: none;
 }
 .viewer-media.ph {
   filter: blur(10px);
@@ -1975,10 +2038,17 @@ input[type="range"]:disabled {
 .viewer-media.full.in {
   opacity: 1;
 }
+/* Video needs its own controls, so it keeps pointer events. */
+.viewer-stage video.viewer-media {
+  pointer-events: auto;
+}
 .viewer-fallback {
+  position: absolute;
+  inset: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
+  justify-content: center;
   gap: 12px;
   color: rgba(255, 255, 255, 0.6);
   font-size: 13px;
@@ -1994,55 +2064,175 @@ input[type="range"]:disabled {
   stroke-linecap: round;
   stroke-linejoin: round;
 }
-.viewer-nav {
-  position: absolute;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 44px;
-  height: 44px;
-  border-radius: 50%;
+
+/* ── Viewer action bar — stands in for the tab bar, so it reads like it ── */
+.viewer-bar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-around;
+  height: calc(var(--tab) + env(safe-area-inset-bottom));
+  padding: 8px 0 env(safe-area-inset-bottom);
+  background: rgba(15, 15, 15, 0.92);
+  backdrop-filter: blur(24px) saturate(180%);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  z-index: 2;
+}
+.viewer-act {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 0;
+  background: none;
   border: none;
-  background: rgba(0, 0, 0, 0.45);
+  cursor: pointer;
+  color: rgba(255, 255, 255, 0.55);
+  font-family: var(--font);
+  transition: color 0.15s var(--ease);
+}
+.viewer-act span {
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.2px;
+}
+.viewer-act svg,
+.viewer-act .ic-mask {
+  width: 22px;
+  height: 22px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.viewer-act:hover:not(:disabled),
+.viewer-act.on {
+  color: #fff;
+}
+.viewer-act.danger {
+  color: var(--delete);
+}
+.viewer-act:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* ── Viewer sheets (Info / Add to album) ─────────────── */
+.viewer-sheet {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(var(--tab) + env(safe-area-inset-bottom));
+  max-height: 54%;
+  overflow-y: auto;
+  background: rgba(22, 22, 24, 0.97);
+  backdrop-filter: blur(24px);
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  color: #fff;
+  z-index: 3;
+  animation: sheet-up 0.2s var(--ease);
+}
+@keyframes sheet-up {
+  from { transform: translateY(14px); opacity: 0; }
+  to   { transform: translateY(0);    opacity: 1; }
+}
+.viewer-sheet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px 8px;
+  font-size: 13px;
+  font-weight: 700;
+}
+.viewer-sheet-x {
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.1);
   color: #fff;
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  transition: background 0.15s var(--ease);
+  /* A plus rotated 45° is a close cross — no extra glyph needed. */
+  transform: rotate(45deg);
 }
-.viewer-nav:hover {
-  background: rgba(0, 0, 0, 0.7);
-}
-.viewer-nav.prev {
-  left: 12px;
-}
-.viewer-nav.next {
-  right: 12px;
-}
-.viewer-nav svg {
-  width: 22px;
-  height: 22px;
+.viewer-sheet-x svg {
+  width: 13px;
+  height: 13px;
   stroke: currentColor;
   fill: none;
-  stroke-width: 2;
+  stroke-width: 2.4;
   stroke-linecap: round;
-  stroke-linejoin: round;
 }
-.viewer-meta {
-  flex-shrink: 0;
-  padding: 14px 20px calc(14px + env(safe-area-inset-bottom));
-  text-align: center;
+.viewer-info {
+  display: grid;
+  grid-template-columns: 88px 1fr;
+  gap: 6px 12px;
+  padding: 4px 18px 18px;
+  font-size: 12.5px;
 }
-.viewer-name {
-  font-size: 14px;
-  font-weight: 600;
+.viewer-info dt {
+  color: rgba(255, 255, 255, 0.45);
+}
+.viewer-info dd {
   color: #fff;
-  word-break: break-all;
+  word-break: break-word;
 }
-.viewer-sub {
+.viewer-album-new {
+  display: flex;
+  gap: 8px;
+  padding: 4px 18px 12px;
+}
+.viewer-album-new input {
+  flex: 1;
+  min-width: 0;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: var(--r);
+  padding: 10px 12px;
+  color: #fff;
+  font-family: var(--font);
+  font-size: 13px;
+  outline: none;
+}
+.viewer-album-new input::placeholder {
+  color: rgba(255, 255, 255, 0.4);
+}
+.viewer-album-list {
+  padding: 0 12px 18px;
+}
+.viewer-album-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  background: none;
+  border: none;
+  border-radius: var(--r);
+  color: #fff;
+  font-family: var(--font);
+  font-size: 13.5px;
+  cursor: pointer;
+  text-align: left;
+}
+.viewer-album-row:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+}
+.viewer-album-count {
+  color: rgba(255, 255, 255, 0.4);
   font-size: 12px;
-  color: rgba(255, 255, 255, 0.55);
-  margin-top: 3px;
+}
+.viewer-album-empty {
+  padding: 6px 18px 18px;
+  font-size: 12.5px;
+  color: rgba(255, 255, 255, 0.45);
 }
 
 /* ── SETTINGS EXTRAS ────────────────────────────────── */
@@ -2122,4 +2312,125 @@ input[type="range"]:disabled {
 .ic-solid {
   fill: currentColor !important;
   stroke: none !important;
+}
+
+/* ── GALLERY SCOPE TABS ─────────────────────────────── */
+.gal-tabs {
+  display: flex;
+  gap: 6px;
+  padding: 0 20px 12px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  position: sticky;
+  top: var(--header-h, 64px);
+  z-index: 19;
+  background: var(--bg);
+}
+.gal-tab {
+  flex: 0 0 auto;
+  padding: 7px 15px;
+  border-radius: var(--r-pill);
+  border: 1.5px solid transparent;
+  background: var(--fill);
+  color: var(--text2);
+  font-family: var(--font);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s var(--ease);
+}
+.gal-tab:hover {
+  color: var(--text);
+}
+.gal-tab.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-on);
+}
+/* Separates the review scope from the media-type toggles — two different
+   questions sharing one row. */
+.gal-tab-sep {
+  width: 1px;
+  align-self: stretch;
+  margin: 2px 2px;
+  background: var(--border2);
+  flex: 0 0 auto;
+}
+.gal-tabs::-webkit-scrollbar {
+  display: none;
+}
+.gal-end {
+  text-align: center;
+  padding: 20px 16px 8px;
+  font-size: 12px;
+  color: var(--text3);
+}
+
+/* ── TRASH ROW (thumb + meta open the viewer) ────────── */
+.trash-thumb-btn {
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+  flex-shrink: 0;
+  line-height: 0;
+  border-radius: 10px;
+  overflow: hidden;
+}
+.trash-thumb-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+button.trash-meta {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  min-width: 0;
+}
+/* Days-left warning once retention is nearly up. */
+.trash-soon {
+  color: var(--delete);
+  font-weight: 600;
+}
+
+/* Count badge on a search-result group heading. */
+.hit-count {
+  margin-left: 8px;
+  padding: 1px 7px;
+  border-radius: var(--r-pill);
+  background: var(--fill);
+  color: var(--text3);
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Index build progress. */
+.idx-bar {
+  width: 100%;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--fill);
+  overflow: hidden;
+}
+.idx-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 3px;
+  transition: width 0.4s var(--ease);
+}
+.idx-error {
+  font-size: 12px;
+  color: var(--delete);
+  line-height: 1.5;
+}
+
+.hit-note {
+  padding: 0 20px 8px;
+  font-size: 12px;
+  color: var(--text3);
 }

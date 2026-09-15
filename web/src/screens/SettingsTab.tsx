@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef } from 'react'
 import { IC } from '../icons'
-import { api, type StatsSummary, type StorageDay } from '../api/client'
+import { api, type StatsSummary, type StorageDay, type SearchStatus } from '../api/client'
 import { useSession, type Theme } from '../store/session'
 import { ACCENTS } from '../theme'
+import { useStickyHeader } from '../hooks/useStickyHeader'
 
 function fmtBytes(b: number) {
   if (!b) return '0 B'
@@ -28,6 +29,32 @@ const SENSITIVITY = [
   { label: 'Medium', distance: 10, hint: 'Same shot, minor edits or re-saves' },
   { label: 'High', distance: 16, hint: 'Similar-looking shots — more false matches' },
 ]
+
+function fmtMB(b: number) {
+  return (b / 1048576).toFixed(0) + ' MB'
+}
+
+/** How far along a running index build is, as a percentage. */
+function idxPct(s: SearchStatus | null): number {
+  if (!s || !s.total) return 0
+  return Math.min(Math.round((s.done / s.total) * 100), 100)
+}
+
+/** One line describing the index, whatever state it is in. */
+function searchSummary(s: SearchStatus | null): string {
+  if (!s) return 'Checking\u2026'
+  if (s.running) {
+    return s.phase === 'download'
+      ? `Downloading the model \u2014 ${fmtMB(s.done)} of ${fmtMB(s.total || s.download_bytes)}`
+      : `Indexing \u2014 ${s.done} of ${s.total} photos`
+  }
+  if (!s.model_ready) {
+    return `Needs a one-time ${fmtMB(s.download_bytes)} model download, then runs offline`
+  }
+  if (s.indexable === 0) return 'No photos to index yet'
+  if (s.indexed >= s.indexable) return `All ${s.indexed} photos indexed`
+  return `${s.indexed} of ${s.indexable} photos indexed`
+}
 
 /** Nearest slider step for a stored distance (which may come from env config). */
 function stepFor(distance: number) {
@@ -111,6 +138,24 @@ export function SettingsTab({ toast }: Props) {
   const [storage, setStorage] = useState<StorageDay[] | null>(null)
   const [sens, setSens] = useState<number | null>(null)
   const [savingSens, setSavingSens] = useState(false)
+  const [search, setSearchStatus] = useState<SearchStatus | null>(null)
+  const { ref: screenRef, onScroll } = useStickyHeader()
+
+  // While a build runs, poll so the bar actually moves.
+  useEffect(() => {
+    let alive = true
+    const tick = () => {
+      api.searchStatus()
+        .then((st) => {
+          if (!alive) return
+          setSearchStatus(st)
+          if (st.running) setTimeout(tick, 1000)
+        })
+        .catch(() => {})
+    }
+    tick()
+    return () => { alive = false }
+  }, [])
 
   useEffect(() => {
     api.statsSummary().then(setStats).catch(() => {})
@@ -150,11 +195,26 @@ export function SettingsTab({ toast }: Props) {
       .finally(() => setSavingSens(false))
   }
 
+  const buildIndex = () => {
+    api.searchIndex()
+      .then((r) => {
+        if (!r.started) { toast(r.reason ?? 'Already running'); return }
+        toast(search?.model_ready ? 'Indexing photos\u2026' : 'Downloading the model\u2026')
+        // Re-enter the polling loop the status effect set up.
+        const tick = () => api.searchStatus().then((st) => {
+          setSearchStatus(st)
+          if (st.running) setTimeout(tick, 1000)
+        }).catch(() => {})
+        tick()
+      })
+      .catch(() => toast('Could not start indexing'))
+  }
+
   const storedBytes = storage?.reduce((a, d) => a + d.bytes, 0) ?? 0
   const storedFiles = storage?.reduce((a, d) => a + d.files, 0) ?? 0
 
   return (
-    <div className="screen">
+    <div className="screen" ref={screenRef} onScroll={onScroll}>
       <div className="page-header">
         <div>
           <div className="page-title">Setting</div>
@@ -245,6 +305,41 @@ export function SettingsTab({ toast }: Props) {
                 {sens === null ? '—' : savingSens ? 'Saving…' : SENSITIVITY[sens].label}
               </span>
             </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Photo search index */}
+      <div className="settings-section">
+        <div className="st-label">Photo Search</div>
+        <div className="settings-group">
+          <div className="srow srow-stack">
+            <div className="srow-left">
+              <div className="srow-icon"><IC.search /></div>
+              <div>
+                <div className="srow-label">Search by what&rsquo;s in a photo</div>
+                <div className="srow-sub">{searchSummary(search)}</div>
+              </div>
+            </div>
+            {search?.running ? (
+              <div className="idx-bar" role="progressbar" aria-valuenow={idxPct(search)}>
+                <div className="idx-fill" style={{ width: `${idxPct(search)}%` }} />
+              </div>
+            ) : (
+              <button
+                className="pill-btn"
+                style={{ alignSelf: 'flex-start' }}
+                onClick={buildIndex}
+                disabled={!search}
+              >
+                {search?.model_ready
+                  ? search.indexed >= search.indexable && search.indexable > 0
+                    ? 'Rebuild index'
+                    : 'Build index'
+                  : 'Download model & build'}
+              </button>
+            )}
+            {search?.error && <div className="idx-error">{search.error}</div>}
           </div>
         </div>
       </div>

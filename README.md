@@ -73,6 +73,7 @@ docker compose down && rm data/easyclean.db && docker compose up -d   # wipe DB 
 | `EASYCLEAN_BLUR_THRESHOLD` | `100.0` | Laplacian-variance blur cutoff |
 | `EASYCLEAN_DUPLICATE_DISTANCE_THRESHOLD` | `10` | Max pHash Hamming distance for duplicates. **First-run default only** — each user sets this from Settings → Duplicate Sensitivity, which overrides it |
 | `EASYCLEAN_TRASH_RETENTION_DAYS` | `30` | Days in `.trash` before auto-purge |
+| `EASYCLEAN_CLIP_BASE_URL` | Hugging Face | Where semantic-search weights are fetched from. Point at a mirror for an air-gapped install |
 
 Settings live in two places, on purpose:
 

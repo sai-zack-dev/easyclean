@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { IC } from '../icons'
 import { api, type Album } from '../api/client'
 import { AlbumDetail } from './AlbumDetail'
+import { useStickyHeader } from '../hooks/useStickyHeader'
 
 function AlCard({ album, cls, onOpen }: { album: Album; cls?: string; onOpen: () => void }) {
   return (
@@ -57,6 +58,7 @@ export function AlbumsTab({ onOpenTrash }: { onOpenTrash: () => void }) {
   const [loaded, setLoaded] = useState(false)
   const [trashCount, setTrashCount] = useState(0)
   const [open, setOpen] = useState<Album | null>(null)
+  const { ref: screenRef, onScroll } = useStickyHeader()
 
   const load = () => {
     api.albums()
@@ -85,7 +87,7 @@ export function AlbumsTab({ onOpenTrash }: { onOpenTrash: () => void }) {
   }
 
   return (
-    <div className="screen">
+    <div className="screen" ref={screenRef} onScroll={onScroll}>
       <div className="page-header">
         <div className="page-title">Albums</div>
         <button className="pill-btn" onClick={refresh} title="Rebuild albums">

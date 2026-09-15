@@ -8,6 +8,7 @@ pub mod config;
 pub mod db;
 pub mod decode;
 pub mod detect;
+pub mod embed;
 pub mod error;
 pub mod fileops;
 pub mod models;

@@ -4,6 +4,7 @@ import { api, type TimelineMonth, type StreakStats } from '../api/client'
 import { ProgressRing } from '../components/ProgressRing'
 import { Spinner } from '../components/Spinner'
 import { useSession } from '../store/session'
+import { useStickyHeader } from '../hooks/useStickyHeader'
 
 interface SwipeTarget {
   mode: string
@@ -26,6 +27,7 @@ export function CleanTab({ onSwipe, toast }: Props) {
   const [scanMsg, setScanMsg] = useState('')
 
   const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Today']
+  const { ref: screenRef, onScroll } = useStickyHeader()
 
   const load = () => {
     api.statsTimeline().then(setTimeline).catch(() => {})
@@ -71,7 +73,7 @@ export function CleanTab({ onSwipe, toast }: Props) {
   const last7 = streakStats?.last_7_days ?? []
 
   return (
-    <div className="screen">
+    <div className="screen" ref={screenRef} onScroll={onScroll}>
       {/* HEADER */}
       <div className="page-header">
         <div>

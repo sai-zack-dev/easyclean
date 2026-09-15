@@ -3,6 +3,7 @@ import { IC } from '../icons'
 import { api, type Album, type MediaFile } from '../api/client'
 import { PhotoViewer } from './PhotoViewer'
 import { Spinner } from '../components/Spinner'
+import { useStickyHeader } from '../hooks/useStickyHeader'
 
 interface Props {
   album: Album
@@ -18,6 +19,7 @@ export function AlbumDetail({ album, onClose }: Props) {
   const [loading, setLoading] = useState(true)
   const [done, setDone] = useState(false)
   const [viewing, setViewing] = useState<number | null>(null)
+  const { ref: screenRef, onScroll } = useStickyHeader()
 
   // `loading` is raised by whoever asks for a page (initial state, or the Load
   // more button), never inside the effect — a synchronous setState in an effect
@@ -37,7 +39,7 @@ export function AlbumDetail({ album, onClose }: Props) {
   }, [album.id, page])
 
   return (
-    <div className="screen">
+    <div className="screen" ref={screenRef} onScroll={onScroll}>
       <div className="page-header">
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <button className="back-btn" onClick={onClose} aria-label="Back to albums">

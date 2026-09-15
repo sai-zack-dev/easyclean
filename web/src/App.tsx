@@ -86,7 +86,7 @@ export function App() {
             {tab === 'clean' && (
               <CleanTab onSwipe={(t) => setSwipe(t)} toast={toast} />
             )}
-            {tab === 'gallery' && <GalleryTab />}
+            {tab === 'gallery' && <GalleryTab toast={toast} />}
             {tab === 'albums' && <AlbumsTab onOpenTrash={() => setTrashOpen(true)} />}
             {tab === 'setting' && <SettingsTab toast={toast} />}
             <TabBar tab={tab} setTab={setTab} />
