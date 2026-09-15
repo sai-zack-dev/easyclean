@@ -34,6 +34,20 @@
   --auth-sheen: rgba(255, 255, 255, 0.18);
   --auth-sheen2: rgba(255, 255, 255, 0.09);
   --auth-sheen-hi: rgba(255, 255, 255, 0.3);
+  /* The photo viewer's own ground and chrome. Its own tokens because the
+     surfaces there sit *over* a photo rather than over --bg: they need more
+     opacity than an ordinary card, and the text on them has to stay readable
+     against whichever theme is showing. In dark these are the near-black the
+     viewer always had. */
+  --viewer-bg: 10, 10, 10;
+  --viewer-chrome: rgba(18, 18, 18, 0.92);
+  --viewer-sheet: rgba(24, 24, 26, 0.97);
+  --viewer-text: #ffffff;
+  --viewer-text2: rgba(255, 255, 255, 0.78);
+  --viewer-text3: rgba(255, 255, 255, 0.45);
+  --viewer-fill: rgba(255, 255, 255, 0.1);
+  --viewer-fill-hi: rgba(255, 255, 255, 0.18);
+  --viewer-border: rgba(255, 255, 255, 0.1);
   --font: "Inter", sans-serif;
   --r: 14px;
   --r-lg: 20px;
@@ -70,6 +84,17 @@
   --auth-sheen: rgba(255, 255, 255, 0.95);
   --auth-sheen2: rgba(255, 255, 255, 0.5);
   --auth-sheen-hi: rgba(255, 255, 255, 1);
+  /* Light mode gets a light viewer. The ground stays a shade below the page so
+     a white photo still has an edge, rather than bleeding into the backdrop. */
+  --viewer-bg: 232, 232, 237;
+  --viewer-chrome: rgba(255, 255, 255, 0.94);
+  --viewer-sheet: rgba(255, 255, 255, 0.98);
+  --viewer-text: #000000;
+  --viewer-text2: rgba(0, 0, 0, 0.7);
+  --viewer-text3: rgba(0, 0, 0, 0.45);
+  --viewer-fill: rgba(0, 0, 0, 0.06);
+  --viewer-fill-hi: rgba(0, 0, 0, 0.12);
+  --viewer-border: rgba(0, 0, 0, 0.1);
 }
 
 /* ── BASE RESET ────────────────────────────────────── */
@@ -293,6 +318,23 @@ body,
   padding: 0 16px;
 }
 /*
+ * Groups a header with whatever has to pin below it (the Gallery's scope tabs).
+ * One sticky block, so nothing downstream has to know the header's height —
+ * the measurement that used to be hardcoded, and wrong, which let the tabs
+ * scroll up under the title.
+ */
+.page-sticky {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: var(--bg);
+}
+/* Inside the wrapper the header is already pinned; a second sticky context
+   would fight the first. */
+.page-sticky .page-header {
+  position: static;
+}
+/*
  * Sticky, not fixed: it scrolls inside `.screen` and pins at the top, so it
  * needs no height reservation and keeps working when the sidebar collapses.
  * The opaque ground matters — content scrolling under a transparent header
@@ -322,6 +364,25 @@ body,
   transition: opacity 0.15s var(--ease);
 }
 .screen.scrolled .page-header::after {
+  opacity: 1;
+}
+/* With tabs below it, the hairline belongs under the whole block, not between
+   the title and the tabs. */
+.page-sticky .page-header::after {
+  display: none;
+}
+.page-sticky::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1px;
+  background: var(--border);
+  opacity: 0;
+  transition: opacity 0.15s var(--ease);
+}
+.screen.scrolled .page-sticky::after {
   opacity: 1;
 }
 .page-title {
@@ -1934,9 +1995,10 @@ body.viewer-open .tabbar {
   z-index: 60;
   display: flex;
   flex-direction: column;
-  /* Neutral dark ground in either theme — a photo is judged against one, the
-     way every photo viewer does it. Dims as the photo is flung away. */
-  background: rgba(0, 0, 0, calc(0.94 * var(--viewer-dim, 1)));
+  /* Follows the theme rather than forcing dark: the viewer is a screen of the
+     app, and a light-mode user tapping a thumbnail should not get a black
+     flash. Dims as the photo is flung away. */
+  background: rgba(var(--viewer-bg), calc(0.94 * var(--viewer-dim, 1)));
   backdrop-filter: blur(8px);
   overscroll-behavior: contain;
 }
@@ -1952,7 +2014,7 @@ body.viewer-open .tabbar {
 .viewer-when {
   font-size: 13px;
   font-weight: 600;
-  color: rgba(255, 255, 255, 0.78);
+  color: var(--viewer-text2);
   text-align: center;
   flex: 1;
   min-width: 0;
@@ -1966,8 +2028,8 @@ body.viewer-open .tabbar {
 .viewer-btn {
   border-radius: 50%;
   border: none;
-  background: rgba(255, 255, 255, 0.1);
-  color: #fff;
+  background: var(--viewer-fill);
+  color: var(--viewer-text);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1975,7 +2037,7 @@ body.viewer-open .tabbar {
   transition: background 0.15s var(--ease);
 }
 .viewer-btn:hover {
-  background: rgba(255, 255, 255, 0.18);
+  background: var(--viewer-fill-hi);
 }
 .viewer-btn svg {
   width: 18px;
@@ -2050,7 +2112,7 @@ body.viewer-open .tabbar {
   align-items: center;
   justify-content: center;
   gap: 12px;
-  color: rgba(255, 255, 255, 0.6);
+  color: var(--viewer-text3);
   font-size: 13px;
   text-align: center;
   padding: 0 24px;
@@ -2073,10 +2135,10 @@ body.viewer-open .tabbar {
   justify-content: space-around;
   height: calc(var(--tab) + env(safe-area-inset-bottom));
   padding: 8px 0 env(safe-area-inset-bottom);
-  background: rgba(15, 15, 15, 0.92);
+  background: var(--viewer-chrome);
   backdrop-filter: blur(24px) saturate(180%);
   -webkit-backdrop-filter: blur(24px) saturate(180%);
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  border-top: 1px solid var(--viewer-border);
   z-index: 2;
 }
 .viewer-act {
@@ -2089,7 +2151,7 @@ body.viewer-open .tabbar {
   background: none;
   border: none;
   cursor: pointer;
-  color: rgba(255, 255, 255, 0.55);
+  color: var(--viewer-text3);
   font-family: var(--font);
   transition: color 0.15s var(--ease);
 }
@@ -2110,7 +2172,7 @@ body.viewer-open .tabbar {
 }
 .viewer-act:hover:not(:disabled),
 .viewer-act.on {
-  color: #fff;
+  color: var(--viewer-text);
 }
 .viewer-act.danger {
   color: var(--delete);
@@ -2128,10 +2190,10 @@ body.viewer-open .tabbar {
   bottom: calc(var(--tab) + env(safe-area-inset-bottom));
   max-height: 54%;
   overflow-y: auto;
-  background: rgba(22, 22, 24, 0.97);
+  background: var(--viewer-sheet);
   backdrop-filter: blur(24px);
-  border-top: 1px solid rgba(255, 255, 255, 0.1);
-  color: #fff;
+  border-top: 1px solid var(--viewer-border);
+  color: var(--viewer-text);
   z-index: 3;
   animation: sheet-up 0.2s var(--ease);
 }
@@ -2152,8 +2214,8 @@ body.viewer-open .tabbar {
   height: 26px;
   border: none;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.1);
-  color: #fff;
+  background: var(--viewer-fill);
+  color: var(--viewer-text);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2177,10 +2239,10 @@ body.viewer-open .tabbar {
   font-size: 12.5px;
 }
 .viewer-info dt {
-  color: rgba(255, 255, 255, 0.45);
+  color: var(--viewer-text3);
 }
 .viewer-info dd {
-  color: #fff;
+  color: var(--viewer-text);
   word-break: break-word;
 }
 .viewer-album-new {
@@ -2191,17 +2253,17 @@ body.viewer-open .tabbar {
 .viewer-album-new input {
   flex: 1;
   min-width: 0;
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: var(--viewer-fill);
+  border: 1px solid var(--viewer-border);
   border-radius: var(--r);
   padding: 10px 12px;
-  color: #fff;
+  color: var(--viewer-text);
   font-family: var(--font);
   font-size: 13px;
   outline: none;
 }
 .viewer-album-new input::placeholder {
-  color: rgba(255, 255, 255, 0.4);
+  color: var(--viewer-text3);
 }
 .viewer-album-list {
   padding: 0 12px 18px;
@@ -2216,23 +2278,23 @@ body.viewer-open .tabbar {
   background: none;
   border: none;
   border-radius: var(--r);
-  color: #fff;
+  color: var(--viewer-text);
   font-family: var(--font);
   font-size: 13.5px;
   cursor: pointer;
   text-align: left;
 }
 .viewer-album-row:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--viewer-fill);
 }
 .viewer-album-count {
-  color: rgba(255, 255, 255, 0.4);
+  color: var(--viewer-text3);
   font-size: 12px;
 }
 .viewer-album-empty {
   padding: 6px 18px 18px;
   font-size: 12.5px;
-  color: rgba(255, 255, 255, 0.45);
+  color: var(--viewer-text3);
 }
 
 /* ── SETTINGS EXTRAS ────────────────────────────────── */
@@ -2315,15 +2377,14 @@ body.viewer-open .tabbar {
 }
 
 /* ── GALLERY SCOPE TABS ─────────────────────────────── */
+/* Pinned by `.page-sticky` above, not on its own: sticking it separately meant
+   guessing the header's height, and the guess was short. */
 .gal-tabs {
   display: flex;
   gap: 6px;
   padding: 0 20px 12px;
   overflow-x: auto;
   scrollbar-width: none;
-  position: sticky;
-  top: var(--header-h, 64px);
-  z-index: 19;
   background: var(--bg);
 }
 .gal-tab {
@@ -2433,4 +2494,409 @@ button.trash-meta {
   padding: 0 20px 8px;
   font-size: 12px;
   color: var(--text3);
+}
+
+/* ── CONFIRM DIALOG ─────────────────────────────────── */
+/*
+ * Sits above the photo viewer (z 60), because deleting is confirmed from
+ * inside it. Theme-aware throughout — unlike the viewer it is a piece of app
+ * chrome, not a stage for a photo.
+ */
+.confirm-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  animation: confirm-in 0.14s var(--ease);
+}
+@keyframes confirm-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.confirm-box {
+  width: 100%;
+  max-width: 340px;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  padding: 22px 20px 16px;
+  text-align: center;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+  animation: confirm-pop 0.18s var(--ease);
+}
+@keyframes confirm-pop {
+  from { transform: scale(0.94); opacity: 0; }
+  to   { transform: scale(1);    opacity: 1; }
+}
+/* Seeing the actual photo is most of the confirmation. */
+.confirm-thumb {
+  width: 84px;
+  height: 84px;
+  object-fit: cover;
+  border-radius: var(--r);
+  margin: 0 auto 14px;
+  display: block;
+  background: var(--fill);
+}
+.confirm-title {
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: -0.2px;
+}
+.confirm-body {
+  margin-top: 6px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text2);
+}
+.confirm-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 20px;
+}
+.confirm-btn {
+  flex: 1;
+  padding: 12px 10px;
+  border-radius: var(--r-pill);
+  border: 1.5px solid var(--border2);
+  background: var(--fill);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.15s var(--ease);
+}
+.confirm-btn:hover:not(:disabled) {
+  background: var(--fill-hi);
+}
+.confirm-btn.danger {
+  background: color-mix(in srgb, var(--delete) 16%, transparent);
+  border-color: color-mix(in srgb, var(--delete) 55%, transparent);
+  color: var(--delete);
+}
+.confirm-btn.danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--delete) 26%, transparent);
+}
+.confirm-btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-on);
+}
+.confirm-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* ── DUPLICATE COMPARE ──────────────────────────────── */
+/*
+ * Not a swipe deck. Every copy in a cluster is on screen together, because the
+ * question here is "which of these", not "this one: yes or no" — and that
+ * question is unanswerable one card at a time.
+ */
+.dup-hint {
+  flex-shrink: 0;
+  padding: 4px 20px 10px;
+  font-size: 12.5px;
+  color: var(--text2);
+  text-align: center;
+}
+.dup-arena {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  gap: 10px;
+  padding: 0 14px 12px;
+  overflow-y: auto;
+}
+/* Two copies stack top/bottom on a phone, which is the comparison that matters;
+   three or more fall into a grid rather than shrinking to slivers. */
+.dup-n-1,
+.dup-n-2 {
+  grid-template-rows: repeat(auto-fit, minmax(0, 1fr));
+}
+.dup-n-3,
+.dup-n-4 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-auto-rows: minmax(160px, 1fr);
+}
+.dup-card {
+  position: relative;
+  min-height: 0;
+  border-radius: var(--r-lg);
+  overflow: hidden;
+  background: var(--bg3);
+  border: 2px solid transparent;
+  transition: border-color 0.15s var(--ease);
+  display: flex;
+  flex-direction: column;
+}
+.dup-card.on {
+  border-color: var(--accent);
+}
+.dup-card-media {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  border: none;
+  padding: 0;
+  background: var(--bg2);
+  cursor: pointer;
+  display: block;
+  width: 100%;
+}
+.dup-card-media img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+/* The selection mark, always present so the row doesn't reflow when it fills. */
+.dup-tick {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.75);
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.dup-card.on .dup-tick {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.dup-tick svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: var(--accent-on);
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+/* The copy our heuristic would keep — a hint, never a decision. */
+.dup-best {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  padding: 4px 9px;
+  border-radius: var(--r-pill);
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 9.5px;
+  font-weight: 800;
+  letter-spacing: 0.8px;
+}
+.dup-meta {
+  flex-shrink: 0;
+  padding: 8px 12px 10px;
+  background: var(--bg3);
+  min-width: 0;
+}
+.dup-name {
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dup-sub {
+  font-size: 11px;
+  color: var(--text2);
+  margin-top: 1px;
+}
+.dup-zoom {
+  position: absolute;
+  right: 10px;
+  bottom: 44px;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.dup-zoom svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.dup-actions {
+  flex-shrink: 0;
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  padding: 10px 14px calc(14px + env(safe-area-inset-bottom));
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+}
+.dup-btn {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px 10px;
+  border-radius: var(--r-pill);
+  border: 1.5px solid transparent;
+  font-family: var(--font);
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.4px;
+  cursor: pointer;
+  transition: all 0.15s var(--ease);
+}
+.dup-btn span {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  line-height: 1.15;
+  min-width: 0;
+}
+/* The consequence for the copies you did *not* pick — the half of this
+   decision that is easy to forget is happening. */
+.dup-btn em {
+  font-style: normal;
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  opacity: 0.75;
+  white-space: nowrap;
+}
+.dup-btn svg {
+  width: 17px;
+  height: 17px;
+  flex-shrink: 0;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.dup-btn.del {
+  background: color-mix(in srgb, var(--delete) 14%, transparent);
+  border-color: color-mix(in srgb, var(--delete) 50%, transparent);
+  color: var(--delete);
+}
+.dup-btn.kp {
+  background: color-mix(in srgb, var(--keep) 14%, transparent);
+  border-color: color-mix(in srgb, var(--keep) 50%, transparent);
+  color: var(--keep);
+}
+.dup-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.dup-skip {
+  flex-shrink: 0;
+  padding: 0 12px;
+  border-radius: var(--r-pill);
+  border: 1.5px solid var(--border2);
+  background: none;
+  color: var(--text2);
+  font-family: var(--font);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  cursor: pointer;
+}
+.dup-skip:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* Tap-to-enlarge, for when the difference between two copies is in the detail. */
+.dup-zoom-view {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 24px;
+  background: rgba(var(--viewer-bg), 0.97);
+  cursor: zoom-out;
+}
+.dup-zoom-view img {
+  max-width: 100%;
+  max-height: 82%;
+  object-fit: contain;
+  border-radius: var(--r);
+}
+.dup-zoom-meta {
+  font-size: 12.5px;
+  color: var(--viewer-text2);
+  text-align: center;
+}
+
+/* ── UPDATE BANNER ──────────────────────────────────── */
+/*
+ * Above everything, including the viewer: a build that is already downloaded
+ * and waiting is worth interrupting for, and in a standalone PWA this strip is
+ * the only reload affordance there is.
+ */
+.update-banner {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  top: calc(12px + env(safe-area-inset-top));
+  z-index: 90;
+  max-width: calc(100% - 24px);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 10px 10px 16px;
+  border-radius: var(--r-pill);
+  background: var(--bg3);
+  border: 1px solid var(--border2);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+  font-size: 12.5px;
+  animation: confirm-pop 0.2s var(--ease);
+}
+.update-banner span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.update-banner button {
+  flex-shrink: 0;
+  padding: 7px 14px;
+  border-radius: var(--r-pill);
+  border: none;
+  background: var(--accent);
+  color: var(--accent-on);
+  font-family: var(--font);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.update-banner button.ghost {
+  background: none;
+  color: var(--text2);
+  padding: 7px 6px;
 }

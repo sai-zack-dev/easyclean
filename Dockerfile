@@ -16,6 +16,11 @@ WORKDIR /web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci
 COPY web/ ./
+# The UI stamps itself with the workspace version so Setting can show it beside
+# the one the server reports. `vite.config.ts` reads it from `../Cargo.toml`,
+# which means this stage needs that one file — without it the build falls back
+# to "dev" and the version row can't tell you whether a deploy landed.
+COPY Cargo.toml /Cargo.toml
 RUN npm run build          # → /web/dist
 
 # ── 2. Rust build ────────────────────────────────────────────────────────────
