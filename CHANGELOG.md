@@ -27,6 +27,11 @@ All notable changes to EasyClean are documented here. The format follows
   and Version all carried a `›` chevron and a pointer cursor, but none of them is clickable — they
   are readouts. The chevron, the cursor and the press feedback now appear only on a row that
   actually does something.
+- **Theme and Accent Color had each other's icons.** Theme carried a paint palette — which means
+  *colour*, not light-and-dark — and Accent Color carried a water droplet, which means nothing here.
+  Theme now uses a half-filled circle, the standard light/dark mark, and the palette moved to the row
+  that is actually about colour. The palette itself was redrawn with its thumb-hole notch, because
+  the old one collapsed into an indistinct ring of dots at the 15px these render at.
 - **The "Default" accent swatch showed the colour you had chosen.** It painted itself from
   `--accent`, which `applyAccent()` overrides inline the moment you pick a colour — so picking
   Orange turned the Default swatch orange too, showing the palette's first and fifth chips
