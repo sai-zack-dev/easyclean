@@ -85,8 +85,12 @@ function SRow({
   onClick?: () => void
 }) {
   const El = IC[icon] ?? IC.settings
+  // Every row in Settings is a readout today, so a chevron on all of them
+  // promised a screen that doesn't exist. It (and the pointer cursor, and the
+  // press feedback) now appear only when there is somewhere to go.
+  const tappable = Boolean(onClick)
   return (
-    <div className="srow" onClick={onClick}>
+    <div className={`srow ${tappable ? 'srow-tap' : ''}`} onClick={onClick}>
       <div className="srow-left">
         <div className="srow-icon"><El /></div>
         <div>
@@ -96,7 +100,7 @@ function SRow({
       </div>
       <div className="srow-right">
         {right}
-        <IC.chevRight />
+        {tappable && <IC.chevRight />}
       </div>
     </div>
   )
@@ -462,14 +466,6 @@ export function SettingsTab({ toast }: Props) {
               {updateReady ? 'Update' : checking ? 'Checking\u2026' : 'Check'}
             </button>
           </div>
-        </div>
-      </div>
-
-      {/* Language */}
-      <div className="settings-section">
-        <div className="st-label">Language</div>
-        <div className="settings-group">
-          <SRow icon="globe" label="Language" right="English" />
         </div>
       </div>
 
