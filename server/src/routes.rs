@@ -53,6 +53,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/media/:id/preview", get(preview))
         .route("/api/media/:id/raw", get(raw))
         .route("/api/media/:id/favorite", post(favorite))
+        .route("/api/media/:id/albums", get(media_albums))
         .route("/api/media/:id/trash", post(trash_one))
         // albums
         .route("/api/albums", get(albums_list))
@@ -585,13 +586,51 @@ async fn session_finish(
     ))
 }
 
+/// Toggle the heart, and move the photo in or out of the Favourites album in
+/// the same breath.
+///
+/// Album membership used to be decided only by `categorize` at session finish,
+/// so hearting a photo did nothing you could see — Favourites stayed empty
+/// until a review session ended, which for a photo you hearted from the Gallery
+/// might be never. The heart is the whole interface for that album, so it has
+/// to be the thing that fills it.
 async fn favorite(
     State(st): State<AppState>,
     user: AuthUser,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, ApiError> {
+    let _ = owned_media(&st, &user, id).await?;
     let fav = db::toggle_favorite(&st.db, &user.username, id).await?;
+
+    let name = categorize::album_name("favorites:favorites");
+    let album_id = db::get_or_create_album(
+        &st.db,
+        &user.username,
+        &name,
+        categorize::cat::FAVORITES,
+        now_secs(),
+    )
+    .await?;
+    if fav {
+        db::add_to_album(&st.db, album_id, id).await?;
+    } else {
+        db::remove_from_album(&st.db, album_id, id).await?;
+    }
+    db::refresh_album_meta(&st.db, album_id).await?;
+
     Ok(Json(json!({ "id": id, "is_favorite": fav })))
+}
+
+/// Which albums a file is filed under. Read by the viewer's Details panel, so
+/// it is fetched per photo on demand rather than joined into every batch row.
+async fn media_albums(
+    State(st): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<i64>,
+) -> Result<Json<Value>, ApiError> {
+    let _ = owned_media(&st, &user, id).await?;
+    let albums = db::albums_for_file(&st.db, &user.username, id).await?;
+    Ok(Json(json!({ "albums": albums })))
 }
 
 async fn thumb(
@@ -746,6 +785,10 @@ async fn albums_refresh(
     Ok(Json(json!({ "refreshed": albums.len() })))
 }
 
+/// `category_type` for an album the user made themselves, as opposed to one
+/// `categorize` derives. Only these accept a manual add.
+const MANUAL_ALBUM: &str = "manual";
+
 #[derive(Deserialize)]
 struct AlbumAddReq {
     file_id: i64,
@@ -769,14 +812,22 @@ async fn album_add(
 
     let album_id = match (b.album_id, b.name.as_deref().map(str::trim)) {
         (Some(id), _) => {
-            let albums = db::list_albums(&st.db, &user.username).await?;
-            if !albums.iter().any(|a| a.id == id) {
-                return Err(ApiError::not_found("album not found"));
+            let album = db::get_album(&st.db, &user.username, id)
+                .await?
+                .ok_or_else(|| ApiError::not_found("album not found"))?;
+            // Auto-built albums describe what a photo *is* — its year, that it
+            // is a video, that you hearted it — so hand-filing into one would
+            // state something untrue and the next rebuild would undo it
+            // anyway. A 2021 photo cannot be put in 2023.
+            if album.category_type != MANUAL_ALBUM {
+                return Err(ApiError::bad(
+                    "that album is built automatically — add photos to one of your own instead",
+                ));
             }
             id
         }
         (None, Some(name)) if !name.is_empty() => {
-            db::get_or_create_album(&st.db, &user.username, name, "manual", now_secs()).await?
+            db::get_or_create_album(&st.db, &user.username, name, MANUAL_ALBUM, now_secs()).await?
         }
         _ => return Err(ApiError::bad("need an album_id or a name")),
     };
@@ -2484,6 +2535,132 @@ mod tests {
             .unwrap();
         assert_eq!(cache(&r), "");
         assert_eq!(body_json(r).await["version"], env!("CARGO_PKG_VERSION"));
+    }
+
+    /// Hearting a photo has to fill the Favourites album then and there.
+    /// Waiting for a session finish meant the album stayed empty for a photo
+    /// you hearted from the Gallery, possibly forever.
+    #[tokio::test]
+    async fn favouriting_files_the_photo_immediately() {
+        let st = test_state().await;
+        let auth = bearer(&st);
+
+        let toggle = |st: AppState, auth: String| async move {
+            let r = app(st)
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/api/media/1/favorite")
+                        .header("authorization", auth)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(r.status(), StatusCode::OK);
+            body_json(r).await["is_favorite"].as_bool().unwrap()
+        };
+
+        assert!(
+            toggle(st.clone(), auth.clone()).await,
+            "first tap hearts it"
+        );
+        let albums = db::list_albums(&st.db, "saiz").await.unwrap();
+        let fav = albums
+            .iter()
+            .find(|a| a.category_type == "favorites")
+            .expect("Favourites album exists as soon as something is hearted");
+        assert_eq!(fav.file_count, 1);
+
+        // Un-hearting takes it back out rather than leaving a stale member.
+        assert!(!toggle(st.clone(), auth.clone()).await);
+        let albums = db::list_albums(&st.db, "saiz").await.unwrap();
+        let fav = albums
+            .iter()
+            .find(|a| a.category_type == "favorites")
+            .unwrap();
+        assert_eq!(fav.file_count, 0, "un-hearting removes it");
+    }
+
+    /// Auto-built albums say what a photo *is*. Hand-filing into one would
+    /// state something untrue — a 2021 photo cannot belong to 2023 — and the
+    /// next rebuild would undo it regardless.
+    #[tokio::test]
+    async fn only_your_own_albums_accept_a_manual_add() {
+        let st = test_state().await;
+        let auth = bearer(&st);
+
+        let add = |st: AppState, auth: String, body: String| async move {
+            app(st)
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/api/albums/add")
+                        .header("authorization", auth)
+                        .header("content-type", "application/json")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+        };
+
+        // A year album, exactly as categorize would build one.
+        let year = db::get_or_create_album(&st.db, "saiz", "2021", "year", 1_700_000_000)
+            .await
+            .unwrap();
+        let r = add(
+            st.clone(),
+            auth.clone(),
+            format!(r#"{{"file_id":1,"album_id":{year}}}"#),
+        )
+        .await;
+        assert_eq!(
+            r.status(),
+            StatusCode::BAD_REQUEST,
+            "a year album is locked to its rule"
+        );
+
+        // One of your own takes it.
+        let r = add(
+            st.clone(),
+            auth.clone(),
+            r#"{"file_id":1,"name":"Food"}"#.to_string(),
+        )
+        .await;
+        assert_eq!(r.status(), StatusCode::OK);
+        let id = body_json(r).await["album_id"].as_i64().unwrap();
+        let made = db::get_album(&st.db, "saiz", id).await.unwrap().unwrap();
+        assert_eq!(made.category_type, "manual");
+
+        let r = add(
+            st.clone(),
+            auth.clone(),
+            format!(r#"{{"file_id":1,"album_id":{id}}}"#),
+        )
+        .await;
+        assert_eq!(r.status(), StatusCode::OK, "your own album stays open");
+
+        // And Details can read back where it landed.
+        let r = app(st.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/api/media/1/albums")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+        let v = body_json(r).await;
+        let names: Vec<String> = v["albums"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["name"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(names, vec!["Food"]);
     }
 
     /// The Gallery must keep showing a photo after you keep it. Every review

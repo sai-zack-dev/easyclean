@@ -28,6 +28,8 @@ const MAX_SCALE = 6
 const NAV_THRESHOLD = 70
 /** Downward travel that dismisses the viewer. */
 const DISMISS_THRESHOLD = 120
+/** Downward travel on a drawer that dismisses it. Shorter — it's a small sheet. */
+const SHEET_DISMISS = 60
 
 /**
  * The media itself, mounted with `key={file.id}` so paging remounts it — load
@@ -106,6 +108,8 @@ export function PhotoViewer({
   const file = files[index]
   const [panel, setPanel] = useState<'none' | 'info' | 'album'>('none')
   const [albums, setAlbums] = useState<Album[]>([])
+  /** Albums this photo is already filed under — shown in Details. */
+  const [fileAlbums, setFileAlbums] = useState<Album[] | null>(null)
   const [newAlbum, setNewAlbum] = useState('')
   const [busy, setBusy] = useState(false)
   /** Which destructive action is waiting on a yes. */
@@ -320,6 +324,17 @@ export function PhotoViewer({
     }
 
     const { x, y } = view.current
+
+    // A tap on the photo with no drag behind it dismisses whichever drawer is
+    // open — the third way out, alongside the toolbar button and pulling the
+    // sheet down. `axis` stays empty until a gesture travels 8px, so this can
+    // only fire on a real tap.
+    if (s.axis === '' && panel !== 'none') {
+      closePanel()
+      reset(true)
+      return
+    }
+
     if (s.axis === 'x' && Math.abs(x) > NAV_THRESHOLD) {
       go(x < 0 ? 1 : -1)
       return
@@ -342,8 +357,61 @@ export function PhotoViewer({
   // ── Actions ─────────────────────────────────────────────────────────────
 
   const openAlbums = () => {
+    reset(true)
     setPanel('album')
-    api.albums().then(setAlbums).catch(() => {})
+    // Only albums you made yourself. The automatic ones describe what a photo
+    // *is* — its year, that it's a video, that you hearted it — so offering
+    // them here would invite filing a 2021 photo into 2023, which the server
+    // refuses and the next rebuild would undo regardless.
+    api.albums()
+      .then((all) => setAlbums(all.filter((a) => a.category_type === 'manual')))
+      .catch(() => {})
+  }
+
+  const openInfo = () => {
+    reset(true)
+    setPanel('info')
+    setFileAlbums(null)
+    api.fileAlbums(file.id).then(setFileAlbums).catch(() => setFileAlbums([]))
+  }
+
+  /**
+   * Close whichever drawer is open.
+   *
+   * Reachable three ways — the photo, the toolbar button that opened it, and a
+   * downward swipe on the drawer itself — so the sheet needs no close button of
+   * its own, and a tap *inside* it (picking an album, reading a value) never
+   * dismisses it by accident.
+   */
+  const closePanel = useCallback(() => setPanel('none'), [])
+
+  /** Drawer drag: downward past a threshold dismisses, anything less springs back. */
+  const sheetRef = useRef<HTMLDivElement>(null)
+  const sheetDrag = useRef({ y: 0, dragging: false })
+
+  const onSheetDown = (e: React.PointerEvent) => {
+    // Never start a drag from a control — a slider or a list row needs its own
+    // pointer events, and stealing them makes the drawer feel broken.
+    if ((e.target as HTMLElement).closest('button, input, a, textarea')) return
+    sheetDrag.current = { y: e.clientY, dragging: true }
+  }
+
+  const onSheetMove = (e: React.PointerEvent) => {
+    const d = sheetDrag.current
+    if (!d.dragging || !sheetRef.current) return
+    const dy = Math.max(e.clientY - d.y, 0)
+    sheetRef.current.style.transition = 'none'
+    sheetRef.current.style.transform = `translateY(${dy}px)`
+  }
+
+  const onSheetUp = (e: React.PointerEvent) => {
+    const d = sheetDrag.current
+    if (!d.dragging || !sheetRef.current) return
+    d.dragging = false
+    const dy = e.clientY - d.y
+    sheetRef.current.style.transition = ''
+    sheetRef.current.style.transform = ''
+    if (dy > SHEET_DISMISS) closePanel()
   }
 
   const share = async () => {
@@ -423,6 +491,8 @@ export function PhotoViewer({
         toast?.(`Added to ${name ?? albums.find((a) => a.id === album_id)?.name ?? 'album'}`)
         setPanel('none')
         setNewAlbum('')
+        // Details reads this; it is stale the moment a photo is filed.
+        setFileAlbums(null)
       })
       .catch(() => toast?.('Could not add it to that album'))
       .finally(() => setBusy(false))
@@ -468,42 +538,77 @@ export function PhotoViewer({
       </div>
 
       {panel === 'info' && (
-        <div className="viewer-sheet" role="group" aria-label="Photo details">
+        <div
+          className="viewer-sheet"
+          role="group"
+          aria-label="Photo details"
+          ref={sheetRef}
+          onPointerDown={onSheetDown}
+          onPointerMove={onSheetMove}
+          onPointerUp={onSheetUp}
+          onPointerCancel={onSheetUp}
+        >
+          {/* The grab handle is the close affordance now — pull the sheet down.
+              A tap inside must never dismiss, so there is nothing to mis-hit. */}
+          <div className="viewer-sheet-grip" aria-hidden="true" />
           <div className="viewer-sheet-head">
             <span>Details</span>
-            <button className="viewer-sheet-x" onClick={() => setPanel('none')} aria-label="Close details">
-              <IC.plus />
-            </button>
           </div>
-          <dl className="viewer-info">
-            <dt>Name</dt><dd>{file.filename}</dd>
-            <dt>Taken</dt><dd>{fmtDateTime(file.created_at) || 'unknown'}</dd>
-            <dt>Size</dt><dd>{fmtBytes(file.size_bytes)}</dd>
-            <dt>Type</dt><dd>{file.media_type}</dd>
-            <dt>Folder</dt><dd>{file.rel_path || '—'}</dd>
-            <dt>Status</dt>
-            <dd>
-              {file.status === 'pending' ? 'Not reviewed' : file.status === 'keep' ? 'Cleaned' : 'In trash'}
-              {daysLeft !== null && ` · ${daysLeft} day${daysLeft === 1 ? '' : 's'} left`}
-            </dd>
-            {file.blur_score !== null && (
-              <>
-                <dt>Sharpness</dt>
-                <dd>{file.blur_score.toFixed(0)}{file.is_blurry && ' · flagged blurry'}</dd>
-              </>
-            )}
-            {file.group_id !== null && (<><dt>Duplicate</dt><dd>in a duplicate group</dd></>)}
-          </dl>
+          <div className="viewer-sheet-body">
+            <dl className="viewer-info">
+              <dt>Name</dt><dd>{file.filename}</dd>
+              <dt>Taken</dt><dd>{fmtDateTime(file.created_at) || 'unknown'}</dd>
+              <dt>Size</dt><dd>{fmtBytes(file.size_bytes)}</dd>
+              <dt>Type</dt><dd>{file.media_type}</dd>
+              <dt>Folder</dt><dd>{file.rel_path || '—'}</dd>
+              <dt>Albums</dt>
+              <dd>
+                {fileAlbums === null ? (
+                  'Checking…'
+                ) : fileAlbums.length === 0 ? (
+                  'Not in any album'
+                ) : (
+                  <span className="viewer-album-tags">
+                    {fileAlbums.map((a) => (
+                      <span key={a.id} className="viewer-album-tag">{a.name}</span>
+                    ))}
+                  </span>
+                )}
+              </dd>
+              <dt>Status</dt>
+              <dd>
+                {file.status === 'pending' ? 'Not reviewed' : file.status === 'keep' ? 'Cleaned' : 'In trash'}
+                {daysLeft !== null && ` · ${daysLeft} day${daysLeft === 1 ? '' : 's'} left`}
+              </dd>
+              {file.blur_score !== null && (
+                <>
+                  <dt>Sharpness</dt>
+                  <dd>{file.blur_score.toFixed(0)}{file.is_blurry && ' · flagged blurry'}</dd>
+                </>
+              )}
+              {file.group_id !== null && (<><dt>Duplicate</dt><dd>in a duplicate group</dd></>)}
+            </dl>
+          </div>
         </div>
       )}
 
       {panel === 'album' && (
-        <div className="viewer-sheet" role="group" aria-label="Add to album">
+        <div
+          className="viewer-sheet"
+          role="group"
+          aria-label="Add to album"
+          ref={sheetRef}
+          onPointerDown={onSheetDown}
+          onPointerMove={onSheetMove}
+          onPointerUp={onSheetUp}
+          onPointerCancel={onSheetUp}
+        >
+          <div className="viewer-sheet-grip" aria-hidden="true" />
+          {/* Title and the new-album field stay put; only the list below them
+              scrolls, so the way to create an album never scrolls out of reach
+              behind a long list. */}
           <div className="viewer-sheet-head">
             <span>Add to album</span>
-            <button className="viewer-sheet-x" onClick={() => setPanel('none')} aria-label="Close">
-              <IC.plus />
-            </button>
           </div>
           <div className="viewer-album-new">
             <input
@@ -522,9 +627,12 @@ export function PhotoViewer({
               Create
             </button>
           </div>
-          <div className="viewer-album-list">
+          <div className="viewer-album-list viewer-sheet-body">
             {albums.length === 0 ? (
-              <div className="viewer-album-empty">No albums yet — make one above.</div>
+              <div className="viewer-album-empty">
+                No albums of your own yet — make one above. Years, Videos and
+                Favourites fill themselves.
+              </div>
             ) : (
               albums.map((a) => (
                 <button key={a.id} className="viewer-album-row" disabled={busy} onClick={() => addToAlbum(a.id)}>
@@ -547,13 +655,13 @@ export function PhotoViewer({
             </button>
             <button
               className={`viewer-act ${panel === 'info' ? 'on' : ''}`}
-              onClick={() => setPanel((p) => (p === 'info' ? 'none' : 'info'))}
+              onClick={() => (panel === 'info' ? closePanel() : openInfo())}
             >
               <IC.info /><span>Info</span>
             </button>
             <button
               className={`viewer-act ${panel === 'album' ? 'on' : ''}`}
-              onClick={() => (panel === 'album' ? setPanel('none') : openAlbums())}
+              onClick={() => (panel === 'album' ? closePanel() : openAlbums())}
               disabled={busy}
             >
               <IC.album /><span>Album</span>
@@ -569,7 +677,7 @@ export function PhotoViewer({
             </button>
             <button
               className={`viewer-act ${panel === 'info' ? 'on' : ''}`}
-              onClick={() => setPanel((p) => (p === 'info' ? 'none' : 'info'))}
+              onClick={() => (panel === 'info' ? closePanel() : openInfo())}
             >
               <IC.info /><span>Info</span>
             </button>

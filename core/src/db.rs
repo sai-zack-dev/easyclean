@@ -592,6 +592,41 @@ pub async fn add_to_album(pool: &Db, album_id: i64, file_id: i64) -> Result<()> 
     Ok(())
 }
 
+/// Take one file out of an album. No-op if it was never in it.
+pub async fn remove_from_album(pool: &Db, album_id: i64, file_id: i64) -> Result<()> {
+    sqlx::query("DELETE FROM album_file WHERE album_id = ? AND file_id = ?")
+        .bind(album_id)
+        .bind(file_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// One album by id, scoped to its owner.
+pub async fn get_album(pool: &Db, user: &str, album_id: i64) -> Result<Option<Album>> {
+    let row = sqlx::query_as::<_, Album>("SELECT * FROM album WHERE id = ? AND user = ?")
+        .bind(album_id)
+        .bind(user)
+        .fetch_optional(pool)
+        .await?;
+    Ok(row)
+}
+
+/// Every album one file belongs to — what the viewer's Details panel lists.
+pub async fn albums_for_file(pool: &Db, user: &str, file_id: i64) -> Result<Vec<Album>> {
+    let rows = sqlx::query_as::<_, Album>(
+        "SELECT a.* FROM album a \
+         JOIN album_file af ON af.album_id = a.id \
+         WHERE af.file_id = ? AND a.user = ? \
+         ORDER BY a.category_type, a.name",
+    )
+    .bind(file_id)
+    .bind(user)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
 /// Recompute `file_count` and `cover_file_id` for an album.
 pub async fn refresh_album_meta(pool: &Db, album_id: i64) -> Result<()> {
     sqlx::query(

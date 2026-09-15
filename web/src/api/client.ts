@@ -282,6 +282,9 @@ export const api = {
     request<{ id: number; is_favorite: boolean }>('POST', `/api/media/${id}/favorite`),
 
   albums: () => request<{ albums: Album[] }>('GET', '/api/albums').then((r) => r.albums ?? []),
+  /** Which albums one file is filed under — the viewer's Details panel. */
+  fileAlbums: (id: number) =>
+    request<{ albums: Album[] }>('GET', `/api/media/${id}/albums`).then((r) => r.albums ?? []),
   /** `page` is 1-based, matching the server's offset maths. */
   albumFiles: (id: number, page = 1, size = 50) =>
     request<BatchResult>('GET', `/api/albums/${id}/files?page=${page}&size=${size}`),
