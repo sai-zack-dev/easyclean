@@ -18,7 +18,20 @@ All notable changes to EasyClean are documented here. The format follows
   keep a video or screenshot, finish a session — on a dashed card that reads as a waiting slot
   rather than a broken one.
 
+### Removed
+- **The Language row.** It only ever read "English" and had nothing behind it — a control that
+  can't do anything is worse than no control. It comes back when there's a second language.
+
 ### Fixed
+- **Settings rows promised screens that don't exist.** Indexed media, Library size, Flagged blurry
+  and Version all carried a `›` chevron and a pointer cursor, but none of them is clickable — they
+  are readouts. The chevron, the cursor and the press feedback now appear only on a row that
+  actually does something.
+- **The "Default" accent swatch showed the colour you had chosen.** It painted itself from
+  `--accent`, which `applyAccent()` overrides inline the moment you pick a colour — so picking
+  Orange turned the Default swatch orange too, showing the palette's first and fifth chips
+  identical and hiding what Default actually means. It reads `--text` now: white on dark, black on
+  light, never overridden.
 - **A long filename broke out of the delete confirmation.** Camera and messenger names run past 70
   characters with no spaces to wrap on, so inside the sentence they pushed the dialog past the
   screen edge. The name is now its own line, truncated with an ellipsis and carrying the full text
