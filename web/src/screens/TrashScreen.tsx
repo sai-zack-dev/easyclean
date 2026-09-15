@@ -205,7 +205,8 @@ export function TrashScreen({ onClose, toast }: Props) {
       {confirmOne && (
         <ConfirmDialog
           title="Delete forever?"
-          body={`${confirmOne.filename} is erased from disk. This cannot be undone.`}
+          subject={confirmOne.filename}
+          body="This erases it from disk. It cannot be undone."
           confirmLabel="Delete forever"
           thumbUrl={api.thumbUrl(confirmOne.id)}
           busy={busy === confirmOne.id}

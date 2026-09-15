@@ -6,7 +6,23 @@ All notable changes to EasyClean are documented here. The format follows
 
 ## [Unreleased]
 
-Nothing yet.
+### Changed
+- **The Timeline Checklist hides months you've finished.** It's a to-do list, and a cleaned month is
+  done — leaving them in place pushed the months that still need work below the fold, which on a
+  well-reviewed library is most of them. A **Show cleaned (N)** toggle on the section header brings
+  them back, and when there's nothing left at all the list says so outright instead of rendering
+  empty.
+- **Empty album sections say how they fill.** "Nothing here yet" under Collections *and* Suggested
+  Collections told you nothing you could act on, twice over, and read as two things that had failed
+  to load. Each empty section now carries one line naming the action that fills it — heart a photo,
+  keep a video or screenshot, finish a session — on a dashed card that reads as a waiting slot
+  rather than a broken one.
+
+### Fixed
+- **A long filename broke out of the delete confirmation.** Camera and messenger names run past 70
+  characters with no spaces to wrap on, so inside the sentence they pushed the dialog past the
+  screen edge. The name is now its own line, truncated with an ellipsis and carrying the full text
+  as a tooltip. Checked at 320px with a 75-character name.
 
 ## [0.2.1] — 2026-09-15
 

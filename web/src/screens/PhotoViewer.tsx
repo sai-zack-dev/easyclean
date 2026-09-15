@@ -585,7 +585,8 @@ export function PhotoViewer({
       {confirm === 'trash' && (
         <ConfirmDialog
           title="Move to trash?"
-          body={`${file.filename} goes to the trash and stays there for ${retentionDays} days. You can put it back from Albums › Trash.`}
+          subject={file.filename}
+          body={`It stays in the trash for ${retentionDays} days — you can put it back from Albums › Trash.`}
           confirmLabel="Move to trash"
           thumbUrl={api.thumbUrl(file.id)}
           busy={busy}
@@ -596,7 +597,8 @@ export function PhotoViewer({
       {confirm === 'purge' && (
         <ConfirmDialog
           title="Delete forever?"
-          body={`${file.filename} is erased from disk. This cannot be undone.`}
+          subject={file.filename}
+          body="This erases it from disk. It cannot be undone."
           confirmLabel="Delete forever"
           thumbUrl={api.thumbUrl(file.id)}
           busy={busy}
