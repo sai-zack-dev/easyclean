@@ -12,7 +12,8 @@ export interface MediaFile {
   is_blurry: boolean
   is_favorite: boolean
   blur_score: number | null
-  group_id: number | null
+  /** Duplicate-cluster id — a hash string, shared by every copy in the group. */
+  group_id: string | null
   status: 'pending' | 'keep' | 'trashed'
   /** Unix seconds the file was binned; null unless `status` is `trashed`. */
   trashed_at: number | null
@@ -111,6 +112,18 @@ export interface BatchResult {
   total: number
 }
 
+/** One cluster of near-identical photos, reviewed together rather than one by one. */
+export interface DuplicateGroup {
+  group_id: string
+  files: MediaFile[]
+}
+
+export interface DuplicateGroups {
+  groups: DuplicateGroup[]
+  total_groups: number
+  total_files: number
+}
+
 export interface ScanStatus {
   status: string
   scanned: number
@@ -192,11 +205,15 @@ export const api = {
 
   me: () => request<{ username: string; role: string }>('GET', '/api/auth/me'),
 
+  /** Liveness plus the build the server is running — Setting compares it with ours. */
+  health: () => request<{ status: string; version?: string }>('GET', '/api/health'),
+
   scan: () => request<{ job_id: string }>('POST', '/api/scan'),
 
   /**
-   * `mode`: timeline | blurs | duplicates (review decks, pending only)
-   * · library | original | cleaned (Gallery tabs). `page` is 1-based.
+   * `mode`: timeline | onthisday | recents | blurs | duplicates (review decks,
+   * pending only) · library | original | cleaned (Gallery tabs). `page` is
+   * 1-based.
    *
    * `q` and `type` are applied by the database across the whole library, not
    * by the browser across the pages it happens to have loaded.
@@ -218,6 +235,21 @@ export const api = {
     if (params.type) p.set('type', params.type)
     return request<BatchResult>('GET', `/api/media/batch?${p}`)
   },
+
+  /** Whole duplicate clusters, for the side-by-side compare screen. */
+  duplicateGroups: () => request<DuplicateGroups>('GET', '/api/media/duplicates'),
+
+  /**
+   * Settle one cluster in a single call: everything selected goes one way and
+   * the rest the other, so a group is never left half-decided. Pass `undo`
+   * alone to put a whole group back.
+   */
+  resolveDuplicates: (body: { keep?: number[]; delete?: number[]; undo?: number[] }) =>
+    request<{ kept?: number; deleted?: number; restored?: number }>(
+      'POST',
+      '/api/media/duplicates/resolve',
+      body,
+    ),
 
   swipe: (file_id: number, action: 'keep' | 'delete') =>
     request<{ id: number; status: string }>('POST', '/api/media/swipe', { file_id, action }),

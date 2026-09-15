@@ -2,6 +2,7 @@ import { useCallback, useState, useEffect } from 'react'
 import { IC } from '../icons'
 import { api, type MediaFile } from '../api/client'
 import { Spinner } from '../components/Spinner'
+import { ConfirmDialog } from '../components/ConfirmDialog'
 import { PhotoViewer } from './PhotoViewer'
 
 interface Props {
@@ -34,6 +35,9 @@ export function TrashScreen({ onClose, toast }: Props) {
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState<number | null>(null)
   const [confirmAll, setConfirmAll] = useState(false)
+  /** The file a Delete-forever tap is waiting on. */
+  const [confirmOne, setConfirmOne] = useState<MediaFile | null>(null)
+  const [emptying, setEmptying] = useState(false)
   const [retention, setRetention] = useState(30)
   const [viewing, setViewing] = useState<number | null>(null)
   // Pinned at mount: reading the clock during render is impure, and the
@@ -72,6 +76,7 @@ export function TrashScreen({ onClose, toast }: Props) {
     api.trashPurge(f.id)
       .then(() => {
         setFiles((fs) => fs.filter((x) => x.id !== f.id))
+        setConfirmOne(null)
         toast(`${f.filename} deleted for good`)
       })
       .catch(() => toast('Delete failed'))
@@ -80,6 +85,7 @@ export function TrashScreen({ onClose, toast }: Props) {
 
   const purgeAll = () => {
     const n = files.length
+    setEmptying(true)
     api.trashPurgeAll()
       .then(() => {
         setFiles([])
@@ -87,6 +93,7 @@ export function TrashScreen({ onClose, toast }: Props) {
         toast(`${n} file${n === 1 ? '' : 's'} deleted for good`)
       })
       .catch(() => toast('Could not empty the trash'))
+      .finally(() => setEmptying(false))
   }
 
   const totalSize = files.reduce((sum, f) => sum + f.size_bytes, 0)
@@ -104,11 +111,8 @@ export function TrashScreen({ onClose, toast }: Props) {
           </div>
         </div>
         {files.length > 0 ? (
-          <button
-            className={`undo-btn ${confirmAll ? 'danger' : ''}`}
-            onClick={() => (confirmAll ? purgeAll() : setConfirmAll(true))}
-          >
-            {confirmAll ? 'SURE?' : 'EMPTY'}
+          <button className="undo-btn" onClick={() => setConfirmAll(true)}>
+            EMPTY
           </button>
         ) : (
           <span className="header-spacer" aria-hidden="true" />
@@ -168,7 +172,7 @@ export function TrashScreen({ onClose, toast }: Props) {
                       </button>
                       <button
                         className="trash-act del"
-                        onClick={() => purge(f)}
+                        onClick={() => setConfirmOne(f)}
                         disabled={busy === f.id}
                         aria-label={`Delete ${f.filename} permanently`}
                       >
@@ -193,6 +197,30 @@ export function TrashScreen({ onClose, toast }: Props) {
           mode="trash"
           onRemoved={(id) => setFiles((fs) => fs.filter((x) => x.id !== id))}
           toast={toast}
+        />
+      )}
+
+      {/* Both of these erase files from disk, so both say so and neither is a
+          second tap in the same place as the first. */}
+      {confirmOne && (
+        <ConfirmDialog
+          title="Delete forever?"
+          body={`${confirmOne.filename} is erased from disk. This cannot be undone.`}
+          confirmLabel="Delete forever"
+          thumbUrl={api.thumbUrl(confirmOne.id)}
+          busy={busy === confirmOne.id}
+          onConfirm={() => purge(confirmOne)}
+          onCancel={() => setConfirmOne(null)}
+        />
+      )}
+      {confirmAll && (
+        <ConfirmDialog
+          title="Empty the trash?"
+          body={`All ${files.length} file${files.length === 1 ? '' : 's'} (${fmtBytes(totalSize)}) will be erased from disk. This cannot be undone.`}
+          confirmLabel="Empty trash"
+          busy={emptying}
+          onConfirm={purgeAll}
+          onCancel={() => setConfirmAll(false)}
         />
       )}
     </div>

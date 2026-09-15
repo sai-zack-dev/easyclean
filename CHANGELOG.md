@@ -6,7 +6,50 @@ All notable changes to EasyClean are documented here. The format follows
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+- **Duplicates get their own compare screen.** Reviewing copies in the one-card swipe deck asked
+  "keep this?" about a photo whose only problem was that another copy existed — and never showed you
+  the other copy. Now a whole cluster is on screen at once: tap the copies you mean, and one button
+  settles the group. Selected go one way, the rest go the other, which covers every case in a single
+  gesture — keep both, delete both, or split a pair. The largest copy is pre-selected and marked
+  BEST (more bytes means less re-compression, which is how the original differs from the one that
+  came back through a chat app); an eye button enlarges either copy when the difference is in the
+  detail. Undo takes back a whole group, and Skip defers one.
+
+  New endpoints: `GET /api/media/duplicates` returns whole clusters (never a group of one), and
+  `POST /api/media/duplicates/resolve` settles or undoes one in a single call — a half-decided
+  cluster would simply come back on the next pass.
+- **Confirmation before anything is destroyed.** Delete in the photo viewer, Delete forever in the
+  trash, and Empty trash each ask first, showing the photo in question and saying plainly whether it
+  is recoverable. Empty trash was a two-tap EMPTY → SURE? in the same spot, which is no protection
+  against the mis-tap it was meant to catch; Cancel now takes the focus, so the keyboard's easy path
+  is the safe one too.
+- **An update path for the installed PWA.** The app checks for a new build on launch, whenever it is
+  resumed, and hourly, and offers a banner plus a Setting › About row when one is ready. Setting also
+  shows the app's version beside the one the server reports, so "did my deploy reach this phone?" is
+  answerable without reinstalling.
+
+### Fixed
+- **On This Day showed recent photos, not photos from this day.** It and Recents both fell through to
+  the unfiltered `timeline` query, so the two cards showed the same deck as each other and as
+  everything else. They are now real batch modes: `onthisday` matches this calendar day in any year,
+  `recents` the last seven days.
+- **The dashboard's On This Day badge was the day of the month.** It read as a count and never agreed
+  with the deck behind it — 15 on the card, 200 in the session. Every Clean card now badges the
+  number of photos actually waiting, and Duplicates reads "N groups · M files".
+- **The Gallery's scope tabs slid under the title when scrolled.** They stuck to a hardcoded header
+  height that was shorter than the real header. Header and tabs now pin as one block, so nothing has
+  to know anyone's height.
+- **The photo viewer was dark in light mode.** Its chrome, sheets and ground are theme-aware.
+- **Albums had no subtitle**, so "Collections" — the first section heading — read as the page's
+  summary. It now says "N collections", matching the Gallery's "N items".
+- **A deploy never reached an installed PWA.** Three separate causes: the server sent no cache
+  headers, so the browser applied its own freshness to `index.html` and `sw.js` (now `no-cache`,
+  with content-hashed `/assets/` marked immutable for a year); the service worker called
+  `skipWaiting()` during install, swapping itself under a page still running the old JavaScript and
+  leaving no waiting worker for the app to notice; and nothing ever called `registration.update()`,
+  which an app that is resumed rather than reloaded needs. Deleting and reinstalling the app was the
+  only way out.
 
 ## [0.2.0] — 2026-09-15
 

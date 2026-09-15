@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { IC } from '../icons'
 import { api, type MediaFile, type Album } from '../api/client'
+import { ConfirmDialog } from '../components/ConfirmDialog'
 
 function fmtBytes(b: number) {
   if (!b) return '0 B'
@@ -107,6 +108,8 @@ export function PhotoViewer({
   const [albums, setAlbums] = useState<Album[]>([])
   const [newAlbum, setNewAlbum] = useState('')
   const [busy, setBusy] = useState(false)
+  /** Which destructive action is waiting on a yes. */
+  const [confirm, setConfirm] = useState<'trash' | 'purge' | null>(null)
   const [retentionDays, setRetentionDays] = useState(30)
   const [openedAt] = useState(() => Date.now())
 
@@ -165,7 +168,10 @@ export function PhotoViewer({
   )
 
   // Keyboard still works — the arrows are gone from the UI, not the interaction.
+  // A confirmation on top owns the keyboard while it's up, or one Escape would
+  // dismiss the dialog and the viewer behind it in the same press.
   useEffect(() => {
+    if (confirm) return
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose()
       else if (e.key === 'ArrowLeft') go(-1)
@@ -173,7 +179,7 @@ export function PhotoViewer({
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [onClose, go])
+  }, [onClose, go, confirm])
 
   /**
    * Lock the page behind the viewer.
@@ -380,6 +386,7 @@ export function PhotoViewer({
     api.trashOne(file.id)
       .then(() => {
         toast?.(`${file.filename} moved to trash`)
+        setConfirm(null)
         dropCurrent(file.id)
       })
       .catch(() => toast?.('Could not move it to the trash'))
@@ -402,6 +409,7 @@ export function PhotoViewer({
     api.trashPurge(file.id)
       .then(() => {
         toast?.(`${file.filename} deleted for good`)
+        setConfirm(null)
         dropCurrent(file.id)
       })
       .catch(() => toast?.('Could not delete it'))
@@ -550,7 +558,7 @@ export function PhotoViewer({
             >
               <IC.album /><span>Album</span>
             </button>
-            <button className="viewer-act danger" onClick={del} disabled={busy}>
+            <button className="viewer-act danger" onClick={() => setConfirm('trash')} disabled={busy}>
               <IC.trash /><span>Delete</span>
             </button>
           </>
@@ -565,12 +573,37 @@ export function PhotoViewer({
             >
               <IC.info /><span>Info</span>
             </button>
-            <button className="viewer-act danger" onClick={purge} disabled={busy}>
+            <button className="viewer-act danger" onClick={() => setConfirm('purge')} disabled={busy}>
               <IC.trash /><span>Delete forever</span>
             </button>
           </>
         )}
       </div>
+
+      {/* Binning is recoverable and says so; purging is not, and says that
+          instead — the same dialog, two different promises. */}
+      {confirm === 'trash' && (
+        <ConfirmDialog
+          title="Move to trash?"
+          body={`${file.filename} goes to the trash and stays there for ${retentionDays} days. You can put it back from Albums › Trash.`}
+          confirmLabel="Move to trash"
+          thumbUrl={api.thumbUrl(file.id)}
+          busy={busy}
+          onConfirm={del}
+          onCancel={() => setConfirm(null)}
+        />
+      )}
+      {confirm === 'purge' && (
+        <ConfirmDialog
+          title="Delete forever?"
+          body={`${file.filename} is erased from disk. This cannot be undone.`}
+          confirmLabel="Delete forever"
+          thumbUrl={api.thumbUrl(file.id)}
+          busy={busy}
+          onConfirm={purge}
+          onCancel={() => setConfirm(null)}
+        />
+      )}
     </div>
   )
 }

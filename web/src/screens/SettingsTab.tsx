@@ -4,6 +4,7 @@ import { api, type StatsSummary, type StorageDay, type SearchStatus } from '../a
 import { useSession, type Theme } from '../store/session'
 import { ACCENTS } from '../theme'
 import { useStickyHeader } from '../hooks/useStickyHeader'
+import { checkForUpdate, applyUpdate, onUpdateAvailable } from '../pwa'
 
 function fmtBytes(b: number) {
   if (!b) return '0 B'
@@ -139,6 +140,10 @@ export function SettingsTab({ toast }: Props) {
   const [sens, setSens] = useState<number | null>(null)
   const [savingSens, setSavingSens] = useState(false)
   const [search, setSearchStatus] = useState<SearchStatus | null>(null)
+  /** The build the server reports, next to the one this app was compiled as. */
+  const [serverVersion, setServerVersion] = useState('')
+  const [updateReady, setUpdateReady] = useState(false)
+  const [checking, setChecking] = useState(false)
   const { ref: screenRef, onScroll } = useStickyHeader()
 
   // While a build runs, poll so the bar actually moves.
@@ -163,7 +168,36 @@ export function SettingsTab({ toast }: Props) {
     api.settings()
       .then((s) => setSens(stepFor(s.duplicate_distance)))
       .catch(() => {})
+    api.health().then((h) => setServerVersion(h.version ?? '')).catch(() => {})
+    return onUpdateAvailable(setUpdateReady)
   }, [])
+
+  /**
+   * Fetch the latest build now.
+   *
+   * There was no way to do this from inside the app before — an installed PWA
+   * hands you no reload button, so the only way to pick up a deploy was to
+   * delete and reinstall it.
+   */
+  const checkUpdate = async () => {
+    setChecking(true)
+    try {
+      const h = await api.health().catch(() => null)
+      if (h?.version) setServerVersion(h.version)
+      const ready = await checkForUpdate()
+      if (ready) toast('A new version is ready — tap Update')
+      else if (h?.version && h.version !== __APP_VERSION__) {
+        // The server moved on but the shell hasn't caught up: reloading is
+        // what fetches it, and is harmless when it turns out to be current.
+        toast('Server is on ' + h.version + ' — reloading')
+        setTimeout(() => window.location.reload(), 900)
+      } else {
+        toast('You\u2019re on the latest version')
+      }
+    } finally {
+      setChecking(false)
+    }
+  }
 
   const sensTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -386,6 +420,47 @@ export function SettingsTab({ toast }: Props) {
                 />
               ))}
             </div>
+          </div>
+        </div>
+      </div>
+
+      {/* About — what build this is, and how to get a newer one */}
+      <div className="settings-section">
+        <div className="st-label">About</div>
+        <div className="settings-group">
+          <SRow
+            icon="info"
+            label="Version"
+            sub={
+              serverVersion && serverVersion !== __APP_VERSION__
+                ? `Server is on ${serverVersion} — this app is behind`
+                : serverVersion
+                  ? 'App and server match'
+                  : 'Checking the server\u2026'
+            }
+            right={__APP_VERSION__}
+          />
+          <div className="srow">
+            <div className="srow-left">
+              <div className="srow-icon"><IC.sync /></div>
+              <div>
+                <div className="srow-label">
+                  {updateReady ? 'Update ready' : 'Check for updates'}
+                </div>
+                <div className="srow-sub">
+                  {updateReady
+                    ? 'Restarts the app on the new version.'
+                    : 'Installed apps do not refresh on their own.'}
+                </div>
+              </div>
+            </div>
+            <button
+              className="pill-btn"
+              onClick={updateReady ? applyUpdate : checkUpdate}
+              disabled={checking}
+            >
+              {updateReady ? 'Update' : checking ? 'Checking\u2026' : 'Check'}
+            </button>
           </div>
         </div>
       </div>
