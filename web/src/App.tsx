@@ -118,7 +118,9 @@ export function App() {
               />
             )}
             {tab === 'gallery' && <GalleryTab toast={toast} />}
-            {tab === 'albums' && <AlbumsTab onOpenTrash={() => setTrashOpen(true)} />}
+            {tab === 'albums' && (
+              <AlbumsTab onOpenTrash={() => setTrashOpen(true)} toast={toast} />
+            )}
             {tab === 'setting' && <SettingsTab toast={toast} />}
             <TabBar tab={tab} setTab={setTab} />
           </div>

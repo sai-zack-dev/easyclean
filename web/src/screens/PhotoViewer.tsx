@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { IC } from '../icons'
 import { api, type MediaFile, type Album } from '../api/client'
 import { ConfirmDialog } from '../components/ConfirmDialog'
+import { ShareSheet } from '../components/ShareSheet'
 
 function fmtBytes(b: number) {
   if (!b) return '0 B'
@@ -30,6 +31,8 @@ const NAV_THRESHOLD = 70
 const DISMISS_THRESHOLD = 120
 /** Downward travel on a drawer that dismisses it. Shorter — it's a small sheet. */
 const SHEET_DISMISS = 60
+/** Upward travel on the photo that pulls the details drawer up. */
+const SWIPE_UP_THRESHOLD = 70
 
 /**
  * The media itself, mounted with `key={file.id}` so paging remounts it — load
@@ -114,6 +117,7 @@ export function PhotoViewer({
   const [busy, setBusy] = useState(false)
   /** Which destructive action is waiting on a yes. */
   const [confirm, setConfirm] = useState<'trash' | 'purge' | null>(null)
+  const [sharing, setSharing] = useState(false)
   const [retentionDays, setRetentionDays] = useState(30)
   const [openedAt] = useState(() => Date.now())
 
@@ -137,6 +141,9 @@ export function PhotoViewer({
     originX: 0,
     originY: 0,
     axis: '' as '' | 'x' | 'y',
+    /** Raw vertical travel, sign intact. The photo only moves down, so
+     *  `view.y` is clamped at 0 and cannot answer "was that a flick up?". */
+    dy: 0,
   })
 
   const apply = useCallback((animate = false) => {
@@ -226,6 +233,7 @@ export function PhotoViewer({
     const s = g.current
     s.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY })
     s.axis = ''
+    s.dy = 0
 
     // Capture last, and never let it throw the gesture away. `setPointerCapture`
     // raises NotFoundError for a pointer the browser no longer considers active
@@ -296,7 +304,8 @@ export function PhotoViewer({
       view.current.x = atEnd ? dx * 0.25 : dx // rubber-band at the ends
       view.current.y = 0
     } else if (s.axis === 'y') {
-      view.current.y = Math.max(dy, 0) // downward only
+      s.dy = dy
+      view.current.y = Math.max(dy, 0) // the photo itself only travels down
       view.current.x = 0
     }
     apply()
@@ -339,6 +348,14 @@ export function PhotoViewer({
       go(x < 0 ? 1 : -1)
       return
     }
+    // Flick up on the photo to pull the details out — the counterpart to
+    // pulling the drawer back down, so the panel has a gesture in both
+    // directions and not just a button.
+    if (s.axis === 'y' && s.dy < -SWIPE_UP_THRESHOLD && panel === 'none') {
+      reset(true)
+      openInfo()
+      return
+    }
     if (s.axis === 'y' && y > DISMISS_THRESHOLD) {
       // Carry the fling through instead of snapping back, then close.
       view.current.y = window.innerHeight
@@ -355,6 +372,9 @@ export function PhotoViewer({
   }
 
   // ── Actions ─────────────────────────────────────────────────────────────
+
+  /** Drawer drag: downward past a threshold dismisses, anything less springs back. */
+  const sheetRef = useRef<HTMLDivElement>(null)
 
   const openAlbums = () => {
     reset(true)
@@ -383,10 +403,20 @@ export function PhotoViewer({
    * its own, and a tap *inside* it (picking an album, reading a value) never
    * dismisses it by accident.
    */
-  const closePanel = useCallback(() => setPanel('none'), [])
+  const closePanel = useCallback(() => {
+    // Drive the exit from the element rather than unmounting straight away: a
+    // drawer that vanished on the frame you released it read as a glitch, and
+    // this also continues smoothly from wherever a drag left the sheet.
+    const el = sheetRef.current
+    if (!el) {
+      setPanel('none')
+      return
+    }
+    el.style.transition = 'transform 0.2s cubic-bezier(.25,.46,.45,.94)'
+    el.style.transform = 'translateY(100%)'
+    window.setTimeout(() => setPanel('none'), 190)
+  }, [])
 
-  /** Drawer drag: downward past a threshold dismisses, anything less springs back. */
-  const sheetRef = useRef<HTMLDivElement>(null)
   const sheetDrag = useRef({ y: 0, dragging: false })
 
   const onSheetDown = (e: React.PointerEvent) => {
@@ -412,33 +442,6 @@ export function PhotoViewer({
     sheetRef.current.style.transition = ''
     sheetRef.current.style.transform = ''
     if (dy > SHEET_DISMISS) closePanel()
-  }
-
-  const share = async () => {
-    const url = api.rawUrl(file.id)
-    // The Web Share API needs a secure context. EasyClean is plain HTTP on the
-    // LAN, so `navigator.share` is normally undefined here and the download
-    // below is what actually runs; the branch is kept for an HTTPS future.
-    const nav = navigator as Navigator & { canShare?: (d: unknown) => boolean }
-    if (nav.share && nav.canShare) {
-      try {
-        const blob = await (await fetch(url)).blob()
-        const f = new File([blob], file.filename, { type: blob.type })
-        if (nav.canShare({ files: [f] })) {
-          await nav.share({ files: [f], title: file.filename })
-          return
-        }
-      } catch {
-        /* fall through to the download */
-      }
-    }
-    const a = document.createElement('a')
-    a.href = url
-    a.download = file.filename
-    document.body.appendChild(a)
-    a.click()
-    a.remove()
-    toast?.('Saving the original…')
   }
 
   /** Drop the current file from the deck and land somewhere sensible. */
@@ -650,7 +653,7 @@ export function PhotoViewer({
       <div className="viewer-bar">
         {mode === 'gallery' ? (
           <>
-            <button className="viewer-act" onClick={share} disabled={busy}>
+            <button className="viewer-act" onClick={() => setSharing(true)} disabled={busy}>
               <IC.share /><span>Share</span>
             </button>
             <button
@@ -687,6 +690,8 @@ export function PhotoViewer({
           </>
         )}
       </div>
+
+      {sharing && <ShareSheet files={[file]} onClose={() => setSharing(false)} toast={toast} />}
 
       {/* Binning is recoverable and says so; purging is not, and says that
           instead — the same dialog, two different promises. */}

@@ -289,6 +289,9 @@ export const api = {
   albumFiles: (id: number, page = 1, size = 50) =>
     request<BatchResult>('GET', `/api/albums/${id}/files?page=${page}&size=${size}`),
   albumsRefresh: () => request<void>('POST', '/api/albums/refresh'),
+  /** Make an empty album — the "+" in the Albums tab. */
+  albumCreate: (name: string) =>
+    request<{ album_id: number; name: string }>('POST', '/api/albums', { name }),
   /** File a photo under an existing album, or a new one by name. */
   albumAdd: (body: { file_id: number; album_id?: number; name?: string }) =>
     request<{ album_id: number; file_id: number }>('POST', '/api/albums/add', body),
