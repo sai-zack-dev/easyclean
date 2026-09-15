@@ -6,6 +6,32 @@ All notable changes to EasyClean are documented here. The format follows
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.2.2] — 2026-09-15
+
+Three rounds of phone testing: bulk selection, a Share button that works, albums that mean
+what they say, and a dashboard that knows what day it is.
+
+Patch rather than minor: every new endpoint is additive, none that existed changed shape, and
+the one migration only removes album rows that duplicated others.
+
+### Added
+- **Select mode in the Gallery.** A Select button beside Search turns the grid into a picker: tap
+  photos to choose them, and the tab bar is replaced by Share · *N* selected · Album · Delete. Select
+  becomes Cancel, so the way in and the way out are one control. Ticks use the accent colour, like
+  every other chosen state in the app.
+- **A share sheet that offers what actually works.** Save to Photos (opens the original so a
+  long-press can add it to the camera roll — the route that works on iOS), Download, and the
+  device's own share sheet when the connection is secure enough to allow it. When it isn't, the
+  sheet says so instead of leaving a gap.
+- **Swipe up on a photo opens its details**, the counterpart to pulling the drawer back down.
+- **The Albums "+" creates an album.** It previously called `albums/refresh`, which recomputes
+  counts and covers — invisible work that looked exactly like a broken button. New endpoint
+  `POST /api/albums`, since an album could only be created as a side effect of filing a photo.
+- **Details lists the albums a photo is in**, as chips, fetched per photo when the panel opens
+  (`GET /api/media/:id/albums`) rather than joined into every Gallery row.
+
 ### Changed
 - **The Timeline Checklist hides months you've finished.** It's a to-do list, and a cleaned month is
   done — leaving them in place pushed the months that still need work below the fold, which on a
@@ -18,7 +44,6 @@ All notable changes to EasyClean are documented here. The format follows
   keep a video or screenshot, finish a session — on a dashed card that reads as a waiting slot
   rather than a broken one.
 
-### Changed
 - **Hearting a photo fills Favourites immediately.** Album membership was decided only by
   `categorize` at session finish, so a photo you hearted from the Gallery might never reach the
   Favourites album at all. The heart is the entire interface for that album, so it is now the thing
@@ -88,20 +113,6 @@ Patch rather than minor: nothing changes shape for existing data — no migratio
 and every endpoint that existed still answers the same way.
 
 ### Added
-- **Select mode in the Gallery.** A Select button beside Search turns the grid into a picker: tap
-  photos to choose them, and the tab bar is replaced by Share · *N* selected · Album · Delete. Select
-  becomes Cancel, so the way in and the way out are one control. Ticks use the accent colour, like
-  every other chosen state in the app.
-- **A share sheet that offers what actually works.** Save to Photos (opens the original so a
-  long-press can add it to the camera roll — the route that works on iOS), Download, and the
-  device's own share sheet when the connection is secure enough to allow it. When it isn't, the
-  sheet says so instead of leaving a gap.
-- **Swipe up on a photo opens its details**, the counterpart to pulling the drawer back down.
-- **The Albums "+" creates an album.** It previously called `albums/refresh`, which recomputes
-  counts and covers — invisible work that looked exactly like a broken button. New endpoint
-  `POST /api/albums`, since an album could only be created as a side effect of filing a photo.
-- **Details lists the albums a photo is in**, as chips, fetched per photo when the panel opens
-  (`GET /api/media/:id/albums`) rather than joined into every Gallery row.
 - **Duplicates get their own compare screen.** Reviewing copies in the one-card swipe deck asked
   "keep this?" about a photo whose only problem was that another copy existed — and never showed you
   the other copy. Now a whole cluster is on screen at once: tap the copies you mean, and one button
