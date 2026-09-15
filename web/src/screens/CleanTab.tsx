@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { IC } from '../icons'
 import { api, type TimelineMonth, type StreakStats } from '../api/client'
 import { ProgressRing } from '../components/ProgressRing'
@@ -39,7 +39,23 @@ export function CleanTab({ onSwipe, onDuplicates, toast }: Props) {
    */
   const [showCleaned, setShowCleaned] = useState(false)
 
-  const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Today']
+  /**
+   * The last seven weekday labels, ending with today.
+   *
+   * Derived from the clock, not hardcoded: the list used to read
+   * Mon…Sat + Today, which is only correct if today happens to be a Sunday —
+   * every other day of the week it labelled the whole row wrong. Index order
+   * matches `last_7_days` from the server: 0 is six days ago, 6 is today.
+   */
+  const days = useMemo(() => {
+    const today = new Date()
+    return Array.from({ length: 7 }, (_, i) => {
+      if (i === 6) return 'Today'
+      const d = new Date(today)
+      d.setDate(today.getDate() - (6 - i))
+      return d.toLocaleDateString('en-US', { weekday: 'short' })
+    })
+  }, [])
   const { ref: screenRef, onScroll } = useStickyHeader()
 
   const load = () => {
@@ -116,8 +132,10 @@ export function CleanTab({ onSwipe, onDuplicates, toast }: Props) {
       <div className="streak-card">
         <div className="streak-days">
           {days.map((d, i) => (
-            <div key={d} className="streak-day">
-              <div className={`s-ring ${i === 6 ? 'today' : (last7[i] ?? 0) > 0 ? 'done' : ''}`}>
+            <div key={`${d}-${i}`} className="streak-day">
+              <div
+                className={`s-ring ${(last7[i] ?? 0) > 0 ? 'done' : ''} ${i === 6 ? 'today' : ''}`}
+              >
                 <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
                   <polyline points="20 6 9 17 4 12" />
                 </svg>

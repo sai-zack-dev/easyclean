@@ -585,19 +585,21 @@ body,
   position: relative;
   flex-shrink: 0;
 }
+/* A day you actually cleaned — filled with the accent, like today's. It used to
+   be a grey outline, so a finished day and an untouched one looked nearly
+   alike. */
 .s-ring.done {
-  border-color: var(--ring-done);
-}
-.s-ring.done svg {
-  opacity: 0.7;
-}
-.s-ring.today {
   border-color: var(--accent);
   background: var(--accent);
 }
-.s-ring.today svg path,
-.s-ring.today svg polyline {
+.s-ring.done svg path,
+.s-ring.done svg polyline {
   stroke: var(--accent-on);
+}
+/* Today with nothing swiped yet: marked as today by the ring, but not filled —
+   filling it would claim work that hasn't happened. */
+.s-ring.today {
+  border-color: var(--accent);
 }
 .s-ring svg {
   width: 11px;
@@ -2308,9 +2310,11 @@ body.viewer-open .tabbar {
      for scrolling and the pull-down dismiss never fires. */
   touch-action: none;
 }
+/* A real slide up from the bottom edge, not a 18px nudge — it has to read as
+   the drawer arriving, and it is the same distance the exit travels back. */
 @keyframes sheet-up {
-  from { transform: translateY(18px); opacity: 0; }
-  to   { transform: translateY(0);    opacity: 1; }
+  from { transform: translateY(100%); }
+  to   { transform: translateY(0); }
 }
 /* Grab handle — the affordance for pulling the sheet down, which replaced the
    close button. */
@@ -3039,4 +3043,317 @@ button.trash-meta {
   background: none;
   color: var(--text2);
   padding: 7px 6px;
+}
+
+/* ── GALLERY SELECT MODE ────────────────────────────── */
+/* A cell you can pick. Dimmed until chosen, so the selection reads at a glance
+   across a dense grid. */
+.g-cell.g-pick img {
+  transition: transform 0.15s var(--ease), opacity 0.15s var(--ease);
+}
+.g-cell.g-pick.on img {
+  transform: scale(0.88);
+  border-radius: 8px;
+}
+.g-tick {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.85);
+  background: rgba(0, 0, 0, 0.3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+/* Picked: the accent, like every other "chosen" state in the app. */
+.g-cell.on .g-tick {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.g-tick svg {
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: var(--accent-on);
+  stroke-width: 3.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+/* The header's Select pill while it is active. */
+.pill-btn.on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-on);
+}
+
+/* While picking, the select bar *is* the tab bar — two translucent bars stacked
+   on the same edge showed each other's text through. */
+body.select-mode .tabbar {
+  display: none !important;
+}
+/* Stands in for the tab bar while picking — same height, same rhythm. */
+.select-bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 40;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-around;
+  height: calc(var(--tab) + env(safe-area-inset-bottom));
+  padding: 8px 0 env(safe-area-inset-bottom);
+  background: var(--tabbar-bg);
+  backdrop-filter: blur(24px) saturate(180%);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  border-top: 1px solid var(--border);
+  animation: sheet-up 0.2s var(--ease);
+}
+.select-act {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 0;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text2);
+  font-family: var(--font);
+  transition: color 0.15s var(--ease);
+}
+.select-act span {
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.2px;
+}
+.select-act svg,
+.select-act .ic-mask {
+  width: 22px;
+  height: 22px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.select-act:hover:not(:disabled) {
+  color: var(--text);
+}
+.select-act.danger {
+  color: var(--delete);
+}
+.select-act:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+/* The running count, where the swipe screen puts its totals. */
+.select-count {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  padding: 0 6px;
+  min-width: 62px;
+}
+.select-count b {
+  font-size: 17px;
+  font-weight: 800;
+  color: var(--accent);
+  line-height: 1;
+}
+.select-count span {
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  color: var(--text3);
+  text-transform: uppercase;
+}
+
+/* ── SHARE SHEET ────────────────────────────────────── */
+.share-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 85;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  animation: confirm-in 0.15s var(--ease);
+}
+.share-sheet {
+  width: 100%;
+  max-width: 520px;
+  max-height: 82%;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-bottom: none;
+  border-radius: var(--r-lg) var(--r-lg) 0 0;
+  padding-bottom: env(safe-area-inset-bottom);
+  animation: sheet-up 0.22s var(--ease);
+  transition: transform 0.2s var(--ease);
+  touch-action: none;
+}
+/* Overlapping thumbnails — one photo or a stack, without a second layout. */
+.share-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 6px 20px 16px;
+  flex-shrink: 0;
+}
+.share-thumbs {
+  display: flex;
+  flex-shrink: 0;
+}
+.share-thumbs img {
+  width: 46px;
+  height: 46px;
+  object-fit: cover;
+  border-radius: 10px;
+  border: 2px solid var(--bg2);
+  background: var(--fill);
+}
+.share-thumbs img + img {
+  margin-left: -22px;
+}
+.share-head-text {
+  min-width: 0;
+}
+.share-title {
+  font-size: 15px;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.share-sub {
+  font-size: 12px;
+  color: var(--text2);
+  margin-top: 1px;
+}
+.share-actions {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 12px;
+  touch-action: pan-y;
+}
+.share-act {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 10px;
+  border: none;
+  border-radius: var(--r);
+  background: none;
+  color: var(--text);
+  font-family: var(--font);
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s var(--ease);
+}
+.share-act:hover:not(:disabled) {
+  background: var(--hover);
+}
+.share-act:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.share-act-icon {
+  flex-shrink: 0;
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+  background: var(--fill);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text);
+}
+.share-act-icon svg,
+.share-act-icon .ic-mask {
+  width: 19px;
+  height: 19px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.share-act > span:last-child {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.share-act b {
+  font-size: 14.5px;
+  font-weight: 600;
+}
+.share-act em {
+  font-style: normal;
+  font-size: 11.5px;
+  color: var(--text2);
+  line-height: 1.35;
+}
+/* Says why the OS share sheet isn't offered, rather than leaving a hole. */
+.share-note {
+  flex-shrink: 0;
+  margin: 4px 20px 0;
+  padding: 10px 12px;
+  border-radius: var(--r);
+  background: var(--fill);
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--text2);
+}
+.share-cancel {
+  flex-shrink: 0;
+  margin: 12px 20px 16px;
+  padding: 13px;
+  border-radius: var(--r-pill);
+  border: none;
+  background: var(--fill);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.share-cancel:hover {
+  background: var(--fill-hi);
+}
+
+/* New-album name field in the create dialog. */
+.album-name-input {
+  width: 100%;
+  margin-top: 16px;
+  padding: 12px 14px;
+  border-radius: var(--r);
+  border: 1.5px solid var(--border2);
+  background: var(--fill);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 15px;
+  outline: none;
+  text-align: center;
+}
+.album-name-input:focus {
+  border-color: var(--accent);
+}
+.album-name-input::placeholder {
+  color: var(--text3);
 }

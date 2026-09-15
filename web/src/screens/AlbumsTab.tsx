@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { IC } from '../icons'
 import { api, type Album } from '../api/client'
 import { AlbumDetail } from './AlbumDetail'
@@ -65,11 +65,69 @@ function Section({
   )
 }
 
-export function AlbumsTab({ onOpenTrash }: { onOpenTrash: () => void }) {
+/** Name-a-new-album prompt for the "+" in the header. */
+function NewAlbumDialog({
+  busy,
+  onCreate,
+  onCancel,
+}: {
+  busy: boolean
+  onCreate: (name: string) => void
+  onCancel: () => void
+}) {
+  const [name, setName] = useState('')
+  const ref = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    ref.current?.focus()
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onCancel() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onCancel])
+
+  return (
+    <div
+      className="confirm-backdrop"
+      role="presentation"
+      onClick={(e) => { if (e.target === e.currentTarget && !busy) onCancel() }}
+    >
+      <div className="confirm-box" role="dialog" aria-modal="true" aria-label="New album">
+        <div className="confirm-title">New album</div>
+        <div className="confirm-body">
+          It starts empty. Add photos to it from any photo&rsquo;s Album button, or by selecting
+          several in the Gallery.
+        </div>
+        <input
+          ref={ref}
+          className="album-name-input"
+          value={name}
+          maxLength={80}
+          placeholder="Album name…"
+          onChange={(e) => setName(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter' && name.trim()) onCreate(name.trim()) }}
+        />
+        <div className="confirm-actions">
+          <button className="confirm-btn" onClick={onCancel} disabled={busy}>Cancel</button>
+          <button
+            className="confirm-btn primary"
+            disabled={!name.trim() || busy}
+            onClick={() => onCreate(name.trim())}
+          >
+            {busy ? 'Creating…' : 'Create'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+export function AlbumsTab({ onOpenTrash, toast }: { onOpenTrash: () => void; toast: (m: string) => void }) {
   const [albums, setAlbums] = useState<Album[]>([])
   const [loaded, setLoaded] = useState(false)
   const [trashCount, setTrashCount] = useState(0)
   const [open, setOpen] = useState<Album | null>(null)
+  const [creating, setCreating] = useState(false)
+  const [busy, setBusy] = useState(false)
   const { ref: screenRef, onScroll } = useStickyHeader()
 
   const load = () => {
@@ -82,8 +140,22 @@ export function AlbumsTab({ onOpenTrash }: { onOpenTrash: () => void }) {
 
   useEffect(() => { load() }, [])
 
-  const refresh = () => {
-    api.albumsRefresh().then(load).catch(() => {})
+  /**
+   * Make an empty album.
+   *
+   * The "+" used to call `albums/refresh`, which recomputes counts and covers —
+   * invisible work that looked exactly like a broken button.
+   */
+  const create = (name: string) => {
+    setBusy(true)
+    api.albumCreate(name)
+      .then(() => {
+        toast(`“${name}” created`)
+        setCreating(false)
+        load()
+      })
+      .catch(() => toast('Could not create that album'))
+      .finally(() => setBusy(false))
   }
 
   // The server's category_type vocabulary: year · videos · screenshots ·
@@ -118,7 +190,7 @@ export function AlbumsTab({ onOpenTrash }: { onOpenTrash: () => void }) {
             {albums.length} collection{albums.length === 1 ? '' : 's'}
           </div>
         </div>
-        <button className="pill-btn" onClick={refresh} title="Rebuild albums">
+        <button className="pill-btn" onClick={() => setCreating(true)} title="New album">
           <IC.plus />
         </button>
       </div>
@@ -174,6 +246,10 @@ export function AlbumsTab({ onOpenTrash }: { onOpenTrash: () => void }) {
         </button>
       </div>
       <div className="pb16" />
+
+      {creating && (
+        <NewAlbumDialog busy={busy} onCreate={create} onCancel={() => setCreating(false)} />
+      )}
     </div>
   )
 }

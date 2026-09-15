@@ -3,6 +3,9 @@ import { IC } from '../icons'
 import { api, type MediaFile, type SearchResult, type SearchHit } from '../api/client'
 import { PhotoViewer } from './PhotoViewer'
 import { Spinner } from '../components/Spinner'
+import { ShareSheet } from '../components/ShareSheet'
+import { ConfirmDialog } from '../components/ConfirmDialog'
+import { AlbumPickerSheet } from '../components/AlbumPickerSheet'
 import { useStickyHeader } from '../hooks/useStickyHeader'
 
 /**
@@ -140,6 +143,12 @@ export function GalleryTab({ toast }: Props) {
   const [done, setDone] = useState(false)
   const [searching, setSearching] = useState(false)
   const [viewing, setViewing] = useState<number | null>(null)
+  /** Ids picked in select mode. Null means select mode is off entirely. */
+  const [picked, setPicked] = useState<Set<number> | null>(null)
+  const [sharing, setSharing] = useState(false)
+  const [confirmDel, setConfirmDel] = useState(false)
+  const [albumPick, setAlbumPick] = useState(false)
+  const [bulkBusy, setBulkBusy] = useState(false)
 
   /** What's in the box, updated on every keystroke. */
   const [query, setQuery] = useState('')
@@ -252,6 +261,75 @@ export function GalleryTab({ toast }: Props) {
     setTotal((t) => Math.max(t - 1, 0))
   }
 
+  // ── Select mode ─────────────────────────────────────────────────────────
+
+  const selecting = picked !== null
+
+  // The select bar stands *in place of* the tab bar, so the tab bar has to go:
+  // both are translucent and bottom-anchored, and left up it showed through as
+  // ghost text behind the counts.
+  useEffect(() => {
+    document.body.classList.toggle('select-mode', selecting)
+    return () => document.body.classList.remove('select-mode')
+  }, [selecting])
+  const chosen = useMemo(
+    () => (picked ? files.filter((f) => picked.has(f.id)) : []),
+    [picked, files],
+  )
+
+  const togglePick = (id: number) => {
+    setPicked((p) => {
+      const next = new Set(p ?? [])
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  /** Leave select mode, dropping the selection with it. */
+  const endSelect = () => {
+    setPicked(null)
+    setSharing(false)
+    setAlbumPick(false)
+    setConfirmDel(false)
+  }
+
+  /**
+   * Bin everything picked.
+   *
+   * One request per file rather than a bulk endpoint: `/trash` already exists
+   * and is the same operation the viewer uses, so this keeps one code path for
+   * "a photo went to the trash" instead of two that could drift apart.
+   */
+  const trashPicked = () => {
+    setBulkBusy(true)
+    const ids = chosen.map((f) => f.id)
+    Promise.allSettled(ids.map((id) => api.trashOne(id)))
+      .then((rs) => {
+        const ok = ids.filter((_, i) => rs[i].status === 'fulfilled')
+        ok.forEach(dropFile)
+        toast(
+          ok.length === ids.length
+            ? `${ok.length} moved to trash`
+            : `${ok.length} of ${ids.length} moved to trash`,
+        )
+        endSelect()
+      })
+      .finally(() => setBulkBusy(false))
+  }
+
+  const addPickedToAlbum = (body: { album_id?: number; name?: string }) => {
+    setBulkBusy(true)
+    const ids = chosen.map((f) => f.id)
+    Promise.allSettled(ids.map((id) => api.albumAdd({ file_id: id, ...body })))
+      .then((rs) => {
+        const ok = rs.filter((r) => r.status === 'fulfilled').length
+        toast(ok === ids.length ? `${ok} added` : `${ok} of ${ids.length} added`)
+        endSelect()
+      })
+      .finally(() => setBulkBusy(false))
+  }
+
   const pending = query !== applied
   let flat = -1
 
@@ -300,6 +378,14 @@ export function GalleryTab({ toast }: Props) {
               onClick={() => { if (searching) setQuery(''); setSearching((v) => !v) }}
             >
               <IC.search />
+            </button>
+            {/* Select becomes Cancel while picking, so the way in and the way
+                out are the same control rather than two places to look. */}
+            <button
+              className={`pill-btn ${selecting ? 'on' : ''}`}
+              onClick={() => (selecting ? endSelect() : setPicked(new Set()))}
+            >
+              {selecting ? 'Cancel' : 'Select'}
             </button>
           </div>
         </div>
@@ -356,9 +442,13 @@ export function GalleryTab({ toast }: Props) {
                 return (
                   <button
                     key={f.id}
-                    className="g-cell"
-                    onClick={() => { setResultList(null); setViewing(at) }}
-                    aria-label={`Open ${f.filename}`}
+                    className={`g-cell ${selecting ? 'g-pick' : ''} ${picked?.has(f.id) ? 'on' : ''}`}
+                    onClick={() => {
+                      if (selecting) togglePick(f.id)
+                      else { setResultList(null); setViewing(at) }
+                    }}
+                    aria-pressed={selecting ? picked?.has(f.id) : undefined}
+                    aria-label={selecting ? `Select ${f.filename}` : `Open ${f.filename}`}
                   >
                     <img
                       src={api.thumbUrl(f.id)}
@@ -369,6 +459,11 @@ export function GalleryTab({ toast }: Props) {
                       }}
                     />
                     {f.media_type !== 'image' && <span className="g-cell-vid" aria-hidden="true" />}
+                    {selecting && (
+                      <span className="g-tick" aria-hidden="true">
+                        {picked?.has(f.id) && <IC.check />}
+                      </span>
+                    )}
                   </button>
                 )
               })}
@@ -400,6 +495,64 @@ export function GalleryTab({ toast }: Props) {
           onClose={() => setViewing(null)}
           onRemoved={dropFile}
           toast={toast}
+        />
+      )}
+
+      {/* Stands in for the tab bar while picking — same height and rhythm, so
+          it reads as the app changing mode rather than a bar appearing over it.
+          The count sits in the middle where the running totals do elsewhere. */}
+      {selecting && (
+        <div className="select-bar">
+          <button
+            className="select-act"
+            disabled={chosen.length === 0 || bulkBusy}
+            onClick={() => setSharing(true)}
+          >
+            <IC.share /><span>Share</span>
+          </button>
+          <div className="select-count">
+            <b>{chosen.length}</b>
+            <span>selected</span>
+          </div>
+          <button
+            className="select-act"
+            disabled={chosen.length === 0 || bulkBusy}
+            onClick={() => setAlbumPick(true)}
+          >
+            <IC.album /><span>Album</span>
+          </button>
+          <button
+            className="select-act danger"
+            disabled={chosen.length === 0 || bulkBusy}
+            onClick={() => setConfirmDel(true)}
+          >
+            <IC.trash /><span>Delete</span>
+          </button>
+        </div>
+      )}
+
+      {sharing && chosen.length > 0 && (
+        <ShareSheet files={chosen} onClose={() => setSharing(false)} toast={toast} />
+      )}
+
+      {albumPick && (
+        <AlbumPickerSheet
+          title={`Add ${chosen.length} to album`}
+          busy={bulkBusy}
+          onPick={addPickedToAlbum}
+          onClose={() => setAlbumPick(false)}
+        />
+      )}
+
+      {confirmDel && (
+        <ConfirmDialog
+          title={chosen.length === 1 ? 'Move to trash?' : `Move ${chosen.length} to trash?`}
+          subject={chosen.length === 1 ? chosen[0].filename : undefined}
+          body="They stay in the trash for 30 days — you can put them back from Albums › Trash."
+          confirmLabel="Move to trash"
+          busy={bulkBusy}
+          onConfirm={trashPicked}
+          onCancel={() => setConfirmDel(false)}
         />
       )}
     </div>
