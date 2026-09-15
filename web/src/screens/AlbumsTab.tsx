@@ -86,10 +86,19 @@ export function AlbumsTab({ onOpenTrash }: { onOpenTrash: () => void }) {
     api.albumsRefresh().then(load).catch(() => {})
   }
 
-  // The server's category_type vocabulary: month · year · videos ·
-  // screenshots · favorites · place (see core/src/categorize.rs).
-  const collections = albums.filter((a) => ['favorites', 'place'].includes(a.category_type))
+  // The server's category_type vocabulary: year · videos · screenshots ·
+  // favorites · place (auto, see core/src/categorize.rs) plus `manual`, which
+  // is an album you made yourself.
+  //
+  // `manual` belongs in Collections. Leaving it out of every bucket is why an
+  // album created from the viewer's Add to album simply never appeared — it
+  // existed, held its photos, and was rendered nowhere.
+  const collections = albums.filter((a) =>
+    ['manual', 'favorites', 'place'].includes(a.category_type),
+  )
   const suggested = albums.filter((a) => ['videos', 'screenshots'].includes(a.category_type))
+  // Years only now; `month` is kept in the filter so albums from before the
+  // 0005 migration don't vanish mid-upgrade on a database it hasn't run on yet.
   const memories = albums.filter((a) => ['month', 'year'].includes(a.category_type))
 
   // Counts and covers can change while the detail view is open (a swipe session
@@ -128,7 +137,7 @@ export function AlbumsTab({ onOpenTrash }: { onOpenTrash: () => void }) {
             albums={collections}
             cls="al-lg"
             icon="heart"
-            hint="Tap the heart on a photo while reviewing, and your favourites collect here."
+            hint="Albums you make yourself land here, along with photos you heart."
             onOpen={setOpen}
           />
           <Section
@@ -144,7 +153,7 @@ export function AlbumsTab({ onOpenTrash }: { onOpenTrash: () => void }) {
             albums={memories}
             cls="al-sm"
             icon="calendar"
-            hint="Photos you keep are filed by month and year once you finish a session."
+            hint="Photos you keep are filed by year once you finish a session."
             onOpen={setOpen}
           />
         </>

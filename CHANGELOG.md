@@ -18,11 +18,37 @@ All notable changes to EasyClean are documented here. The format follows
   keep a video or screenshot, finish a session — on a dashed card that reads as a waiting slot
   rather than a broken one.
 
+### Changed
+- **Hearting a photo fills Favourites immediately.** Album membership was decided only by
+  `categorize` at session finish, so a photo you hearted from the Gallery might never reach the
+  Favourites album at all. The heart is the entire interface for that album, so it is now the thing
+  that fills it — and un-hearting takes the photo back out.
+- **Memories lists years, not years *and* months.** Every photo was filed into both, so Memories
+  showed "Nov 2023" beside "2023" — the same pictures under two headings. Migration `0005` removes
+  the month albums already in the database. The Clean tab's month checklist is unaffected: it reads
+  `created_at` directly and never used albums.
+- **Automatic albums are read-only.** Years, Videos, Screenshots and Favourites describe what a
+  photo *is*, so hand-filing into one would state something untrue — a 2021 photo cannot belong to
+  2023 — and the next rebuild would undo it anyway. The viewer's album picker now offers only albums
+  you made yourself, and the server refuses the rest.
+- **The viewer's drawers no longer cover the photo.** Details and Add to album were absolutely
+  positioned over the bottom of the image, so you read a photo's details while looking at less and
+  less of it. They are flex siblings now: the stage gives up the height and the photo shrinks to fit
+  above them, whole and visible the entire time.
+- **The drawers close by gesture, not by a button.** The `✕` is gone. Tap the photo, tap the toolbar
+  button that opened it, or pull the drawer down — and a tap *inside* a drawer no longer dismisses
+  it, so picking an album or reading a value can't close it by accident.
+- **Add to album keeps its title and New album field fixed**, with only the album list scrolling
+  beneath them, so the way to create an album can't scroll out of reach behind a long list.
+
 ### Removed
 - **The Language row.** It only ever read "English" and had nothing behind it — a control that
   can't do anything is worse than no control. It comes back when there's a second language.
 
 ### Fixed
+- **An album you created never appeared.** `Add to album` files into a `manual` album, but the
+  Albums tab bucketed only `favorites`/`place`, `videos`/`screenshots` and `month`/`year` — so a
+  manual album existed, held its photos, and was rendered nowhere. Collections shows them now.
 - **Settings rows promised screens that don't exist.** Indexed media, Library size, Flagged blurry
   and Version all carried a `›` chevron and a pointer cursor, but none of them is clickable — they
   are readouts. The chevron, the cursor and the press feedback now appear only on a row that
@@ -51,6 +77,8 @@ Patch rather than minor: nothing changes shape for existing data — no migratio
 and every endpoint that existed still answers the same way.
 
 ### Added
+- **Details lists the albums a photo is in**, as chips, fetched per photo when the panel opens
+  (`GET /api/media/:id/albums`) rather than joined into every Gallery row.
 - **Duplicates get their own compare screen.** Reviewing copies in the one-card swipe deck asked
   "keep this?" about a photo whose only problem was that another copy existed — and never showed you
   the other copy. Now a whole cluster is on screen at once: tap the copies you mean, and one button
