@@ -22,20 +22,32 @@ function Section({
   label,
   albums,
   cls,
+  hint,
+  icon,
   onOpen,
 }: {
   label: string
   albums: Album[]
   cls: string
+  /** What lands in this section, for when it's empty. */
+  hint: string
+  icon: keyof typeof IC
   onOpen: (a: Album) => void
 }) {
+  const Glyph = IC[icon]
   return (
     <>
       <div style={{ padding: '0 16px', marginBottom: 8 }}>
         <div className="section-label">{label}</div>
       </div>
       {albums.length === 0 ? (
-        <div className="al-empty">Nothing here yet</div>
+        // "Nothing here yet" told you nothing you could act on, three times over.
+        // These sections are built by the server, so the useful thing to say is
+        // what puts something in them.
+        <div className="al-hint">
+          <span className="al-hint-icon"><Glyph /></span>
+          <span>{hint}</span>
+        </div>
       ) : (
         <div className={cls === 'al-lg' ? 'al-2col-wrap' : 'albums-scroll'} style={{ marginBottom: 20 }}>
           {cls === 'al-lg' ? (
@@ -108,9 +120,33 @@ export function AlbumsTab({ onOpenTrash }: { onOpenTrash: () => void }) {
         </div>
       ) : (
         <>
-          <Section label="Collections" albums={collections} cls="al-lg" onOpen={setOpen} />
-          <Section label="Suggested Collections" albums={suggested} cls="al-sm" onOpen={setOpen} />
-          <Section label="Memories" albums={memories} cls="al-sm" onOpen={setOpen} />
+          {/* Each hint names the one action that fills that section. All three
+              only appear after a session is finished — that's when the server
+              files kept photos into albums. */}
+          <Section
+            label="Collections"
+            albums={collections}
+            cls="al-lg"
+            icon="heart"
+            hint="Tap the heart on a photo while reviewing, and your favourites collect here."
+            onOpen={setOpen}
+          />
+          <Section
+            label="Suggested Collections"
+            albums={suggested}
+            cls="al-sm"
+            icon="album"
+            hint="Videos and screenshots you keep are grouped here for you."
+            onOpen={setOpen}
+          />
+          <Section
+            label="Memories"
+            albums={memories}
+            cls="al-sm"
+            icon="calendar"
+            hint="Photos you keep are filed by month and year once you finish a session."
+            onOpen={setOpen}
+          />
         </>
       )}
 

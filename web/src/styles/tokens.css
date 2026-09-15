@@ -436,6 +436,39 @@ body,
   margin-bottom: 10px;
   text-transform: uppercase;
 }
+/* A section heading with a control on the right (the checklist's Show cleaned). */
+.section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 16px;
+  margin-bottom: 8px;
+}
+.section-head .section-label {
+  margin-bottom: 0;
+}
+.section-toggle {
+  flex-shrink: 0;
+  padding: 5px 11px;
+  border-radius: var(--r-pill);
+  border: none;
+  background: var(--fill);
+  color: var(--text2);
+  font-family: var(--font);
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s var(--ease);
+}
+.section-toggle:hover {
+  background: var(--fill-hi);
+  color: var(--text);
+}
+.section-toggle[aria-pressed="true"] {
+  background: var(--chip);
+  color: var(--text);
+}
 
 .card {
   background: var(--bg3);
@@ -696,6 +729,19 @@ body,
   display: flex;
   align-items: center;
   gap: 8px;
+}
+.tl-empty {
+  color: var(--text3);
+  text-align: center;
+  padding: 28px 24px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.tl-empty-title {
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 600;
+  margin-bottom: 4px;
 }
 
 .prog-ring circle {
@@ -1391,6 +1437,46 @@ body,
   padding: 12px 16px 20px;
   color: var(--text3);
   font-size: 13px;
+}
+/*
+ * What an empty album section says instead of "Nothing here yet".
+ *
+ * A dashed edge rather than a filled card: it reads as a slot waiting to be
+ * filled, not as a card that failed to load — which is how three stacked grey
+ * lines read.
+ */
+.al-hint {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 16px 20px;
+  padding: 14px 16px;
+  border: 1px dashed var(--border2);
+  border-radius: var(--r-lg);
+  color: var(--text2);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+.al-hint-icon {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--fill);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text3);
+}
+.al-hint-icon svg,
+.al-hint-icon .ic-mask {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 .al-2col-wrap {
   padding: 0 16px;
@@ -2548,6 +2634,24 @@ button.trash-meta {
   font-size: 17px;
   font-weight: 700;
   letter-spacing: -0.2px;
+}
+/*
+ * One line, ellipsised. Camera and messenger filenames run to 40+ characters
+ * with no spaces to break on, so inside the sentence they pushed the dialog
+ * past the screen edge; `min-width: 0` is what lets it actually shrink inside
+ * the flex/blocks above it.
+ */
+.confirm-subject {
+  margin-top: 8px;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  direction: ltr;
 }
 .confirm-body {
   margin-top: 6px;

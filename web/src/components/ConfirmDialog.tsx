@@ -3,6 +3,14 @@ import { useEffect, useRef } from 'react'
 interface Props {
   /** Short and specific — "Delete forever?", not "Are you sure?". */
   title: string
+  /**
+   * The thing being acted on — a filename, usually.
+   *
+   * Its own line rather than part of `body`: a 60-character camera filename
+   * inside a sentence blew the box out, and a name is what you check before
+   * confirming, so it earns the emphasis and the ellipsis.
+   */
+  subject?: string
   /** What will actually happen, in one sentence. */
   body: string
   /** The verb on the confirming button: "Delete", "Empty trash". */
@@ -26,6 +34,7 @@ interface Props {
  */
 export function ConfirmDialog({
   title,
+  subject,
   body,
   confirmLabel,
   danger = true,
@@ -58,6 +67,11 @@ export function ConfirmDialog({
       <div className="confirm-box" role="alertdialog" aria-modal="true" aria-label={title}>
         {thumbUrl && <img className="confirm-thumb" src={thumbUrl} alt="" />}
         <div className="confirm-title">{title}</div>
+        {subject && (
+          <div className="confirm-subject" title={subject}>
+            {subject}
+          </div>
+        )}
         <div className="confirm-body">{body}</div>
         <div className="confirm-actions">
           <button ref={cancelRef} className="confirm-btn" onClick={onCancel} disabled={busy}>

@@ -30,6 +30,14 @@ export function CleanTab({ onSwipe, onDuplicates, toast }: Props) {
   const [recentCount, setRecentCount] = useState(0)
   const [scanning, setScanning] = useState(false)
   const [scanMsg, setScanMsg] = useState('')
+  /**
+   * Whether finished months stay on the list.
+   *
+   * Off by default: the checklist is a to-do list, and a month you have already
+   * cleaned is done — leaving it there pushed the months that still need work
+   * below the fold, which on a well-reviewed library is most of them.
+   */
+  const [showCleaned, setShowCleaned] = useState(false)
 
   const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Today']
   const { ref: screenRef, onScroll } = useStickyHeader()
@@ -83,6 +91,12 @@ export function CleanTab({ onSwipe, onDuplicates, toast }: Props) {
 
   const streak = streakStats?.current_streak ?? 0
   const last7 = streakStats?.last_7_days ?? []
+
+  // A month with nothing left to review. `total > 0` matters: a month whose
+  // files have all been filed away reads as 0/0, which is finished, not empty.
+  const isCleaned = (t: TimelineMonth) => t.total > 0 && t.reviewed >= t.total
+  const cleanedCount = timeline.filter(isCleaned).length
+  const visibleMonths = showCleaned ? timeline : timeline.filter((t) => !isCleaned(t))
 
   return (
     <div className="screen" ref={screenRef} onScroll={onScroll}>
@@ -179,16 +193,32 @@ export function CleanTab({ onSwipe, onDuplicates, toast }: Props) {
       </div>
 
       {/* TIMELINE CHECKLIST */}
-      <div style={{ padding: '0 16px', marginBottom: 8 }}>
+      <div className="section-head">
         <div className="section-label">Timeline Checklist</div>
+        {/* Only offered once there is something to reveal — a toggle that does
+            nothing is worse than no toggle. */}
+        {cleanedCount > 0 && (
+          <button
+            className="section-toggle"
+            onClick={() => setShowCleaned((v) => !v)}
+            aria-pressed={showCleaned}
+          >
+            {showCleaned ? 'Hide cleaned' : `Show cleaned (${cleanedCount})`}
+          </button>
+        )}
       </div>
       <div className="timeline-list">
         {timeline.length === 0 ? (
-          <div style={{ color: 'var(--text3)', textAlign: 'center', padding: '24px 0', fontSize: 13 }}>
-            No media scanned yet — tap Scan
+          <div className="tl-empty">No media scanned yet — tap Scan</div>
+        ) : visibleMonths.length === 0 ? (
+          // Every month is done. Worth saying so outright rather than showing
+          // an empty list that looks like something failed to load.
+          <div className="tl-empty">
+            <div className="tl-empty-title">Every month is cleaned</div>
+            <div>Nothing left to review. Tap Show cleaned to look back.</div>
           </div>
         ) : (
-          timeline.map((t) => (
+          visibleMonths.map((t) => (
             <div
               key={t.sort_key}
               className="tl-item"
@@ -196,10 +226,8 @@ export function CleanTab({ onSwipe, onDuplicates, toast }: Props) {
             >
               <div className="tl-left">
                 <div className="tl-month">{t.month}</div>
-                <div className={t.reviewed >= t.total && t.total > 0 ? 'tl-done' : 'tl-progress'}>
-                  {t.reviewed >= t.total && t.total > 0
-                    ? 'Cleaned'
-                    : `${t.reviewed}/${t.total}`}
+                <div className={isCleaned(t) ? 'tl-done' : 'tl-progress'}>
+                  {isCleaned(t) ? 'Cleaned' : `${t.reviewed}/${t.total}`}
                 </div>
               </div>
               <div className="tl-right">
