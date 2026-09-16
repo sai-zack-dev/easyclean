@@ -59,12 +59,17 @@ pub async fn insert_media(pool: &Db, m: &NewMedia) -> Result<i64> {
     Ok(res.last_insert_rowid())
 }
 
-/// Count a user's indexed files.
+/// Count a user's indexed files, hidden ones excluded.
+///
+/// The count is on the Settings screen, so including them would announce that
+/// there are photos you can't see — the number going up with nothing new in the
+/// Gallery is exactly the tell the vault exists to avoid.
 pub async fn count_media(pool: &Db, user: &str) -> Result<i64> {
-    let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM media_file WHERE user = ?")
-        .bind(user)
-        .fetch_one(pool)
-        .await?;
+    let row: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM media_file WHERE user = ? AND status <> 'vault'")
+            .bind(user)
+            .fetch_one(pool)
+            .await?;
     Ok(row.0)
 }
 
@@ -80,7 +85,11 @@ pub async fn existing_paths(pool: &Db, user: &str) -> Result<HashSet<String>> {
 /// Files that still need analysis (no perceptual hash yet): `(id, path, media_type)`.
 pub async fn pending_for_detection(pool: &Db, user: &str) -> Result<Vec<(i64, String, String)>> {
     let rows = sqlx::query_as::<_, (i64, String, String)>(
-        "SELECT id, path, media_type FROM media_file WHERE user = ? AND phash IS NULL",
+        // Vault files excluded: this pass writes a thumbnail into the shared
+        // <data_dir>/thumbs, which is precisely the readable copy the vault
+        // moves out of there.
+        "SELECT id, path, media_type FROM media_file \
+         WHERE user = ? AND phash IS NULL AND status <> 'vault'",
     )
     .bind(user)
     .fetch_all(pool)
@@ -200,6 +209,15 @@ fn like_pattern(raw: &str) -> String {
 /// "This week" label the Clean tab puts on that card.
 pub const RECENT_WINDOW_SECS: i64 = 7 * 86_400;
 
+/// The status that means "hidden in the vault".
+///
+/// A status rather than a flag because every review mode already filters on an
+/// explicit status, so this one value hides the row from the swipe decks, the
+/// duplicate compare, the trash and the album builder for free. The queries it
+/// is *not* free in are the ones that say `status <> 'trashed'`, and each of
+/// those spells out `AND status <> 'vault'` below.
+pub const VAULT: &str = "vault";
+
 /// Shared `WHERE` clause for `get_batch`/`count_batch`.
 ///
 /// Review modes (`timeline`, `onthisday`, `recents`, `blurs`, `duplicates`) are
@@ -213,7 +231,9 @@ pub const RECENT_WINDOW_SECS: i64 = 7 * 86_400;
 ///   - `cleaned`  — kept, filed into `clean/<album>/` at session finish
 fn batch_filter(q: &BatchQuery<'_>) -> Filter {
     let mut sql = match q.mode {
-        "library" => String::from("WHERE user = ? AND status <> 'trashed'"),
+        // `status <> 'trashed'` alone would show the hidden ones: this is the
+        // only Gallery scope broad enough to reach them.
+        "library" => String::from("WHERE user = ? AND status NOT IN ('trashed', 'vault')"),
         "original" => String::from("WHERE user = ? AND status = 'pending'"),
         "cleaned" => String::from("WHERE user = ? AND status = 'keep'"),
         _ => String::from("WHERE user = ? AND status = 'pending'"),
@@ -449,7 +469,7 @@ pub async fn stats_summary(pool: &Db, user: &str) -> Result<StatsSummary> {
            COALESCE(SUM(is_blurry), 0), \
            COALESCE(SUM(size_bytes), 0), \
            COALESCE(SUM(CASE WHEN status = 'trashed' THEN size_bytes ELSE 0 END), 0) \
-         FROM media_file WHERE user = ?",
+         FROM media_file WHERE user = ? AND status <> 'vault'",
     )
     .bind(user)
     .fetch_one(pool)
@@ -472,7 +492,7 @@ pub async fn timeline_months(pool: &Db, user: &str) -> Result<Vec<TimelineMonth>
         "SELECT strftime('%Y-%m', created_at, 'unixepoch') AS sort_key, \
                 COUNT(*), \
                 COALESCE(SUM(status <> 'pending'), 0) \
-         FROM media_file WHERE user = ? \
+         FROM media_file WHERE user = ? AND status <> 'vault' \
          GROUP BY sort_key ORDER BY sort_key DESC",
     )
     .bind(user)
@@ -941,7 +961,8 @@ pub async fn files_needing_embedding(
     let rows = sqlx::query_as::<_, (i64, String)>(
         "SELECT m.id, m.thumb_path FROM media_file m \
          LEFT JOIN media_embedding e ON e.file_id = m.id AND e.model = ? \
-         WHERE m.user = ? AND m.status <> 'trashed' AND m.media_type = 'image' \
+         WHERE m.user = ? AND m.status NOT IN ('trashed', 'vault') \
+           AND m.media_type = 'image' \
            AND m.thumb_path IS NOT NULL AND e.file_id IS NULL \
          ORDER BY m.created_at DESC",
     )
@@ -956,7 +977,7 @@ pub async fn files_needing_embedding(
 pub async fn embedding_stats(pool: &Db, user: &str, model: &str) -> Result<(i64, i64)> {
     let indexed: (i64,) = sqlx::query_as(
         "SELECT COUNT(*) FROM media_embedding e JOIN media_file m ON m.id = e.file_id \
-         WHERE m.user = ? AND m.status <> 'trashed' AND e.model = ?",
+         WHERE m.user = ? AND m.status NOT IN ('trashed', 'vault') AND e.model = ?",
     )
     .bind(user)
     .bind(model)
@@ -964,7 +985,7 @@ pub async fn embedding_stats(pool: &Db, user: &str, model: &str) -> Result<(i64,
     .await?;
     let total: (i64,) = sqlx::query_as(
         "SELECT COUNT(*) FROM media_file \
-         WHERE user = ? AND status <> 'trashed' AND media_type = 'image' \
+         WHERE user = ? AND status NOT IN ('trashed', 'vault') AND media_type = 'image' \
            AND thumb_path IS NOT NULL",
     )
     .bind(user)
@@ -986,7 +1007,7 @@ pub async fn all_embeddings(
     let rows = sqlx::query_as::<_, (i64, f64, Vec<u8>)>(
         "SELECT e.file_id, e.scale, e.vec FROM media_embedding e \
          JOIN media_file m ON m.id = e.file_id \
-         WHERE m.user = ? AND m.status <> 'trashed' AND e.model = ?",
+         WHERE m.user = ? AND m.status NOT IN ('trashed', 'vault') AND e.model = ?",
     )
     .bind(user)
     .bind(model)
@@ -1013,6 +1034,144 @@ pub async fn media_by_ids(pool: &Db, user: &str, ids: &[i64]) -> Result<Vec<Medi
 
     let mut by_id: HashMap<i64, MediaFile> = rows.into_iter().map(|m| (m.id, m)).collect();
     Ok(ids.iter().filter_map(|id| by_id.remove(id)).collect())
+}
+
+// ── The hidden vault ───────────────────────────────────────────────────────
+
+/// The bcrypt hash of a user's vault PIN, or `None` if they never set one.
+pub async fn vault_pin_hash(pool: &Db, user: &str) -> Result<Option<String>> {
+    let row: Option<(String,)> = sqlx::query_as("SELECT pin_hash FROM vault WHERE user = ?")
+        .bind(user)
+        .fetch_optional(pool)
+        .await?;
+    Ok(row.map(|(h,)| h))
+}
+
+/// Set or replace a user's vault PIN. The caller has already hashed it and,
+/// when replacing, already checked the old one.
+pub async fn set_vault_pin(pool: &Db, user: &str, pin_hash: &str, now: i64) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO vault (user, pin_hash, created_at, updated_at) VALUES (?, ?, ?, ?) \
+         ON CONFLICT(user) DO UPDATE SET pin_hash = excluded.pin_hash, updated_at = excluded.updated_at",
+    )
+    .bind(user)
+    .bind(pin_hash)
+    .bind(now)
+    .bind(now)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Hide a file: remember what it was, then mark it vaulted and point at its new
+/// home inside `.vault/`.
+///
+/// `pre_vault_status` and `pre_vault_path` are what make restoring exact. The
+/// alternative — putting everything back as `pending` in `source/` — would drop
+/// a photo you had already reviewed back into the Clean tab, which reads as the
+/// app having lost your decision.
+pub async fn move_to_vault(
+    pool: &Db,
+    user: &str,
+    id: i64,
+    new_path: &str,
+    new_rel: &str,
+) -> Result<bool> {
+    let res = sqlx::query(
+        "UPDATE media_file \
+            SET pre_vault_status = status, pre_vault_path = path, \
+                status = 'vault', path = ?, rel_path = ?, thumb_path = NULL \
+          WHERE id = ? AND user = ? AND status <> 'vault'",
+    )
+    .bind(new_path)
+    .bind(new_rel)
+    .bind(id)
+    .bind(user)
+    .execute(pool)
+    .await?;
+    Ok(res.rows_affected() > 0)
+}
+
+/// Bring a file back out, to the status and path it had before it was hidden.
+///
+/// Returns the path it should be moved back to, so the caller can do the
+/// filesystem half and only commit the row once the file has actually landed.
+pub async fn vault_restore_target(pool: &Db, user: &str, id: i64) -> Result<Option<String>> {
+    let row: Option<(Option<String>,)> = sqlx::query_as(
+        "SELECT pre_vault_path FROM media_file WHERE id = ? AND user = ? AND status = 'vault'",
+    )
+    .bind(id)
+    .bind(user)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.and_then(|(p,)| p))
+}
+
+/// Commit a restore: status and path go back to what they were, and the
+/// `pre_vault_*` memory is cleared.
+///
+/// `thumb_path` stays NULL — the thumbnail was moved into the vault with the
+/// file, and detection regenerates it on the next pass rather than this code
+/// guessing where it went.
+pub async fn commit_vault_restore(
+    pool: &Db,
+    user: &str,
+    id: i64,
+    path: &str,
+    rel: &str,
+) -> Result<bool> {
+    let res = sqlx::query(
+        "UPDATE media_file \
+            SET status = COALESCE(pre_vault_status, 'keep'), path = ?, rel_path = ?, \
+                phash = NULL, pre_vault_status = NULL, pre_vault_path = NULL \
+          WHERE id = ? AND user = ? AND status = 'vault'",
+    )
+    .bind(path)
+    .bind(rel)
+    .bind(id)
+    .bind(user)
+    .execute(pool)
+    .await?;
+    Ok(res.rows_affected() > 0)
+}
+
+/// Everything in a user's vault, newest first.
+pub async fn vault_files(pool: &Db, user: &str) -> Result<Vec<MediaFile>> {
+    Ok(sqlx::query_as::<_, MediaFile>(
+        "SELECT * FROM media_file WHERE user = ? AND status = 'vault' \
+         ORDER BY created_at DESC, id DESC",
+    )
+    .bind(user)
+    .fetch_all(pool)
+    .await?)
+}
+
+/// One vaulted file, by id. `None` for a file that isn't yours or isn't hidden,
+/// so the vault's own routes can't be used to read the ordinary library.
+pub async fn vault_file(pool: &Db, user: &str, id: i64) -> Result<Option<MediaFile>> {
+    Ok(sqlx::query_as::<_, MediaFile>(
+        "SELECT * FROM media_file WHERE id = ? AND user = ? AND status = 'vault'",
+    )
+    .bind(id)
+    .bind(user)
+    .fetch_optional(pool)
+    .await?)
+}
+
+/// Drop a hidden file out of every album it was filed into.
+///
+/// Album counts are visible without the PIN, so a vaulted photo still sitting
+/// in "2025" would leave a hole: the album says 14 and shows 13.
+pub async fn remove_from_all_albums(pool: &Db, file_id: i64) -> Result<Vec<i64>> {
+    let rows: Vec<(i64,)> = sqlx::query_as("SELECT album_id FROM album_file WHERE file_id = ?")
+        .bind(file_id)
+        .fetch_all(pool)
+        .await?;
+    sqlx::query("DELETE FROM album_file WHERE file_id = ?")
+        .bind(file_id)
+        .execute(pool)
+        .await?;
+    Ok(rows.into_iter().map(|(a,)| a).collect())
 }
 
 #[cfg(test)]

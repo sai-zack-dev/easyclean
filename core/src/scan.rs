@@ -34,9 +34,16 @@ pub async fn scan_folder(
     let mut stats = ScanStats::default();
 
     // Don't descend into our own managed folders.
+    //
+    // `.vault` matters most: a hidden file physically lives there, and walking
+    // it would re-index the photo as a brand new `pending` one — putting it
+    // straight back into the Clean tab for anyone to see.
     let walker = WalkDir::new(dir).into_iter().filter_entry(|e| {
         !(e.file_type().is_dir()
-            && matches!(e.file_name().to_str(), Some("clean") | Some(".trash")))
+            && matches!(
+                e.file_name().to_str(),
+                Some("clean") | Some(".trash") | Some(".vault")
+            ))
     });
     for entry in walker.filter_map(|e| e.ok()) {
         if !entry.file_type().is_file() {

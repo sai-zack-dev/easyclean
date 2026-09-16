@@ -15,6 +15,8 @@ function fmtBytes(b: number) {
 
 interface Props {
   toast: (msg: string) => void
+  /** Three taps on the profile chip. Nothing else calls this. */
+  onSecret?: () => void
 }
 
 /**
@@ -137,7 +139,9 @@ function StorageChart({ days }: { days: StorageDay[] }) {
   )
 }
 
-export function SettingsTab({ toast }: Props) {
+export function SettingsTab({ toast, onSecret }: Props) {
+  /** When the last profile tap landed, and how many in a row. */
+  const lastTap = useRef({ at: 0, n: 0 })
   const { user, theme, setTheme, accentIndex, setAccentIndex, logout } = useSession()
   const [stats, setStats] = useState<StatsSummary | null>(null)
   const [storage, setStorage] = useState<StorageDay[] | null>(null)
@@ -258,7 +262,24 @@ export function SettingsTab({ toast }: Props) {
           <div className="page-title">Setting</div>
           <div className="page-subtitle">{user?.role === 'admin' ? 'Admin' : 'User'}</div>
         </div>
-        <div className="user-pill">
+        {/*
+          * Three taps opens the vault. No label, no chevron, nothing that reads
+          * as a control — a hidden vault with a visible button is just a folder.
+          * The taps have to land within 600ms of each other so ordinary
+          * fumbling never triggers it.
+          */}
+        <div
+          className="user-pill"
+          onClick={() => {
+            const now = Date.now()
+            const run = now - lastTap.current.at < 600 ? lastTap.current.n + 1 : 1
+            lastTap.current = { at: now, n: run }
+            if (run >= 3) {
+              lastTap.current = { at: 0, n: 0 }
+              onSecret?.()
+            }
+          }}
+        >
           <div className="user-pill-av"><IC.user /></div>
           <div className="user-pill-name">{user?.username ?? 'User'}</div>
         </div>
