@@ -5,6 +5,10 @@ use crate::error::{Error, Result};
 /// Filename of the generated JWT secret inside the data dir.
 const SECRET_FILE: &str = "secret.key";
 
+/// Shortest `EASYCLEAN_SECRET` accepted. Matches what [`random_hex_32`]
+/// produces, so an operator-supplied key is held to the generated one's bar.
+const MIN_SECRET_LEN: usize = 32;
+
 /// Where the JWT signing secret came from. Surfaced at startup so an operator
 /// can tell a configured secret from a generated one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,11 +72,13 @@ impl Default for Config {
             secret: String::new(),
             jwt_expire_days: 7,
             cors_origins: Vec::new(),
-            users: vec![UserSeed {
-                username: "default".into(),
-                passcode: "easyclean".into(),
-                role: "admin".into(),
-            }],
+            // Deliberately empty. A default passcode here is a published
+            // credential: the value ships in the repo, the compose file and the
+            // image, so every install that never changed it answers to the same
+            // word — and anyone on the Wi-Fi can read it in this file. The
+            // server refuses to seed a first user without an explicit
+            // `EASYCLEAN_PASSCODE` instead (see `main`).
+            users: Vec::new(),
         }
     }
 }
@@ -84,13 +90,20 @@ impl Config {
         let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
 
         let default_user = var("EASYCLEAN_USER").unwrap_or(d.default_user);
+        // No passcode ⇒ no seed. `from_env` stays infallible and simply reports
+        // that there is nobody to create; refusing to start is `main`'s call,
+        // made once, where the database can say whether a user already exists.
         let users = match var("EASYCLEAN_USERS") {
             Some(spec) => parse_users(&spec),
-            None => vec![UserSeed {
-                username: default_user.clone(),
-                passcode: var("EASYCLEAN_PASSCODE").unwrap_or_else(|| "easyclean".into()),
-                role: "admin".into(),
-            }],
+            None => var("EASYCLEAN_PASSCODE")
+                .map(|passcode| {
+                    vec![UserSeed {
+                        username: default_user.clone(),
+                        passcode,
+                        role: "admin".into(),
+                    }]
+                })
+                .unwrap_or_default(),
         };
 
         Config {
@@ -141,7 +154,20 @@ impl Config {
     /// persisted with `0600`. Anyone's photo library sits behind these tokens,
     /// so there is no shared default to fall back to.
     pub fn resolve_secret(&mut self) -> Result<SecretOrigin> {
-        if !self.secret.trim().is_empty() {
+        let supplied = self.secret.trim().to_string();
+        if !supplied.is_empty() {
+            // A generated key is 32 random bytes; one typed by hand should be
+            // worth as much. HS256 accepts a one-character key perfectly
+            // happily, and a short one is guessable offline from any token the
+            // holder already has — at which point every session is forgeable.
+            if supplied.len() < MIN_SECRET_LEN {
+                return Err(Error::Auth(format!(
+                    "EASYCLEAN_SECRET is {} characters; it must be at least {MIN_SECRET_LEN}. \
+                     Generate one with: openssl rand -hex 32",
+                    supplied.len()
+                )));
+            }
+            self.secret = supplied;
             return Ok(SecretOrigin::Env);
         }
 
@@ -204,24 +230,53 @@ fn parse_origins(spec: &str) -> Vec<String> {
         .collect()
 }
 
+/// The only roles a seed may carry. Anything else in the role position is
+/// read as part of the passcode rather than quietly accepted.
+const ROLES: [&str; 2] = ["admin", "user"];
+
 /// Parse `user:pass[:role],user2:pass2` into seeds.
+///
+/// Split off the username, then look for a role only at the *end* — a passcode
+/// is the one field here that may legitimately contain a colon, and splitting
+/// on every colon mis-read it twice over. `lily:pa:ss` used to seed the passcode
+/// `pa` with the role `ss`: a shorter credential than the operator set, under a
+/// role that means nothing. `lily:a:b:c` matched no arm at all and the account
+/// was dropped without a word — and if that was the only entry, the server came
+/// up with no users whatsoever.
+///
+/// So: everything between the first colon and an optional trailing `:admin` /
+/// `:user` is the passcode, colons and all.
 fn parse_users(spec: &str) -> Vec<UserSeed> {
     spec.split(',')
+        .filter(|entry| !entry.trim().is_empty())
         .filter_map(|entry| {
-            let parts: Vec<&str> = entry.split(':').collect();
-            match parts.as_slice() {
-                [u, p] => Some(UserSeed {
-                    username: u.trim().to_string(),
-                    passcode: (*p).to_string(),
-                    role: "user".to_string(),
-                }),
-                [u, p, r] => Some(UserSeed {
-                    username: u.trim().to_string(),
-                    passcode: (*p).to_string(),
-                    role: r.trim().to_string(),
-                }),
-                _ => None,
+            let Some((username, rest)) = entry.split_once(':') else {
+                tracing::warn!(
+                    "EASYCLEAN_USERS entry {entry:?} has no passcode — expected user:passcode[:role]"
+                );
+                return None;
+            };
+            let username = username.trim().to_string();
+
+            let (passcode, role) = match rest.rsplit_once(':') {
+                Some((pass, maybe_role)) if ROLES.contains(&maybe_role.trim()) => {
+                    (pass.to_string(), maybe_role.trim().to_string())
+                }
+                // No trailing role, or a word that isn't one: the whole tail is
+                // the passcode. Better to treat an unknown role as part of the
+                // secret than to hand out a privilege nobody asked for.
+                _ => (rest.to_string(), "user".to_string()),
+            };
+
+            if username.is_empty() || passcode.is_empty() {
+                tracing::warn!("EASYCLEAN_USERS entry {entry:?} has an empty username or passcode");
+                return None;
             }
+            Some(UserSeed {
+                username,
+                passcode,
+                role,
+            })
         })
         .collect()
 }
@@ -259,15 +314,41 @@ mod tests {
         assert_eq!(a.secret, b.secret);
 
         // An explicit secret always wins.
+        let supplied = "s".repeat(MIN_SECRET_LEN);
         let mut c = Config {
             data_dir: dir.clone(),
-            secret: "from-env".into(),
+            secret: supplied.clone(),
             ..Config::default()
         };
         assert_eq!(c.resolve_secret().unwrap(), SecretOrigin::Env);
-        assert_eq!(c.secret, "from-env");
+        assert_eq!(c.secret, supplied);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_short_secret_is_refused() {
+        let dir = std::env::temp_dir().join(format!("ec-shortsecret-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut c = Config {
+            data_dir: dir.clone(),
+            secret: "too-short".into(),
+            ..Config::default()
+        };
+        // Must not fall through to generating one: silently replacing a weak
+        // key with a good one would log "generated" and leave the operator
+        // believing the value they set is in use.
+        assert!(c.resolve_secret().is_err());
+        assert!(!dir.join(SECRET_FILE).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn no_default_credential_is_shipped() {
+        assert!(
+            Config::default().users.is_empty(),
+            "a default passcode would be a published credential"
+        );
     }
 
     #[test]
@@ -292,8 +373,38 @@ mod tests {
         let u = parse_users("lily:pw1,zack:pw2:admin");
         assert_eq!(u.len(), 2);
         assert_eq!(u[0].username, "lily");
+        assert_eq!(u[0].passcode, "pw1");
         assert_eq!(u[0].role, "user");
         assert_eq!(u[1].username, "zack");
+        assert_eq!(u[1].passcode, "pw2");
         assert_eq!(u[1].role, "admin");
+    }
+
+    /// A passcode is the one field that may contain a colon, and both of these
+    /// used to go wrong quietly — the first by seeding `pa` instead of `pa:ss`,
+    /// the second by dropping the account and seeding nobody.
+    #[test]
+    fn a_colon_in_a_passcode_survives() {
+        let u = parse_users("lily:pa:ss");
+        assert_eq!(u.len(), 1);
+        assert_eq!(u[0].passcode, "pa:ss", "the passcode must not be truncated");
+        assert_eq!(u[0].role, "user", "`ss` is not a role");
+
+        let u = parse_users("lily:a:b:c");
+        assert_eq!(u.len(), 1, "the account must not vanish");
+        assert_eq!(u[0].passcode, "a:b:c");
+
+        // A real trailing role is still read as one.
+        let u = parse_users("zack:pa:ss:admin");
+        assert_eq!(u[0].passcode, "pa:ss");
+        assert_eq!(u[0].role, "admin");
+    }
+
+    #[test]
+    fn malformed_user_entries_are_dropped_not_guessed() {
+        assert!(parse_users("nopasscode").is_empty());
+        assert!(parse_users("lily:").is_empty());
+        assert!(parse_users(":pw").is_empty());
+        assert!(parse_users(" , ").is_empty());
     }
 }

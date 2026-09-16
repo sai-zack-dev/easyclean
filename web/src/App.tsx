@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useSession } from './store/session'
+import { ensureMediaToken, clearMediaToken } from './api/client'
 import { applyAccent } from './theme'
 import { onUpdateAvailable, applyUpdate } from './pwa'
 import { Sidebar, TabBar } from './components/Sidebar'
@@ -34,6 +35,8 @@ export function App() {
   /** A newer build is installed and waiting for a reload. */
   const [updateReady, setUpdateReady] = useState(false)
   const [serverReady, setServerReady] = useState(import.meta.env.DEV)
+  /** The session token we last minted a media token for. */
+  const [mediaFor, setMediaFor] = useState<string | null>(null)
   const tmr = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Stable identity on purpose: screens list `toast` in effect dependencies, so
@@ -74,12 +77,51 @@ export function App() {
       .catch(() => {})
   }, [backendUrl, serverReady])
 
+  // Mint the read-only token that image and stream URLs carry. Runs on login
+  // and on every launch with a stored session, because it is deliberately not
+  // persisted — a cheap request instead of a third credential on disk.
+  //
+  // Readiness is derived from *which* session we minted for rather than kept
+  // as its own flag, so logging out closes the gate by itself: `token` changes
+  // and `mediaFor` no longer matches, with no second state update to sequence.
+  useEffect(() => {
+    if (!token) {
+      // Goes with the session that minted it, including when a 401 logs us out
+      // from under the UI.
+      clearMediaToken()
+      return
+    }
+    let live = true
+    let retry: ReturnType<typeof setTimeout> | undefined
+    const attempt = () => {
+      void ensureMediaToken().then((ok) => {
+        if (!live) return
+        // Keep trying rather than settling into a permanently blank screen:
+        // the usual reason to land here is the server still coming back up.
+        if (ok) setMediaFor(token)
+        else retry = setTimeout(attempt, 2000)
+      })
+    }
+    attempt()
+    return () => {
+      live = false
+      if (retry) clearTimeout(retry)
+    }
+  }, [token])
+
   if (!serverReady) {
     return <ServerSetup onDone={() => setServerReady(true)} />
   }
 
   if (!token || !user) {
     return <LoginScreen onLogin={() => {}} />
+  }
+
+  if (mediaFor !== token) {
+    // Every image URL carries the media token, so the first paint has to wait
+    // for it — rendering a grid of URLs with an empty token would be a screen
+    // of broken thumbnails that only a reload fixes. It is one request.
+    return <div id="app" aria-busy="true" />
   }
 
   return (

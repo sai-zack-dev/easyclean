@@ -23,7 +23,7 @@ use easyclean_core::models::MediaFile;
 use easyclean_core::storage::UserRoot;
 use easyclean_core::{db, detect, embed, scan};
 
-use crate::auth::{AuthUser, VaultUser};
+use crate::auth::{AuthUser, MediaUser, VaultUser};
 use crate::error::ApiError;
 use crate::state::AppState;
 
@@ -40,6 +40,7 @@ pub fn router(state: AppState) -> Router {
         // auth
         .route("/api/auth/login", post(login))
         .route("/api/auth/me", get(me))
+        .route("/api/auth/media-token", post(media_token))
         // scan
         .route("/api/scan", post(scan_start))
         .route("/api/scan/status", get(scan_status_sse))
@@ -116,16 +117,57 @@ async fn static_cache_control(
 ) -> Response {
     let path = req.uri().path().to_string();
     let mut res = next.run(req).await;
+
+    // Security headers go on everything, API responses included — they cost
+    // nothing and the API is the half worth framing or sniffing.
+    let h = res.headers_mut();
+    // `frame-ancestors 'none'`: the destructive controls here are one tap and
+    // no confirmation beyond the app's own dialog, so a page that can frame
+    // this one can trick someone into emptying their trash for good.
+    // `X-Frame-Options` as well, for anything that predates CSP level 2.
+    h.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    h.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    // The token rides in query strings for `<img>` and `EventSource`, so a
+    // referrer would carry it to any host the page links out to.
+    h.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
+
     if path.starts_with("/api/") {
         return res;
     }
+
+    // CSP on the shell only. The session JWT lives in localStorage, which means
+    // any script that runs on this origin is a permanent account takeover
+    // rather than a session one — this is what keeps an injected <script> from
+    // having anywhere to load from. `img-src` allows blob: for the share sheet,
+    // which builds object URLs from fetched originals.
+    h.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(
+            "default-src 'self'; \
+             img-src 'self' blob: data:; \
+             media-src 'self' blob:; \
+             style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; \
+             font-src 'self' https://fonts.gstatic.com; \
+             connect-src 'self'; \
+             object-src 'none'; \
+             base-uri 'none'; \
+             form-action 'none'; \
+             frame-ancestors 'none'",
+        ),
+    );
+
     let policy = if path.starts_with("/assets/") {
         "public, max-age=31536000, immutable"
     } else {
         "no-cache"
     };
-    res.headers_mut()
-        .insert(header::CACHE_CONTROL, HeaderValue::from_static(policy));
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static(policy));
     res
 }
 
@@ -244,6 +286,25 @@ async fn me(user: AuthUser) -> Json<Value> {
     Json(json!({ "username": user.username, "role": user.role }))
 }
 
+/// How long a media token is good for. An hour: long enough to browse without
+/// the client thinking about it, short enough that one copied out of a log or a
+/// proxy is usually already dead.
+const MEDIA_TOKEN_MINUTES: i64 = 60;
+
+/// Trade the login for a read-only token that is safe to put in a URL.
+///
+/// Proved with the `Authorization` header — the login itself never travels in a
+/// query string — and what comes back can only read this user's thumbnails,
+/// previews, originals and scan progress.
+async fn media_token(State(st): State<AppState>, user: AuthUser) -> Result<Json<Value>, ApiError> {
+    let token = core_auth::make_media_token(&user.username, &st.cfg.secret, MEDIA_TOKEN_MINUTES)
+        .map_err(ApiError::internal)?;
+    Ok(Json(json!({
+        "media_token": token,
+        "expires_in": MEDIA_TOKEN_MINUTES * 60,
+    })))
+}
+
 // ── Scan + SSE ────────────────────────────────────────────────────────────
 
 async fn scan_start(State(st): State<AppState>, user: AuthUser) -> Json<Value> {
@@ -316,7 +377,7 @@ async fn run_scan(st: AppState, user: String) {
 /// authenticate with `new EventSource('/api/scan/status?token=<jwt>')`.
 async fn scan_status_sse(
     State(st): State<AppState>,
-    _user: AuthUser,
+    _user: MediaUser,
 ) -> Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>> {
     let s = stream::unfold((st, false), |(st, done)| async move {
         if done {
@@ -610,7 +671,7 @@ async fn favorite(
     user: AuthUser,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, ApiError> {
-    let _ = owned_media(&st, &user, id).await?;
+    let _ = owned_media(&st, &user.username, id).await?;
     let fav = db::toggle_favorite(&st.db, &user.username, id).await?;
 
     let name = categorize::album_name("favorites:favorites");
@@ -639,17 +700,17 @@ async fn media_albums(
     user: AuthUser,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, ApiError> {
-    let _ = owned_media(&st, &user, id).await?;
+    let _ = owned_media(&st, &user.username, id).await?;
     let albums = db::albums_for_file(&st.db, &user.username, id).await?;
     Ok(Json(json!({ "albums": albums })))
 }
 
 async fn thumb(
     State(st): State<AppState>,
-    user: AuthUser,
+    user: MediaUser,
     Path(id): Path<i64>,
 ) -> Result<Response, ApiError> {
-    let m = owned_media(&st, &user, id).await?;
+    let m = owned_media(&st, &user.username, id).await?;
     let tp = m
         .thumb_path
         .ok_or_else(|| ApiError::not_found("no thumbnail yet"))?;
@@ -666,10 +727,10 @@ async fn thumb(
 /// valid even after the file moves between `source`, `clean` and `.trash`.
 async fn preview(
     State(st): State<AppState>,
-    user: AuthUser,
+    user: MediaUser,
     Path(id): Path<i64>,
 ) -> Result<Response, ApiError> {
-    let m = owned_media(&st, &user, id).await?;
+    let m = owned_media(&st, &user.username, id).await?;
 
     // Video has no still to enlarge — its ffmpeg first-frame thumbnail is the
     // best preview available.
@@ -706,10 +767,10 @@ async fn preview(
 
 async fn raw(
     State(st): State<AppState>,
-    user: AuthUser,
+    user: MediaUser,
     Path(id): Path<i64>,
 ) -> Result<Response, ApiError> {
-    let m = owned_media(&st, &user, id).await?;
+    let m = owned_media(&st, &user.username, id).await?;
     let p = FsPath::new(&m.path);
     if !p.starts_with(&st.cfg.media_root) {
         return Err(ApiError(
@@ -734,7 +795,7 @@ async fn trash_one(
     user: AuthUser,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, ApiError> {
-    let m = owned_media(&st, &user, id).await?;
+    let m = owned_media(&st, &user.username, id).await?;
     if m.status == "trashed" {
         return Err(ApiError::bad("file is already in the trash"));
     }
@@ -846,7 +907,7 @@ async fn album_add(
     Json(b): Json<AlbumAddReq>,
 ) -> Result<Json<Value>, ApiError> {
     // Ownership check: never let one user file another's photo.
-    let _ = owned_media(&st, &user, b.file_id).await?;
+    let _ = owned_media(&st, &user.username, b.file_id).await?;
 
     let album_id = match (b.album_id, b.name.as_deref().map(str::trim)) {
         (Some(id), _) => {
@@ -1289,7 +1350,7 @@ async fn trash_restore(
     user: AuthUser,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, ApiError> {
-    let m = owned_media(&st, &user, id).await?;
+    let m = owned_media(&st, &user.username, id).await?;
     if m.status != "trashed" {
         return Err(ApiError::bad("file is not in trash"));
     }
@@ -1318,7 +1379,7 @@ async fn trash_purge_one(
     user: AuthUser,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, ApiError> {
-    let m = owned_media(&st, &user, id).await?;
+    let m = owned_media(&st, &user.username, id).await?;
     if m.status != "trashed" {
         return Err(ApiError::bad("file is not in trash"));
     }
@@ -1393,11 +1454,11 @@ fn now_secs() -> i64 {
         .unwrap_or(0)
 }
 
-async fn owned_media(st: &AppState, user: &AuthUser, id: i64) -> Result<MediaFile, ApiError> {
+async fn owned_media(st: &AppState, username: &str, id: i64) -> Result<MediaFile, ApiError> {
     let m = db::get_media(&st.db, id)
         .await?
         .ok_or_else(|| ApiError::not_found("media not found"))?;
-    if m.user != user.username {
+    if m.user != username {
         return Err(ApiError::not_found("media not found"));
     }
     // Hidden files are not reachable with an ordinary login, and every
@@ -1523,12 +1584,23 @@ async fn vault_set_pin(
         ));
     }
     if let Some(existing) = db::vault_pin_hash(&st.db, &user.username).await? {
+        // Same throttle as unlock, and for the same reason: `current_pin` is a
+        // second PIN oracle, so leaving it open would just move the guessing
+        // here.
+        let key = vault_attempt_key(&user.username);
+        if !st.rate_limiter.check(&key) {
+            return Err(ApiError(
+                StatusCode::TOO_MANY_REQUESTS,
+                "too many PIN attempts — try again later".into(),
+            ));
+        }
         let ok = req
             .current_pin
             .as_deref()
             .map(|c| easyclean_core::auth::verify_passcode(c, &existing))
             .unwrap_or(false);
         if !ok {
+            st.rate_limiter.record(&key);
             return Err(ApiError(StatusCode::UNAUTHORIZED, "wrong PIN".into()));
         }
     }
@@ -1542,16 +1614,36 @@ struct VaultUnlockReq {
     pin: String,
 }
 
+/// Throttle key for PIN guessing.
+///
+/// The account, not the IP. Login is throttled per-IP because the attacker
+/// there is anonymous; whoever is guessing a PIN has already signed in as this
+/// user, so they can move between addresses at will and the account name is the
+/// only thing that stays put. Four digits is 10,000 guesses — cheap to walk at
+/// full speed, and the vault's whole threat model is someone holding an
+/// unlocked phone.
+fn vault_attempt_key(username: &str) -> String {
+    format!("vault:{username}")
+}
+
 /// Trade the PIN for a short-lived token.
 async fn vault_unlock(
     State(st): State<AppState>,
     user: AuthUser,
     Json(req): Json<VaultUnlockReq>,
 ) -> Result<Json<Value>, ApiError> {
+    let key = vault_attempt_key(&user.username);
+    if !st.rate_limiter.check(&key) {
+        return Err(ApiError(
+            StatusCode::TOO_MANY_REQUESTS,
+            "too many PIN attempts — try again later".into(),
+        ));
+    }
     let hash = db::vault_pin_hash(&st.db, &user.username)
         .await?
         .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "no PIN set".into()))?;
     if !easyclean_core::auth::verify_passcode(&req.pin, &hash) {
+        st.rate_limiter.record(&key);
         return Err(ApiError(StatusCode::UNAUTHORIZED, "wrong PIN".into()));
     }
     let token =
@@ -1907,6 +1999,129 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .uri("/api/stats/summary")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// A login token must stop working the moment it is put in a URL.
+    ///
+    /// `<img src>` cannot send a header, so image routes accept a credential
+    /// from the query string — and that credential used to be the login itself,
+    /// good for a week and good for everything. Any access log, proxy, or tab
+    /// opened on such a URL then held the whole account. Now only the narrow,
+    /// hour-long media token is accepted there, and it can do nothing but read.
+    #[tokio::test]
+    async fn a_login_token_is_refused_from_the_query_string() {
+        let st = test_state().await;
+        let login = core_auth::make_token("saiz", "admin", &st.cfg.secret, 7).unwrap();
+        let media = core_auth::make_media_token("saiz", &st.cfg.secret, 60).unwrap();
+
+        let get = |st: AppState, uri: String| async move {
+            app(st)
+                .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap()
+                .status()
+        };
+
+        for path in [
+            "/api/media/1/thumb",
+            "/api/media/1/preview",
+            "/api/media/1/raw",
+        ] {
+            assert_eq!(
+                get(st.clone(), format!("{path}?token={login}")).await,
+                StatusCode::UNAUTHORIZED,
+                "{path} accepted a login token from the query string"
+            );
+        }
+
+        // The media token is what those URLs are supposed to carry. `thumb`
+        // 404s here because this fixture has no thumbnail on disk — the point
+        // is that it got *past* the extractor rather than being rejected.
+        let s = get(st.clone(), format!("/api/media/1/thumb?token={media}")).await;
+        assert_ne!(s, StatusCode::UNAUTHORIZED, "a media token was refused");
+
+        // And it buys nothing else: not the API, not a mutation, not the vault.
+        for (method, uri) in [
+            ("GET", "/api/auth/me"),
+            ("GET", "/api/stats/summary"),
+            ("GET", "/api/trash"),
+            ("GET", "/api/vault/files"),
+        ] {
+            let r = app(st.clone())
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(uri)
+                        .header("authorization", format!("Bearer {media}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                r.status(),
+                StatusCode::UNAUTHORIZED,
+                "{uri} accepted a media token as a login"
+            );
+        }
+
+        let r = app(st.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/media/swipe")
+                    .header("authorization", format!("Bearer {media}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"file_id":1,"action":"delete"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            r.status(),
+            StatusCode::UNAUTHORIZED,
+            "a media token could delete a photo"
+        );
+    }
+
+    /// Minting one needs the header, so the login never travels in a URL even
+    /// to ask for its replacement.
+    #[tokio::test]
+    async fn media_tokens_are_minted_from_a_header_login() {
+        let st = test_state().await;
+        let auth = bearer(&st);
+
+        let r = post_json(st.clone(), &auth, None, "/api/auth/media-token", "").await;
+        assert_eq!(r.status(), StatusCode::OK);
+        let j = body_json(r).await;
+        let minted = j["media_token"].as_str().unwrap().to_string();
+        assert!(j["expires_in"].as_i64().unwrap() > 0);
+
+        // It works where it is meant to...
+        let s = app(st.clone())
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/media/1/raw?token={minted}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status();
+        assert_ne!(s, StatusCode::UNAUTHORIZED);
+
+        // ...and asking for one is itself protected.
+        let r = app(st)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/media-token")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -2633,6 +2848,169 @@ mod tests {
         );
     }
 
+    /// A login alone must not be able to move a photo *out* of the vault.
+    ///
+    /// The listing queries were all careful to exclude hidden rows, but the two
+    /// status writes were not: `swipe` and `duplicates/resolve` take a file id
+    /// straight from the request body and never pass through `owned_media`, so
+    /// "undo" at a vaulted id used to set the row back to `pending` — and from
+    /// there `/raw` served the photo to someone who never entered the PIN. The
+    /// vault defends against exactly one person, somebody holding an unlocked
+    /// phone, and that was the person it let in.
+    #[tokio::test]
+    async fn a_login_cannot_swipe_a_photo_out_of_the_vault() {
+        let st = test_state().await;
+        let auth = bearer(&st);
+
+        let dir = st.cfg.media_root.join("saiz");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("x.jpg"), b"jpeg-bytes").unwrap();
+
+        // Hide it.
+        post_json(
+            st.clone(),
+            &auth,
+            None,
+            "/api/vault/pin",
+            r#"{"pin":"4821"}"#,
+        )
+        .await;
+        let r = post_json(
+            st.clone(),
+            &auth,
+            None,
+            "/api/vault/unlock",
+            r#"{"pin":"4821"}"#,
+        )
+        .await;
+        let vt = body_json(r).await["vault_token"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let r = post_json(
+            st.clone(),
+            &auth,
+            Some(&vt),
+            "/api/vault/add",
+            r#"{"ids":[1]}"#,
+        )
+        .await;
+        assert_eq!(
+            body_json(r).await["hidden"],
+            1,
+            "precondition: it is hidden"
+        );
+
+        // Every status write reachable with a login token only. None may land.
+        for (uri, body) in [
+            ("/api/media/swipe", r#"{"file_id":1,"action":"undo"}"#),
+            ("/api/media/swipe", r#"{"file_id":1,"action":"keep"}"#),
+            ("/api/media/swipe", r#"{"file_id":1,"action":"delete"}"#),
+            ("/api/media/duplicates/resolve", r#"{"undo":[1]}"#),
+            ("/api/media/duplicates/resolve", r#"{"keep":[1]}"#),
+            ("/api/media/duplicates/resolve", r#"{"delete":[1]}"#),
+        ] {
+            post_json(st.clone(), &auth, None, uri, body).await;
+
+            // Still hidden: absent from the library, and `/raw` still refuses.
+            let r = app(st.clone())
+                .oneshot(
+                    Request::builder()
+                        .uri("/api/media/batch?mode=library&size=50")
+                        .header("authorization", &auth)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                body_json(r).await["files"].as_array().unwrap().len(),
+                0,
+                "`{body}` to {uri} pulled the photo back into the library"
+            );
+
+            let r = app(st.clone())
+                .oneshot(
+                    Request::builder()
+                        .uri("/api/media/1/raw")
+                        .header("authorization", &auth)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                r.status(),
+                StatusCode::NOT_FOUND,
+                "`{body}` to {uri} made the hidden original readable"
+            );
+        }
+
+        // And the vault still holds it — nothing was quietly destroyed either.
+        let r = app(st.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/api/vault/files")
+                    .header("x-vault-token", &vt)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(body_json(r).await["total"], 1, "the vault lost the photo");
+    }
+
+    /// Guessing a 4-digit PIN is 10,000 tries; the throttle is what makes that
+    /// cost something. Both PIN entry points are covered, since `current_pin`
+    /// on the change-PIN route is the same oracle as unlock.
+    #[tokio::test]
+    async fn pin_guessing_is_throttled() {
+        let st = test_state().await;
+        let auth = bearer(&st);
+
+        post_json(
+            st.clone(),
+            &auth,
+            None,
+            "/api/vault/pin",
+            r#"{"pin":"4821"}"#,
+        )
+        .await;
+
+        let mut locked_out = false;
+        for _ in 0..12 {
+            let r = post_json(
+                st.clone(),
+                &auth,
+                None,
+                "/api/vault/unlock",
+                r#"{"pin":"0000"}"#,
+            )
+            .await;
+            if r.status() == StatusCode::TOO_MANY_REQUESTS {
+                locked_out = true;
+                break;
+            }
+            assert_eq!(r.status(), StatusCode::UNAUTHORIZED, "wrong PIN accepted");
+        }
+        assert!(locked_out, "unlimited PIN guesses allowed");
+
+        // The change-PIN route must not become the way around it.
+        let r = post_json(
+            st.clone(),
+            &auth,
+            None,
+            "/api/vault/pin",
+            r#"{"pin":"1111","current_pin":"0000"}"#,
+        )
+        .await;
+        assert_eq!(
+            r.status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "change-PIN is a second, unthrottled PIN oracle"
+        );
+    }
+
     /// The vault is worthless if the wrong PIN opens it, or if changing the PIN
     /// doesn't need the old one.
     #[tokio::test]
@@ -3139,6 +3517,66 @@ mod tests {
         assert_eq!(body_json(r).await["restored"], 2);
         let v = groups(st.clone(), auth.clone()).await;
         assert_eq!(v["total_groups"], 1, "undo restores the whole cluster");
+    }
+
+    /// The shell carries a CSP, and every response carries the frame/sniff
+    /// guards.
+    ///
+    /// The session JWT lives in `localStorage`, so any script that manages to
+    /// run on this origin owns the account outright rather than one session —
+    /// the CSP is what leaves it nowhere to load from. The frame guard matters
+    /// because emptying the trash is permanent and one tap away.
+    #[tokio::test]
+    async fn responses_carry_security_headers() {
+        let st = test_state().await;
+        let get = |st: AppState, uri: &'static str| async move {
+            app(st)
+                .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap()
+        };
+        let header_of = |r: &Response<Body>, h: header::HeaderName| {
+            r.headers()
+                .get(h)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_string()
+        };
+
+        // On the API too — it is the half worth framing or sniffing.
+        for uri in ["/sw.js", "/api/health"] {
+            let r = get(st.clone(), uri).await;
+            assert_eq!(header_of(&r, header::X_FRAME_OPTIONS), "DENY", "{uri}");
+            assert_eq!(
+                header_of(&r, header::X_CONTENT_TYPE_OPTIONS),
+                "nosniff",
+                "{uri}"
+            );
+            assert_eq!(
+                header_of(&r, header::REFERRER_POLICY),
+                "no-referrer",
+                "{uri} — the token rides in query strings, so a referrer leaks it"
+            );
+        }
+
+        let csp = header_of(
+            &get(st.clone(), "/sw.js").await,
+            header::CONTENT_SECURITY_POLICY,
+        );
+        assert!(csp.contains("frame-ancestors 'none'"), "csp: {csp}");
+        assert!(csp.contains("object-src 'none'"), "csp: {csp}");
+        assert!(csp.contains("base-uri 'none'"), "csp: {csp}");
+        assert!(
+            csp.contains("default-src 'self'"),
+            "csp must not be open by default: {csp}"
+        );
+        // Inter is pulled from Google Fonts by tokens.css; a CSP that forgets
+        // it silently drops the app's typography.
+        assert!(
+            csp.contains("https://fonts.googleapis.com")
+                && csp.contains("https://fonts.gstatic.com"),
+            "csp would block the webfont: {csp}"
+        );
     }
 
     /// The shell must be revalidated on every launch or an installed PWA keeps

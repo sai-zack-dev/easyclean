@@ -25,6 +25,10 @@ futures-util = { version = "0.3", default-features = false, features = ["std"] }
 ort = "2.0.0-rc.13"
 tokenizers = { version = "0.20", default-features = false, features = ["onig"] }
 ureq = "2"
+# Verifies the downloaded weights against pinned digests. An ONNX file is an
+# executable compute graph loaded straight into this process, so "whatever the
+# server sent" is not a safe answer to what we are about to run.
+sha2 = "0.10"
 # HEIC/HEIF decode. Off by default: it links the system `libheif` (>= 1.17),
 # which not every dev box has. The Docker image builds with it enabled.
 # `v1_17` (not the default `latest`) keeps us compatible with the libheif that

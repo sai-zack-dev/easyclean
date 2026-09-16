@@ -14,7 +14,13 @@
  *                          would show stale counts or leak one user's data)
  */
 
-const VERSION = 'v3'
+// Bumped to v4 to evict what v3 may already be holding: until the fetch
+// handler below put the API check ahead of the navigation branch, opening an
+// original in a new tab wrote the photo itself into the shell cache under
+// `/index.html`. Renaming the caches is what actually deletes those copies from
+// a browser that already has them — the `activate` handler drops every cache
+// whose name is not on the current VERSION.
+const VERSION = 'v4'
 const SHELL_CACHE = `easyclean-shell-${VERSION}`
 const ASSET_CACHE = `easyclean-assets-${VERSION}`
 const THUMB_CACHE = `easyclean-thumbs-${VERSION}`
@@ -134,18 +140,25 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(request.url)
   if (url.origin !== self.location.origin) return
 
-  if (request.mode === 'navigate') {
-    event.respondWith(navigationHandler(request))
-    return
-  }
-
+  // The API is decided BEFORE the navigation branch, and the order is the
+  // whole point. Opening an original in a new tab — Share, and the vault's own
+  // "open" — is a top-level navigation to `/api/**/raw`, so with the navigate
+  // check first those bytes reached `navigationHandler`, which stores whatever
+  // it fetched under the fixed key `/index.html`. A full-resolution photo, the
+  // vault's included, ended up in Cache Storage readable with no token at all
+  // — the one copy the server takes care to delete everywhere else.
   if (/^\/api\/media\/\d+\/thumb$/.test(url.pathname)) {
     event.respondWith(cacheFirst(request, THUMB_CACHE, THUMB_LIMIT, thumbCacheKey(url)))
     return
   }
 
-  // Auth, stats, batches, raw originals: always live.
+  // Auth, stats, batches, raw originals: always live, never cached.
   if (url.pathname.startsWith('/api/')) return
+
+  if (request.mode === 'navigate') {
+    event.respondWith(navigationHandler(request))
+    return
+  }
 
   if (url.pathname.startsWith('/assets/')) {
     event.respondWith(cacheFirst(request, ASSET_CACHE))
@@ -158,6 +171,40 @@ self.addEventListener('fetch', (event) => {
  * The page posts this when the user taps Update; the worker activates, claims
  * the open clients, and the page reloads on `controllerchange`.
  */
+/**
+ * Forget the cached thumbnails for these ids.
+ *
+ * A cached thumbnail is a readable copy of the photo, and it is keyed on the
+ * path alone (see `thumbCacheKey`) — deliberately, so a new token still hits,
+ * but it also means the entry outlives the session that fetched it. The case
+ * that matters is a photo moved into the vault: the server drops its preview,
+ * moves its thumbnail into `.vault/.thumbs/` and deletes its embedding, and
+ * none of that reaches a copy already sitting in this browser. So the page
+ * tells us, and we delete it here.
+ */
+async function evictThumbs(ids) {
+  const cache = await caches.open(THUMB_CACHE)
+  await Promise.all(
+    ids.map((id) => cache.delete(new Request(`${self.location.origin}/api/media/${id}/thumb`))),
+  )
+}
+
 self.addEventListener('message', (event) => {
-  if (event.data === 'skip-waiting') self.skipWaiting()
+  const msg = event.data
+  if (msg === 'skip-waiting') {
+    self.skipWaiting()
+    return
+  }
+  if (!msg || typeof msg !== 'object') return
+
+  if (msg.type === 'evict-thumbs' && Array.isArray(msg.ids)) {
+    event.waitUntil(evictThumbs(msg.ids.filter((id) => Number.isInteger(id))))
+    return
+  }
+  // Logging out leaves the shell and the hashed assets alone — they are the
+  // same for everyone and dropping them would cost an offline launch. The
+  // thumbnails are the only cache holding anything of the user's.
+  if (msg.type === 'drop-thumbs') {
+    event.waitUntil(caches.delete(THUMB_CACHE))
+  }
 })

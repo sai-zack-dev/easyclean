@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { IC } from '../icons'
 import { api, ApiError, setVaultToken, type MediaFile } from '../api/client'
 import { ConfirmDialog } from '../components/ConfirmDialog'
+import { evictCachedThumbs } from '../pwa'
 
 interface Props {
   onClose: () => void
@@ -64,6 +65,29 @@ export function VaultScreen({ onClose, toast }: Props) {
     () => (picked ? files.filter((f) => picked.has(f.id)) : []),
     [picked, files],
   )
+
+  /**
+   * Show one hidden photo full size.
+   *
+   * Fetched, then opened as a blob. Navigating to the API URL would have put
+   * the vault token in the address bar and left it in history — a trail
+   * leading back to the vault, on the screen that exists so there is no trail.
+   */
+  const openHidden = async (id: number) => {
+    try {
+      const blob = await api.vault.rawBlob(id)
+      const url = URL.createObjectURL(blob)
+      const w = window.open(url, '_blank', 'noopener')
+      if (!w) {
+        URL.revokeObjectURL(url)
+        toast('Your browser blocked the new tab')
+        return
+      }
+      window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
+    } catch {
+      toast('The vault locked itself — enter your PIN again')
+    }
+  }
 
   const restore = () => {
     if (chosen.length === 0) return
@@ -163,7 +187,7 @@ export function VaultScreen({ onClose, toast }: Props) {
                 className={`g-cell g-pick ${on ? 'on' : ''}`}
                 onClick={() => {
                   if (!picked) {
-                    window.open(api.vault.rawUrl(f.id), '_blank', 'noopener')
+                    void openHidden(f.id)
                     return
                   }
                   const next = new Set(picked)
@@ -428,10 +452,18 @@ function AddSheet({
 
   const hide = () => {
     if (picked.size === 0) return
+    const ids = [...picked]
     setBusy(true)
     api.vault
-      .add([...picked])
-      .then((r) => onDone(r.hidden))
+      .add(ids)
+      .then((r) => {
+        // The server drops every derived copy it owns; this is the one it
+        // cannot reach. A thumbnail cached while the photo was still ordinary
+        // is keyed on its path, so it would keep being served from this
+        // browser — hidden everywhere except the device it was hidden on.
+        evictCachedThumbs(ids)
+        onDone(r.hidden)
+      })
       .catch(() => toast('Could not hide those'))
       .finally(() => setBusy(false))
   }
