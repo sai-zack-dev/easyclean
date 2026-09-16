@@ -8,6 +8,103 @@ All notable changes to EasyClean are documented here. The format follows
 
 Nothing yet.
 
+## [0.4.0] — 2026-09-16
+
+A security release, from an audit of the whole system: every route, the path and SQL layers, the
+token design, the service worker, the model download, the image and the CI/CD pipeline.
+
+Minor rather than patch, because two of the fixes change how an existing install starts. **A server
+with no `EASYCLEAN_PASSCODE` set, or an `EASYCLEAN_SECRET` shorter than 32 characters, now refuses
+to boot** — see Notes before upgrading. Nothing in the database changes and there is no migration.
+
+Much of what the audit looked at held up and is unchanged: `UserRoot::safe_join` correctly refuses
+absolute paths and `..`, every one of the 65 SQL statements binds its parameters, passcodes and PINs
+are bcrypt, HS256 is pinned on verification, the image runs as a non-root user with no secrets in
+any layer, and `ci.yml` runs fork pull requests on GitHub's runners rather than the self-hosted one.
+
+### Security
+- **A login could take a photo back out of the vault.** Every per-file route reaches its row through
+  `owned_media`, which refuses a hidden one — but `swipe` and `duplicates/resolve` take a file id
+  straight from the request body and wrote status without it. `{"file_id":N,"action":"undo"}` moved a
+  vaulted row back to `pending`, and `/raw` then served the photo to someone who never entered the
+  PIN. Both statements now carry the `AND status <> 'vault'` guard that `vault_add` and
+  `vault_restore` already spelled out. The vault defends against exactly one person — somebody
+  holding an unlocked phone — and that was the person it let in.
+- **No default passcode, anywhere.** `easyclean` was the fallback in `Config::default`, in
+  `from_env` and in `docker-compose.yml`, which made it a credential published in this repository and
+  reachable by anyone on the network. It is gone, and the server refuses to create a first account
+  without an explicit one rather than inventing a weak one.
+- **Changing the passcode works.** Accounts were seeded only when the `user` table was empty, so
+  editing `EASYCLEAN_PASSCODE` afterwards silently did nothing while the operator believed they had
+  rotated it. The environment is now re-applied on every boot; nothing else writes that table.
+- **The service worker cached full-resolution originals as the app shell.** The navigation branch was
+  tested before the `/api/` network-only guard, so opening a photo in a new tab — Share, and the
+  vault's own open — routed those bytes through the handler that stores whatever it fetched under the
+  fixed key `/index.html`. A vault photo, the one copy the server takes care to delete everywhere
+  else, ended up in Cache Storage readable with no token. The API is now decided first, and the cache
+  names are bumped to `v4` so a browser holding one drops it on activation.
+- **PIN guessing is throttled**, on unlock and on the change-PIN route's `current_pin`, which was the
+  same oracle. Four digits is 10,000 tries; the throttle is what makes that cost something. Keyed on
+  the account rather than the IP, because whoever is guessing has already signed in as that user.
+- **The login token is refused from a query string.** `<img src>` and `EventSource` cannot set a
+  header, so those requests carry their credential in the URL — where it reaches access logs and, if
+  ever navigated to, the address bar and history. That credential used to be the login itself: good
+  for a week, good for everything. `AuthUser` is now header-only, and a new `MediaUser` extractor
+  accepts only a **media token** from the query — read-only, an hour, and rejected everywhere else.
+- **Opening an original no longer navigates to an API URL.** Share and the vault fetch the bytes and
+  open a `blob:` URL instead, so no token reaches the address bar or history. The vault's fetch sends
+  its token as a header, so `vault_token` appears in no URL at all.
+- **The CLIP weights are pinned and verified.** They were fetched from `resolve/main` — whatever the
+  repository owner last pushed — with no integrity check, and an `.onnx` is a compute graph handed
+  straight to ONNX Runtime in this process. The download is now pinned to an upstream commit, each
+  file is checked against its SHA-256 while it streams, and a file that does not match is deleted
+  before it can be renamed into place. Files already on disk are re-hashed rather than trusted.
+- **A Content-Security-Policy on the shell**, plus `X-Frame-Options`, `X-Content-Type-Options` and
+  `Referrer-Policy: no-referrer` on every response including the API. The session token lives in
+  `localStorage`, so any script that runs on this origin owns the account rather than the session.
+- **`EASYCLEAN_SECRET` must be at least 32 characters.** HS256 accepts a one-character key, and a
+  short one is recoverable offline from any token its holder already has.
+- **Cached thumbnails are dropped when a photo is vaulted, and on logout.** They are keyed on the
+  path with the token stripped, so a thumbnail cached while a photo was ordinary outlived both the
+  session that fetched it and the photo being hidden.
+- **`EASYCLEAN_USERS` no longer mangles a passcode containing a colon.** `lily:pa:ss` seeded the
+  passcode `pa` under the meaningless role `ss` — a shorter credential than the operator set — and
+  `lily:a:b:c` matched no arm at all and dropped the account without a word, which for a single-entry
+  spec meant a server with no users.
+- **Every third-party GitHub Action is pinned to a commit SHA.** `@v4` is a pointer its owner can
+  repoint, `dtolnay/rust-toolchain@stable` was a branch, and `deploy.yml`'s runner is the home server.
+- **The deploy step no longer splices the image tag into a shell string.** `$TAG` was interpolated
+  into the `sh -c` script that backs up the index, so a tag containing `$(…)` executed inside a
+  container with the data volume mounted. It is passed as an environment variable now.
+- **The server address is validated before anything is sent to it.** It is where the passcode goes,
+  and any string that parsed was accepted: `http://real.local@evil.example` reads as one host and
+  resolves to another. Non-`http(s)` schemes, embedded credentials and trailing paths are refused,
+  and a value already stored by an older build is re-checked on load.
+
+### Added
+- `POST /api/auth/media-token` — trades a header-authenticated login for a one-hour, read-only token
+  for the routes that cannot send a header. It reads thumbnails, previews, originals and scan
+  progress, and is rejected as a login everywhere else.
+
+### Changed
+- `EASYCLEAN_PASSCODE` is **required**, and is re-applied on every boot.
+- `EASYCLEAN_SECRET`, when set, must be at least 32 characters.
+- `deploy/install.sh` stops rather than warns when the passcode is still the published placeholder.
+  The warning scrolled past on a screen that then printed a working URL, so the install looked done.
+
+### Notes
+- **Before upgrading**, make sure `/opt/easyclean/.env` has a non-empty `EASYCLEAN_PASSCODE`, and
+  that `EASYCLEAN_SECRET` is either empty (the server generates and persists one) or at least 32
+  characters — `openssl rand -hex 32`. A server that fails these refuses to start, and the rollout
+  health check will roll it back.
+- **An installed PWA shows broken thumbnails until it picks up this build**, because the old bundle
+  puts the login token in image URLs and the server now refuses that. The shell is `no-cache` and the
+  worker is network-first, so this resolves on the next launch rather than needing a reinstall.
+- **The CLIP weights are re-checked once.** An install that already downloaded them has no
+  verification marker, so they are re-hashed on first use; matching files are kept, and only
+  mismatched ones are fetched again. Those bytes were never verified, which is the point.
+- 12 regression tests were added, covering each of the fixes above that has a reachable attack path.
+
 ## [0.3.0] — 2026-09-16
 
 A vault for photos nobody else should see, search that says what it found, and one header
