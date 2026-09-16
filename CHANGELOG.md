@@ -6,6 +6,18 @@ All notable changes to EasyClean are documented here. The format follows
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.3.0] — 2026-09-16
+
+A vault for photos nobody else should see, search that says what it found, and one header
+shared by every screen you can navigate into.
+
+Minor rather than patch: the vault is a genuine feature with its own auth boundary, and
+`media_file.status` gains a value that existing installs have never seen. Every new endpoint is
+additive, none that existed changed shape, and `0006` only adds two nullable columns and one
+table.
+
 ### Added
 - **A hidden vault.** Three fast taps on the profile chip in Setting opens it; nothing else in the
   app refers to it. Photos moved in leave the Gallery, albums, search, the stats and the timeline,
