@@ -14,9 +14,11 @@ services:
       - ${MEDIA_ROOT}:/media
       - ./data:/data
     environment:
-      # Auth — CHANGE THESE before exposing on any shared network.
+      # Auth. Required — there is no default passcode, and the server refuses
+      # to create a first account without one. Anyone on the network can reach
+      # this port, so a built-in value would be a credential they already know.
       EASYCLEAN_USER: ${EASYCLEAN_USER:-admin}
-      EASYCLEAN_PASSCODE: ${EASYCLEAN_PASSCODE:-easyclean}
+      EASYCLEAN_PASSCODE: ${EASYCLEAN_PASSCODE:?set EASYCLEAN_PASSCODE in .env}
       # JWT signing secret. Optional: leave it empty and the server generates
       # one into /data/secret.key on first boot (persisted across restarts).
       # Set it explicitly to manage rotation yourself: openssl rand -hex 32

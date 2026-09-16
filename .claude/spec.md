@@ -73,7 +73,10 @@ The media root is mounted read-write. SQLite (in the app data dir) holds metadat
   **No vector database.** An exact scan of 100K vectors takes ~15ms — less than the ~23ms the text
   encoder spends on the query — so an ANN index would add a dependency to optimise the cheap half.
   Weights (~149MB) download on first use into `<data_dir>/models/`, so the image stays lean and the
-  Docker build stays offline; `EASYCLEAN_CLIP_BASE_URL` points it at a mirror.
+  Docker build stays offline; `EASYCLEAN_CLIP_BASE_URL` points it at a mirror. The download is
+  **pinned to an upstream commit and verified against per-file SHA-256** before anything is loaded —
+  an `.onnx` is a compute graph handed to ONNX Runtime in-process, so a mirror must serve the exact
+  bytes, not merely something that loads. A `.verified` marker records the revision that was checked.
 
   **Ranking cut-off is relative, not absolute.** CLIP similarities bunch in 0.15-0.30 regardless of
   the query, so results are kept by z-score against the library's own distribution for that query.
@@ -84,6 +87,7 @@ The media root is mounted read-write. SQLite (in the app data dir) holds metadat
 
 ```
 POST /api/auth/login   {user, passcode} -> {token}      GET /api/auth/me
+POST /api/auth/media-token -> {media_token, expires_in}  # read-only, 1h, for URL-borne auth
 POST /api/scan         (async)                           GET /api/scan/status   (SSE)
 GET  /api/media/batch?mode=timeline|blurs|duplicates|library|original|cleaned
                        &month=&size=&page=&q=&type=  # page 1-based; q/type filter in SQL

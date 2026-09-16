@@ -28,15 +28,43 @@ pub fn verify_passcode(plain: &str, hash: &str) -> bool {
 /// library, and a login token must not open the vault.
 pub const VAULT_ROLE: &str = "vault";
 
+/// The `role` a media token carries.
+///
+/// `<img src>` and `EventSource` cannot set an `Authorization` header, so those
+/// requests have to carry their credential in the query string — where it ends
+/// up in access logs and, if the URL is ever navigated to, in history. Sending
+/// the *login* token there meant a leak from any of those places was the whole
+/// account: delete everything, read `/auth/me`, stay valid for a week.
+///
+/// A media token is the same signature over a much smaller promise. It reads
+/// thumbnails, previews, originals and scan progress, for an hour, and the
+/// extractors reject it everywhere else — so what leaks is a view of your own
+/// photos rather than control of them.
+pub const MEDIA_ROLE: &str = "media";
+
+/// Mint a short-lived token for the read-only routes that cannot send a header.
+pub fn make_media_token(username: &str, secret: &str, minutes: i64) -> Result<String> {
+    make_scoped_token(username, MEDIA_ROLE, secret, minutes)
+}
+
 /// Mint a short-lived token proving the vault PIN was entered.
 ///
 /// Minutes rather than days: this is the window in which hidden photos are
 /// reachable, and it should close by itself when the phone is put down.
 pub fn make_vault_token(username: &str, secret: &str, minutes: i64) -> Result<String> {
+    make_scoped_token(username, VAULT_ROLE, secret, minutes)
+}
+
+/// Mint a minutes-lived token carrying one of the narrow roles above.
+///
+/// Shared by the vault and media tokens so the two cannot drift apart in
+/// lifetime handling or claim shape — the only difference between them should
+/// be the role, which is what the extractors check.
+fn make_scoped_token(username: &str, role: &str, secret: &str, minutes: i64) -> Result<String> {
     let exp = (chrono::Utc::now().timestamp() + minutes * 60).max(0) as usize;
     let claims = Claims {
         sub: username.to_string(),
-        role: VAULT_ROLE.to_string(),
+        role: role.to_string(),
         exp,
     };
     encode(

@@ -3,6 +3,13 @@ name: ci
 # Every push and PR: the whole quality gate from CLAUDE.md — fmt, clippy,
 # tests, web lint/build, and a real Docker build so packaging breakage shows up
 # here rather than on the home server.
+#
+# Third-party actions are pinned to a commit SHA, not a tag. `@v4` is a moving
+# pointer the action's owner can repoint at any time, and these run with a token
+# and the repository checked out — deploy.yml's runner is the home server
+# itself. The trailing comment is the human-readable version; when bumping one,
+# resolve the new tag to its SHA and change both. Renovate/Dependabot understand
+# this format and will keep it up to date if either is ever enabled.
 on:
   push:
     branches: [main]
@@ -27,13 +34,13 @@ jobs:
     # would break this job for a reason that has nothing to do with the code.
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch
         with:
           components: rustfmt, clippy
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           shared-key: server
 
@@ -60,9 +67,9 @@ jobs:
     name: web — lint · typecheck · build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: npm
@@ -91,11 +98,11 @@ jobs:
     name: docker — build image
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       - name: Build (no push)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           platforms: linux/amd64
@@ -110,7 +117,7 @@ jobs:
         run: |
           docker run -d --name ec -p 8080:8080 \
             -e EASYCLEAN_USER=ci -e EASYCLEAN_PASSCODE=ci-passcode \
-            -e EASYCLEAN_SECRET=ci-secret-not-used-in-prod \
+            -e EASYCLEAN_SECRET=ci-secret-not-used-in-prod-padded-to-the-32-char-minimum \
             easyclean:ci
 
           for i in $(seq 1 30); do

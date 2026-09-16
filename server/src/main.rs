@@ -43,14 +43,41 @@ async fn main() -> anyhow::Result<()> {
 
     let db = easyclean_core::db::init(&cfg.db_path()).await?;
 
-    // Seed users on first run.
-    if easyclean_core::db::count_users(&db).await? == 0 {
+    // Accounts come from the environment on *every* boot, not just the first.
+    //
+    // Seeding only when the table was empty meant the passcode was whatever the
+    // very first boot happened to use, permanently: editing EASYCLEAN_PASSCODE
+    // afterwards changed nothing, silently, while the operator believed they
+    // had rotated it. Nothing else writes `user` — the app has no
+    // change-passcode screen — so the env var is the single source of truth and
+    // re-applying it is what makes editing it mean something.
+    let existing = easyclean_core::db::count_users(&db).await?;
+    if cfg.users.is_empty() {
+        if existing == 0 {
+            anyhow::bail!(
+                "no account to create: set EASYCLEAN_PASSCODE (or EASYCLEAN_USERS) and start \
+                 again.\nThere is deliberately no default passcode — this server binds every \
+                 interface, so a built-in one would be a credential anybody on the network \
+                 already knows."
+            );
+        }
+        tracing::info!("no EASYCLEAN_PASSCODE/EASYCLEAN_USERS set — keeping the {existing} existing account(s)");
+    } else {
         for u in &cfg.users {
             let hash = easyclean_core::auth::hash_passcode(&u.passcode)?;
             easyclean_core::db::upsert_user(&db, &u.username, &hash, &u.role).await?;
         }
         let names: Vec<&String> = cfg.users.iter().map(|u| &u.username).collect();
-        tracing::info!("seeded {} user(s): {:?}", cfg.users.len(), names);
+        let verb = if existing == 0 {
+            "seeded"
+        } else {
+            "reconciled"
+        };
+        tracing::info!(
+            "{verb} {} account(s) from the environment: {:?}",
+            cfg.users.len(),
+            names
+        );
     }
 
     let port = cfg.port;

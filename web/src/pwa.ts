@@ -98,6 +98,28 @@ function watch(reg: ServiceWorkerRegistration) {
   })
 }
 
+/**
+ * Ask the worker to forget cached copies of these photos.
+ *
+ * Call it whenever a photo stops being freely readable — moving one into the
+ * vault is the case that matters. The server is thorough about deleting its own
+ * derived copies, but a thumbnail already in this browser's Cache Storage is
+ * out of its reach and keyed on the path alone, so it would go on being served
+ * with no token at all.
+ *
+ * Silent when there is no worker (dev, plain-HTTP LAN): nothing was cached
+ * there either, so there is nothing to forget.
+ */
+export function evictCachedThumbs(ids: number[]) {
+  if (!ids.length) return
+  navigator.serviceWorker?.controller?.postMessage({ type: 'evict-thumbs', ids })
+}
+
+/** Drop every cached thumbnail — on logout, when the session that fetched them ends. */
+export function dropCachedThumbs() {
+  navigator.serviceWorker?.controller?.postMessage({ type: 'drop-thumbs' })
+}
+
 export function registerServiceWorker() {
   if (!import.meta.env.PROD) return
   if (!('serviceWorker' in navigator)) return
