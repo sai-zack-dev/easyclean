@@ -667,7 +667,7 @@ export function PhotoViewer({
               onClick={() => (panel === 'album' ? closePanel() : openAlbums())}
               disabled={busy}
             >
-              <IC.album /><span>Album</span>
+              <IC.plus /><span>Album</span>
             </button>
             <button className="viewer-act danger" onClick={() => setConfirm('trash')} disabled={busy}>
               <IC.trash /><span>Delete</span>

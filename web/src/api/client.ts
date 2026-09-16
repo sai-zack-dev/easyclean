@@ -73,6 +73,13 @@ export interface SearchResult {
   name_matches: SearchHit[]
   /** Ranked by what the photo looks like. Empty until an index exists. */
   semantic_matches: SearchHit[]
+  /**
+   * How many photos cleared the relevance filter, before the server's cap.
+   * Larger than `semantic_matches.length` only when a query matched more than
+   * one page's worth, which is how the header can say "300 of 1,240" instead
+   * of implying the cap is the whole answer.
+   */
+  semantic_total?: number
   /** False when no index has been built, so the UI can offer to build one. */
   semantic_available: boolean
   /** False when nothing stood out — results are guesses, and labelled as such. */
@@ -174,6 +181,42 @@ async function errorMessage(res: Response): Promise<string> {
   }
 }
 
+/**
+ * The live vault token.
+ *
+ * Module state, never localStorage. A token written to disk would outlive the
+ * app being closed, which is the one thing a 15-minute unlock exists to
+ * prevent — losing it on reload is the feature, not a bug.
+ */
+let vaultToken: string | null = null
+
+export function setVaultToken(t: string | null) {
+  vaultToken = t
+}
+
+export function hasVaultToken() {
+  return vaultToken !== null
+}
+
+/**
+ * A vault call.
+ *
+ * Deliberately not `request`: that reads every 401 as an expired session and
+ * logs you out, and a mistyped PIN answers 401. Being thrown back to the login
+ * screen for a typo would be absurd.
+ */
+async function vaultRequest<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const h = getHeaders()
+  if (vaultToken) h['X-Vault-Token'] = vaultToken
+  const res = await fetch(`${getBase()}${path}`, {
+    method,
+    headers: h,
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  })
+  if (!res.ok) throw new ApiError(res.status, await errorMessage(res))
+  return res.json() as Promise<T>
+}
+
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const base = getBase()
   const res = await fetch(`${base}${path}`, {
@@ -204,6 +247,34 @@ export const api = {
     ),
 
   me: () => request<{ username: string; role: string }>('GET', '/api/auth/me'),
+
+  /**
+   * The hidden vault. Reached by tapping the Settings profile chip three
+   * times; nothing else in the UI refers to it.
+   *
+   * Image URLs carry the token in the query string for the same reason the
+   * ordinary ones do — `<img src>` cannot set a header.
+   */
+  vault: {
+    status: () => vaultRequest<{ configured: boolean }>('GET', '/api/vault/status'),
+    setPin: (pin: string, current_pin?: string) =>
+      vaultRequest<{ configured: boolean }>('POST', '/api/vault/pin', { pin, current_pin }),
+    unlock: (pin: string) =>
+      vaultRequest<{ vault_token: string; expires_in: number }>('POST', '/api/vault/unlock', {
+        pin,
+      }),
+    files: () => vaultRequest<{ files: MediaFile[]; total: number }>('GET', '/api/vault/files'),
+    add: (ids: number[]) => vaultRequest<{ hidden: number }>('POST', '/api/vault/add', { ids }),
+    restore: (ids: number[]) =>
+      vaultRequest<{ restored: number }>('POST', '/api/vault/restore', { ids }),
+    /** Permanent — hidden files cannot go to the trash, which needs no PIN. */
+    remove: (ids: number[]) =>
+      vaultRequest<{ purged: number }>('POST', '/api/vault/delete', { ids }),
+    thumbUrl: (id: number) =>
+      `${getBase()}/api/vault/${id}/thumb?vault_token=${encodeURIComponent(vaultToken ?? '')}`,
+    rawUrl: (id: number) =>
+      `${getBase()}/api/vault/${id}/raw?vault_token=${encodeURIComponent(vaultToken ?? '')}`,
+  },
 
   /** Liveness plus the build the server is running — Setting compares it with ours. */
   health: () => request<{ status: string; version?: string }>('GET', '/api/health'),

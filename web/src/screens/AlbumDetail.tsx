@@ -40,18 +40,21 @@ export function AlbumDetail({ album, onClose }: Props) {
 
   return (
     <div className="screen" ref={screenRef} onScroll={onScroll}>
-      <div className="page-header">
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <button className="back-btn" onClick={onClose} aria-label="Back to albums">
-            <IC.chevLeft />
-          </button>
-          <div>
-            <div className="page-title">{album.name}</div>
-            <div className="page-subtitle">
-              {album.file_count} {album.file_count === 1 ? 'item' : 'items'}
-            </div>
+      {/* The sub-screen header, not a tab header: you got here from somewhere
+          and the way back belongs on the left, with the album's name centred
+          between it and whatever sits opposite — the same shape as Duplicates,
+          the swipe decks and the vault. */}
+      <div className="swipe-header">
+        <button className="back-btn" onClick={onClose} aria-label="Back to albums">
+          <IC.chevLeft />
+        </button>
+        <div className="swipe-title-wrap">
+          <div className="swipe-title">{album.name}</div>
+          <div className="swipe-sub">
+            {album.file_count} {album.file_count === 1 ? 'item' : 'items'}
           </div>
         </div>
+        <span aria-hidden="true" />
       </div>
 
       {files.length === 0 && !loading ? (

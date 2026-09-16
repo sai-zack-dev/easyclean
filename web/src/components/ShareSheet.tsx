@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { useScrollLock } from '../hooks/useScrollLock'
 import { IC } from '../icons'
 import { api, type MediaFile } from '../api/client'
 
@@ -40,6 +41,7 @@ interface Props {
 export function ShareSheet({ files, onClose, toast }: Props) {
   const [busy, setBusy] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
+  useScrollLock()
   const drag = useRef({ y: 0, dragging: false })
   const one = files.length === 1 ? files[0] : null
 

@@ -45,6 +45,11 @@ pub fn to_trash(root: &UserRoot, src: &Path) -> Result<PathBuf> {
     move_into(src, &root.trash())
 }
 
+/// Move a file into the user's `.vault/` (hidden, PIN-gated).
+pub fn to_vault(root: &UserRoot, src: &Path) -> Result<PathBuf> {
+    move_into(src, &root.vault())
+}
+
 /// Restore a trashed file back into `dest_dir`.
 pub fn restore(src: &Path, dest_dir: &Path) -> Result<PathBuf> {
     move_into(src, dest_dir)

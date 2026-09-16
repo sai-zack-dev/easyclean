@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { useScrollLock } from '../hooks/useScrollLock'
 
 interface Props {
   /** Short and specific — "Delete forever?", not "Are you sure?". */
@@ -44,6 +45,7 @@ export function ConfirmDialog({
   onCancel,
 }: Props) {
   const cancelRef = useRef<HTMLButtonElement>(null)
+  useScrollLock()
 
   useEffect(() => {
     cancelRef.current?.focus()
