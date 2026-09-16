@@ -363,6 +363,14 @@ pub async fn list_status(pool: &Db, user: &str, status: &str) -> Result<Vec<Medi
 }
 
 /// Update a file's review status (scoped to the owning user).
+///
+/// `status <> 'vault'` is the guard that keeps the vault shut. Every other
+/// per-file route reaches its row through `owned_media`, which refuses a hidden
+/// one — but the swipe deck and the duplicate resolver take a caller-supplied
+/// id straight to this statement. Without the guard, an ordinary login could
+/// swipe "undo" at a vaulted id, move the row back to `pending`, and then read
+/// the photo through `/raw` without ever entering the PIN. `vault_add` and
+/// `vault_restore` already spell out the same condition; this is the third.
 pub async fn set_status(
     pool: &Db,
     user: &str,
@@ -370,13 +378,16 @@ pub async fn set_status(
     status: &str,
     trashed_at: Option<i64>,
 ) -> Result<()> {
-    sqlx::query("UPDATE media_file SET status = ?, trashed_at = ? WHERE id = ? AND user = ?")
-        .bind(status)
-        .bind(trashed_at)
-        .bind(id)
-        .bind(user)
-        .execute(pool)
-        .await?;
+    sqlx::query(
+        "UPDATE media_file SET status = ?, trashed_at = ? \
+           WHERE id = ? AND user = ? AND status <> 'vault'",
+    )
+    .bind(status)
+    .bind(trashed_at)
+    .bind(id)
+    .bind(user)
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
@@ -396,8 +407,12 @@ pub async fn set_status_many(
         return Ok(0);
     }
     let holes = vec!["?"; ids.len()].join(",");
+    // `status <> 'vault'` for the same reason as [`set_status`]: the duplicate
+    // resolver takes a list of ids from the request body, so a hidden file must
+    // not be reachable by naming its id in that list.
     let sql = format!(
-        "UPDATE media_file SET status = ?, trashed_at = ? WHERE user = ? AND id IN ({holes})"
+        "UPDATE media_file SET status = ?, trashed_at = ? \
+           WHERE user = ? AND status <> 'vault' AND id IN ({holes})"
     );
     let mut q = sqlx::query(&sql).bind(status).bind(trashed_at).bind(user);
     for id in ids {

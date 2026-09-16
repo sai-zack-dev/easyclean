@@ -142,8 +142,70 @@ function getBase() {
   return useSession.getState().backendUrl
 }
 
-function authQuery() {
-  return encodeURIComponent(useSession.getState().token ?? '')
+/**
+ * The read-only token that image and stream URLs carry.
+ *
+ * Held here rather than in the session store on purpose. It is short-lived and
+ * rotates, and every gallery cell calls `thumbUrl()` during render — putting it
+ * in the store would re-render the whole grid each time it refreshed, for a
+ * value no component actually displays. Same reasoning as `vaultToken` below.
+ *
+ * Not persisted either: it is cheap to re-mint from the login on the next
+ * launch, and one fewer credential written to disk.
+ */
+let mediaToken: string | null = null
+let refreshing: Promise<boolean> | null = null
+let refreshTimer: ReturnType<typeof setTimeout> | null = null
+
+/**
+ * Make sure a media token is in hand, minting one if not.
+ *
+ * Concurrent callers share the one in-flight request — on a cold start the
+ * gallery, the stats row and the scan stream all want it at once, and three
+ * tokens would be two too many.
+ */
+export function ensureMediaToken(): Promise<boolean> {
+  if (mediaToken) return Promise.resolve(true)
+  if (refreshing) return refreshing
+  refreshing = request<{ media_token: string; expires_in: number }>(
+    'POST',
+    '/api/auth/media-token',
+  )
+    .then((r) => {
+      mediaToken = r.media_token
+      // Re-minted at four fifths of its life, so a URL built a moment before
+      // the swap is still valid when the browser actually fetches it.
+      if (refreshTimer) clearTimeout(refreshTimer)
+      refreshTimer = setTimeout(
+        () => {
+          mediaToken = null
+          void ensureMediaToken()
+        },
+        Math.max(30, r.expires_in * 0.8) * 1000,
+      )
+      return true
+    })
+    .catch(() => {
+      // Leave it null and say so: better that the caller retries than that
+      // every URL on the page is built around a token we know is dead.
+      mediaToken = null
+      return false
+    })
+    .finally(() => {
+      refreshing = null
+    })
+  return refreshing
+}
+
+/** Drop the media token — on logout, with the session it belonged to. */
+export function clearMediaToken() {
+  mediaToken = null
+  if (refreshTimer) clearTimeout(refreshTimer)
+  refreshTimer = null
+}
+
+function mediaQuery() {
+  return encodeURIComponent(mediaToken ?? '')
 }
 
 function getHeaders(): Record<string, string> {
@@ -272,8 +334,24 @@ export const api = {
       vaultRequest<{ purged: number }>('POST', '/api/vault/delete', { ids }),
     thumbUrl: (id: number) =>
       `${getBase()}/api/vault/${id}/thumb?vault_token=${encodeURIComponent(vaultToken ?? '')}`,
-    rawUrl: (id: number) =>
-      `${getBase()}/api/vault/${id}/raw?vault_token=${encodeURIComponent(vaultToken ?? '')}`,
+    /**
+     * The hidden original, fetched with the vault token in a *header*.
+     *
+     * There is deliberately no `rawUrl` counterpart. Opening one meant
+     * navigating to a URL with the vault token in it, which wrote that token
+     * into the address bar and the browsing history — on the one screen in the
+     * app whose entire purpose is that nothing about it is on show. A blob URL
+     * is scoped to this document and carries no credential.
+     */
+    rawBlob: async (id: number): Promise<Blob> => {
+      const h: Record<string, string> = {}
+      const token = useSession.getState().token
+      if (token) h['Authorization'] = `Bearer ${token}`
+      if (vaultToken) h['X-Vault-Token'] = vaultToken
+      const res = await fetch(`${getBase()}/api/vault/${id}/raw`, { headers: h })
+      if (!res.ok) throw new ApiError(res.status, await errorMessage(res))
+      return res.blob()
+    },
   },
 
   /** Liveness plus the build the server is running — Setting compares it with ours. */
@@ -338,12 +416,14 @@ export const api = {
       '/api/media/session/finish',
     ),
 
-  // `<img>` can't set an Authorization header, so these carry the JWT in the
-  // query string — the server's AuthUser extractor accepts either.
-  thumbUrl: (id: number) => `${getBase()}/api/media/${id}/thumb?token=${authQuery()}`,
+  // `<img>` can't set an Authorization header, so these carry a token in the
+  // query string — the *media* token, not the login. It only reads, and only
+  // for an hour, so a URL that ends up in an access log or a proxy is not the
+  // account. The server refuses a login token here outright.
+  thumbUrl: (id: number) => `${getBase()}/api/media/${id}/thumb?token=${mediaQuery()}`,
   /** Full-screen-quality render — use wherever the user actually judges a photo. */
-  previewUrl: (id: number) => `${getBase()}/api/media/${id}/preview?token=${authQuery()}`,
-  rawUrl: (id: number) => `${getBase()}/api/media/${id}/raw?token=${authQuery()}`,
+  previewUrl: (id: number) => `${getBase()}/api/media/${id}/preview?token=${mediaQuery()}`,
+  rawUrl: (id: number) => `${getBase()}/api/media/${id}/raw?token=${mediaQuery()}`,
 
   /** Bin a file immediately (Gallery / viewer), rather than marking a swipe. */
   trashOne: (id: number) =>
@@ -397,9 +477,7 @@ export const api = {
   trashPurge: (id: number) => request<void>('DELETE', `/api/trash/purge/${id}`),
   trashPurgeAll: () => request<void>('DELETE', '/api/trash/purge-all'),
 
-  scanStatusStream: () => {
-    const base = getBase()
-    const token = useSession.getState().token
-    return new EventSource(`${base}/api/scan/status?token=${token ?? ''}`)
-  },
+  // `EventSource` can't set headers either, so progress rides the media token
+  // as well. Read-only, which is all a progress stream ever needed.
+  scanStatusStream: () => new EventSource(`${getBase()}/api/scan/status?token=${mediaQuery()}`),
 }

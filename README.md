@@ -66,14 +66,14 @@ docker compose down && rm data/easyclean.db && docker compose up -d   # wipe DB 
 | `EASYCLEAN_DATA_DIR` | `./data` | SQLite DB + thumbnail cache |
 | `EASYCLEAN_PORT` | `8080` | HTTP port (binds `0.0.0.0`) |
 | `EASYCLEAN_USER` | `default` | Seeded admin username |
-| `EASYCLEAN_PASSCODE` | `easyclean` | Seeded admin passcode |
-| `EASYCLEAN_USERS` | — | Multi-user: `user:pass[:role],user2:pass2` |
-| `EASYCLEAN_SECRET` | *generated* | JWT signing secret. Empty ⇒ a random key is generated into `<data>/secret.key` (0600) and reused |
+| `EASYCLEAN_PASSCODE` | **required** | Admin passcode. There is no default — the server refuses to create a first account without one. Re-applied on every boot, so editing it and restarting is how you change it |
+| `EASYCLEAN_USERS` | — | Multi-user: `user:pass[:role],user2:pass2`. A passcode may contain `:`; `role` is `admin` or `user` and is only read as one when it is the final field |
+| `EASYCLEAN_SECRET` | *generated* | JWT signing secret, minimum 32 characters (shorter is refused). Empty ⇒ a random key is generated into `<data>/secret.key` (0600) and reused |
 | `EASYCLEAN_CORS_ORIGINS` | — | Extra allowed browser origins (comma-separated). Empty ⇒ same-origin only |
 | `EASYCLEAN_BLUR_THRESHOLD` | `100.0` | Laplacian-variance blur cutoff |
 | `EASYCLEAN_DUPLICATE_DISTANCE_THRESHOLD` | `10` | Max pHash Hamming distance for duplicates. **First-run default only** — each user sets this from Settings → Duplicate Sensitivity, which overrides it |
 | `EASYCLEAN_TRASH_RETENTION_DAYS` | `30` | Days in `.trash` before auto-purge |
-| `EASYCLEAN_CLIP_BASE_URL` | Hugging Face | Where semantic-search weights are fetched from. Point at a mirror for an air-gapped install |
+| `EASYCLEAN_CLIP_BASE_URL` | Hugging Face, pinned revision | Where semantic-search weights are fetched from. Point at a mirror for an air-gapped install — the pinned SHA-256 of each file still applies, so a mirror must serve identical bytes |
 
 Settings live in two places, on purpose:
 

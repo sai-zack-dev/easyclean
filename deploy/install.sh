@@ -83,9 +83,13 @@ else
   say "WARNING: MEDIA_ROOT (${MEDIA_ROOT:-unset in .env}) does not exist — create it, then re-run"
 fi
 
+# Stop, rather than warn and carry on. The warning scrolled past on a screen
+# that then printed a working URL, so the install looked finished — and the
+# placeholder is published in this repo, which makes it a password anyone on the
+# network can look up.
 if [ -z "$EASYCLEAN_PASSCODE" ] || [ "$EASYCLEAN_PASSCODE" = "change-me" ]; then
-  say "WARNING: the passcode is still 'change-me'. Anyone on your Wi-Fi could"
-  say "         browse and delete your photos. Edit $DEPLOY_DIR/.env now."
+  die "the passcode is still '${EASYCLEAN_PASSCODE:-unset}'. Anyone on your Wi-Fi could browse
+       and delete your photos. Set EASYCLEAN_PASSCODE in $DEPLOY_DIR/.env, then re-run this script."
 fi
 
 say "Starting EasyClean"

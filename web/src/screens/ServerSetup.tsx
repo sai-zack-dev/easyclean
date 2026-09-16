@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react'
 import { IC } from '../icons'
 import { useSession } from '../store/session'
+import { normalizeBackendUrl } from '../backendUrl'
 
 interface Props {
   onDone: () => void
@@ -15,12 +16,16 @@ export function ServerSetup({ onDone }: Props) {
   const submit = async (e: FormEvent) => {
     e.preventDefault()
     setError('')
+    const checked = normalizeBackendUrl(url)
+    if ('error' in checked) {
+      setError(checked.error)
+      return
+    }
     setTesting(true)
-    const trimmed = url.trim().replace(/\/$/, '')
     try {
-      const res = await fetch(`${trimmed}/api/health`, { signal: AbortSignal.timeout(5000) })
+      const res = await fetch(`${checked.url}/api/health`, { signal: AbortSignal.timeout(5000) })
       if (!res.ok) throw new Error('Server returned error')
-      setBackendUrl(trimmed)
+      setBackendUrl(checked.url)
       onDone()
     } catch {
       setError('Could not reach the server. Check the URL and try again.')
@@ -67,7 +72,12 @@ export function ServerSetup({ onDone }: Props) {
           </button>
         </form>
 
-        <p className="auth-foot">The server must be reachable on this network.</p>
+        {/* Said plainly, because this is the one field where getting it wrong
+            hands someone your passcode rather than merely failing. */}
+        <p className="auth-foot">
+          The server must be reachable on this network. Your passcode is sent to this address — only
+          enter a server you run.
+        </p>
       </div>
     </div>
   )

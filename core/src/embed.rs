@@ -42,22 +42,59 @@ const STD: [f32; 3] = [0.2686295, 0.2613026, 0.2757771];
 /// invalidates the old vectors instead of comparing incomparable ones.
 pub const MODEL_ID: &str = "clip-vit-b32-int8";
 
-/// Where the weights are fetched from. Overridable so an air-gapped install can
-/// point at a local mirror instead of Hugging Face.
-const DEFAULT_BASE_URL: &str = "https://huggingface.co/Xenova/clip-vit-base-patch32/resolve/main";
+/// Repository the weights come from.
+const DEFAULT_REPO_URL: &str = "https://huggingface.co/Xenova/clip-vit-base-patch32/resolve";
 
-/// The three files that make up the model, and what each is for.
-const FILES: [(&str, &str); 3] = [
-    ("onnx/vision_model_quantized.onnx", "vision.onnx"),
-    ("onnx/text_model_quantized.onnx", "text.onnx"),
-    ("tokenizer.json", "tokenizer.json"),
+/// The exact upstream commit the weights are pinned to.
+///
+/// A commit SHA rather than `main`, because `main` is whatever the repository
+/// owner last pushed. An `.onnx` file is not data — it is a compute graph that
+/// [`Clip::load`] hands straight to ONNX Runtime in this process — so fetching
+/// "the current version" means running whatever code a third party publishes
+/// next, on a machine that holds someone's entire photo library. Pinned, the
+/// only thing that can change under us is nothing.
+const MODEL_REVISION: &str = "d15189d7028b43f1d3e65039190477f6af591c2a";
+
+/// Name of the marker written once every file has been verified.
+const VERIFIED_MARKER: &str = ".verified";
+
+/// The three files that make up the model: remote path, local name, the
+/// SHA-256 it must have, and its size.
+///
+/// The digests are the actual control. The revision pin says *which* bytes we
+/// want; these prove we got them — over a plain-HTTP mirror, through a redirect,
+/// past a proxy, or from an upstream that was tampered with after we pinned it.
+const FILES: [(&str, &str, &str, u64); 3] = [
+    (
+        "onnx/vision_model_quantized.onnx",
+        "vision.onnx",
+        "583fd1110a514667812fee7d684952aaf82a99b959760c8d7dca7e0ab9839299",
+        89_117_001,
+    ),
+    (
+        "onnx/text_model_quantized.onnx",
+        "text.onnx",
+        "73baab855d406190da9faa498cfedf65f15cf309f4cc7385b7b032e6d08e5c3a",
+        64_504_507,
+    ),
+    (
+        "tokenizer.json",
+        "tokenizer.json",
+        "f7f3b7af117d467b58374797691a6438d3e6b9e9cef800dfd5dced7f697a90cd",
+        2_224_119,
+    ),
 ];
 
-/// Roughly what the download costs, for the UI to show before starting it.
-pub const DOWNLOAD_BYTES: u64 = 149 * 1024 * 1024;
+/// What the download costs, for the UI to show before starting it. Exact, since
+/// the revision is pinned.
+pub const DOWNLOAD_BYTES: u64 = 155_845_627;
 
+/// Where the weights are fetched from. Overridable so an air-gapped install can
+/// point at a local mirror — the digests above still apply, so a mirror has to
+/// serve the same bytes, not merely something that loads.
 fn base_url() -> String {
-    std::env::var("EASYCLEAN_CLIP_BASE_URL").unwrap_or_else(|_| DEFAULT_BASE_URL.to_string())
+    std::env::var("EASYCLEAN_CLIP_BASE_URL")
+        .unwrap_or_else(|_| format!("{DEFAULT_REPO_URL}/{MODEL_REVISION}"))
 }
 
 /// Directory holding the downloaded weights.
@@ -65,10 +102,45 @@ pub fn model_dir(data_dir: &Path) -> PathBuf {
     data_dir.join("models").join(MODEL_ID)
 }
 
-/// True when every file the model needs is already on disk.
+/// True when every file the model needs is on disk *and* was verified against
+/// the pinned digests at this revision.
+///
+/// The marker carries the revision, so weights left by a build that fetched
+/// them before they were pinned — or from a different revision — read as not
+/// downloaded and go through [`download`] again, which checks them rather than
+/// trusting whatever is sitting in the directory.
 pub fn is_downloaded(data_dir: &Path) -> bool {
     let dir = model_dir(data_dir);
-    FILES.iter().all(|(_, local)| dir.join(local).is_file())
+    FILES
+        .iter()
+        .all(|(_, local, _, _)| dir.join(local).is_file())
+        && marker_is_current(&dir)
+}
+
+fn marker_is_current(dir: &Path) -> bool {
+    std::fs::read_to_string(dir.join(VERIFIED_MARKER))
+        .map(|s| s.trim() == MODEL_REVISION)
+        .unwrap_or(false)
+}
+
+/// SHA-256 of a file already on disk, hex-encoded.
+fn sha256_file(path: &Path) -> Result<String> {
+    use sha2::Digest;
+    let mut f = std::fs::File::open(path)?;
+    let mut hasher = sha2::Sha256::new();
+    let mut buf = vec![0u8; 1 << 16];
+    loop {
+        let n = std::io::Read::read(&mut f, &mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(hex_of(&hasher.finalize()))
+}
+
+fn hex_of(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Fetch the weights into `<data_dir>/models/<model>/`, reporting bytes so far.
@@ -82,13 +154,27 @@ pub fn download(data_dir: &Path, mut progress: impl FnMut(u64, u64)) -> Result<(
     let base = base_url();
     let mut done: u64 = 0;
 
-    for (remote, local) in FILES {
+    for (remote, local, want_sha, size) in FILES {
         let dest = dir.join(local);
+
+        // Already here? Only reuse it if it hashes to what we expect. That is
+        // what lets a pre-pin download be salvaged when its bytes happen to be
+        // right, and re-fetched when they are not — without ever trusting the
+        // file just because it exists.
         if dest.is_file() {
-            done += std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
-            progress(done, DOWNLOAD_BYTES);
-            continue;
+            match sha256_file(&dest) {
+                Ok(have) if have == want_sha => {
+                    done += size;
+                    progress(done, DOWNLOAD_BYTES);
+                    continue;
+                }
+                _ => {
+                    tracing::warn!("{local} is not the pinned build — fetching it again");
+                    let _ = std::fs::remove_file(&dest);
+                }
+            }
         }
+
         let url = format!("{base}/{remote}");
         let resp = ureq::get(&url)
             .call()
@@ -98,18 +184,38 @@ pub fn download(data_dir: &Path, mut progress: impl FnMut(u64, u64)) -> Result<(
         let mut out = std::fs::File::create(&tmp)?;
         let mut reader = resp.into_reader();
         let mut buf = vec![0u8; 1 << 16];
+        // Hashed as it streams, so verifying costs no second pass over 150MB.
+        let mut hasher = <sha2::Sha256 as sha2::Digest>::new();
         loop {
             let n = std::io::Read::read(&mut reader, &mut buf)?;
             if n == 0 {
                 break;
             }
+            sha2::Digest::update(&mut hasher, &buf[..n]);
             std::io::Write::write_all(&mut out, &buf[..n])?;
             done += n as u64;
             progress(done, DOWNLOAD_BYTES.max(done));
         }
         drop(out);
+
+        // Checked before the rename, so a file that fails never reaches the
+        // name `Clip::load` opens — there is no window in which a bad graph is
+        // loadable, and no half-verified state to clean up later.
+        let have = hex_of(&sha2::Digest::finalize(hasher));
+        if have != want_sha {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(Error::Other(format!(
+                "{remote} does not match the pinned build: expected sha256 {want_sha}, got {have}. \
+                 Refusing to load it. Check EASYCLEAN_CLIP_BASE_URL, or the network between here \
+                 and it."
+            )));
+        }
         std::fs::rename(&tmp, &dest)?;
     }
+
+    // Written last: its presence is the claim that everything beside it was
+    // checked at this revision.
+    std::fs::write(dir.join(VERIFIED_MARKER), MODEL_REVISION)?;
     Ok(())
 }
 
@@ -261,6 +367,74 @@ pub fn similarity(query: &[f32], stored: &[u8], scale: f32) -> f32 {
 mod tests {
     use super::*;
     use image::{Rgb, RgbImage};
+
+    #[test]
+    fn sha256_matches_a_known_value() {
+        let dir = std::env::temp_dir().join(format!("ec-sha-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("x");
+        std::fs::write(&f, b"abc").unwrap();
+        assert_eq!(
+            sha256_file(&f).unwrap(),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Files on disk are not evidence that they are the right files.
+    ///
+    /// Before the weights were pinned, `is_downloaded` asked only whether the
+    /// three names existed — so anything that had once been fetched, from any
+    /// revision and over any connection, was loaded into ONNX Runtime without
+    /// another thought. The marker is what makes "downloaded" mean "checked".
+    #[test]
+    fn present_but_unverified_weights_do_not_count_as_downloaded() {
+        let data = std::env::temp_dir().join(format!("ec-model-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&data);
+        let dir = model_dir(&data);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        for (_, local, _, _) in FILES {
+            std::fs::write(dir.join(local), b"not really the model").unwrap();
+        }
+        assert!(
+            !is_downloaded(&data),
+            "unverified files were treated as a usable model"
+        );
+
+        // A marker from some other revision is not this revision's evidence.
+        std::fs::write(
+            dir.join(VERIFIED_MARKER),
+            "0000000000000000000000000000000000000000",
+        )
+        .unwrap();
+        assert!(!is_downloaded(&data), "a stale marker was accepted");
+
+        std::fs::write(dir.join(VERIFIED_MARKER), MODEL_REVISION).unwrap();
+        assert!(is_downloaded(&data));
+
+        // Losing a file invalidates it again even with the marker present.
+        std::fs::remove_file(dir.join(FILES[0].1)).unwrap();
+        assert!(!is_downloaded(&data));
+
+        let _ = std::fs::remove_dir_all(&data);
+    }
+
+    /// The pinned digests must be well-formed, or verification silently never
+    /// matches and every start re-downloads 150MB.
+    #[test]
+    fn pinned_digests_are_well_formed() {
+        assert_eq!(MODEL_REVISION.len(), 40, "revision should be a git SHA-1");
+        assert!(MODEL_REVISION.chars().all(|c| c.is_ascii_hexdigit()));
+        let total: u64 = FILES.iter().map(|(_, _, _, size)| size).sum();
+        assert_eq!(total, DOWNLOAD_BYTES, "progress total must match the parts");
+        for (remote, _, sha, size) in FILES {
+            assert_eq!(sha.len(), 64, "{remote}: sha256 is 64 hex chars");
+            assert!(sha.chars().all(|c| c.is_ascii_hexdigit()), "{remote}");
+            assert!(size > 0, "{remote}");
+        }
+    }
 
     #[test]
     fn preprocess_always_yields_one_clip_input() {

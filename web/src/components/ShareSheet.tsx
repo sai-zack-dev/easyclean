@@ -110,11 +110,33 @@ export function ShareSheet({ files, onClose, toast }: Props) {
    * do that on iOS — it produces the bare "Open in Preview" page instead, which
    * is exactly the dead end this replaces.
    */
-  const openOriginal = () => {
+  const openOriginal = async () => {
     const f = one ?? files[0]
-    window.open(api.rawUrl(f.id), '_blank', 'noopener')
-    if (IS_IOS) toast?.('Long-press the photo → Add to Photos')
-    dismiss()
+    setBusy(true)
+    try {
+      // Fetched and opened as a blob rather than navigating to the API URL.
+      // Navigating put the token in the address bar and in history, where it
+      // outlives the tab; a blob: URL belongs to this document and carries no
+      // credential at all. The bytes are the same either way — this is the
+      // same fetch `systemShare` already does.
+      const blob = await (await fetch(api.rawUrl(f.id))).blob()
+      const url = URL.createObjectURL(blob)
+      const w = window.open(url, '_blank', 'noopener')
+      if (!w) {
+        URL.revokeObjectURL(url)
+        toast?.('Your browser blocked the new tab')
+        return
+      }
+      // Long enough for the new tab to have loaded it; the object would
+      // otherwise be held for the life of this document.
+      window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
+      if (IS_IOS) toast?.('Long-press the photo → Add to Photos')
+      dismiss()
+    } catch {
+      toast?.('Could not open that photo')
+    } finally {
+      setBusy(false)
+    }
   }
 
   /** Straight download. Reliable everywhere except iOS, hence the ordering. */

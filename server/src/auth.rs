@@ -23,30 +23,26 @@ impl FromRequestParts<AppState> for AuthUser {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        let header_token = parts
-            .headers
-            .get(AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.strip_prefix("Bearer "))
-            .map(str::to_owned);
-
-        // `<img src>` / `EventSource` can't set headers, so image and stream
-        // routes pass the JWT as `?token=` instead.
-        let token = match header_token {
-            Some(t) => t,
-            None => query_token(parts.uri.query())
-                .ok_or_else(|| ApiError(StatusCode::UNAUTHORIZED, "missing bearer token".into()))?,
-        };
+        // Header only. The login token used to be accepted from `?token=` as
+        // well, for `<img src>`; that put a week-long, full-privilege
+        // credential into every image URL, the access log, and — wherever such
+        // a URL was opened in a tab — the address bar and history. Those
+        // callers now mint a media token instead (see [`MediaUser`]), so a
+        // login can only ever arrive in a header, where it does not get
+        // written down.
+        let token = bearer(parts)
+            .ok_or_else(|| ApiError(StatusCode::UNAUTHORIZED, "missing bearer token".into()))?;
 
         let claims = easyclean_core::auth::verify_token(&token, &state.cfg.secret)
             .ok_or_else(|| ApiError(StatusCode::UNAUTHORIZED, "invalid or expired token".into()))?;
 
-        // A vault token is signed with the same key, so it would otherwise pass
-        // here and let a 15-minute unlock browse the whole library.
-        if claims.role == easyclean_core::auth::VAULT_ROLE {
+        // The narrow tokens are signed with the same key, so without this a
+        // 15-minute vault unlock — or an hour-long media token — would pass
+        // here and open the whole API.
+        if is_scoped_role(&claims.role) {
             return Err(ApiError(
                 StatusCode::UNAUTHORIZED,
-                "vault token is not a login".into(),
+                "that token is not a login".into(),
             ));
         }
 
@@ -55,6 +51,73 @@ impl FromRequestParts<AppState> for AuthUser {
             role: claims.role,
         })
     }
+}
+
+/// A caller allowed to *read* media and watch progress, nothing more.
+///
+/// Its own extractor because it is the only one that accepts a credential from
+/// the query string, and that privilege has to be paired with a role that is
+/// worth little if it leaks. Two ways in:
+///
+///   * an ordinary `Authorization: Bearer` login — for callers that can set
+///     headers, which is everything except `<img>` and `EventSource`;
+///   * `?token=` carrying a **media** token, and nothing else. A login token in
+///     the query string is refused, which is the whole point.
+pub struct MediaUser {
+    pub username: String,
+}
+
+#[async_trait]
+impl FromRequestParts<AppState> for MediaUser {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let unauthorized = || ApiError(StatusCode::UNAUTHORIZED, "invalid or expired token".into());
+
+        let (token, from_header) = match bearer(parts) {
+            Some(t) => (t, true),
+            None => (
+                query_token(parts.uri.query()).ok_or_else(unauthorized)?,
+                false,
+            ),
+        };
+
+        let claims = easyclean_core::auth::verify_token(&token, &state.cfg.secret)
+            .ok_or_else(unauthorized)?;
+
+        let ok = if from_header {
+            // A header can carry a login, or a media token the client happens
+            // to have to hand. Never a vault token: the vault has its own
+            // extractor and its own header.
+            claims.role != easyclean_core::auth::VAULT_ROLE
+        } else {
+            claims.role == easyclean_core::auth::MEDIA_ROLE
+        };
+        if !ok {
+            return Err(unauthorized());
+        }
+
+        Ok(MediaUser {
+            username: claims.sub,
+        })
+    }
+}
+
+/// The roles that are deliberately not a login.
+fn is_scoped_role(role: &str) -> bool {
+    role == easyclean_core::auth::VAULT_ROLE || role == easyclean_core::auth::MEDIA_ROLE
+}
+
+fn bearer(parts: &Parts) -> Option<String> {
+    parts
+        .headers
+        .get(AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.strip_prefix("Bearer "))
+        .map(str::to_owned)
 }
 
 /// A caller who has entered the vault PIN within the token's lifetime.
