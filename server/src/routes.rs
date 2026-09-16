@@ -23,7 +23,7 @@ use easyclean_core::models::MediaFile;
 use easyclean_core::storage::UserRoot;
 use easyclean_core::{db, detect, embed, scan};
 
-use crate::auth::AuthUser;
+use crate::auth::{AuthUser, VaultUser};
 use crate::error::ApiError;
 use crate::state::AppState;
 
@@ -73,6 +73,16 @@ pub fn router(state: AppState) -> Router {
         // settings
         .route("/api/settings", get(settings_get))
         .route("/api/settings", post(settings_put))
+        // the hidden vault
+        .route("/api/vault/status", get(vault_status))
+        .route("/api/vault/pin", post(vault_set_pin))
+        .route("/api/vault/unlock", post(vault_unlock))
+        .route("/api/vault/files", get(vault_list))
+        .route("/api/vault/add", post(vault_add))
+        .route("/api/vault/restore", post(vault_restore))
+        .route("/api/vault/delete", post(vault_delete))
+        .route("/api/vault/:id/thumb", get(vault_thumb))
+        .route("/api/vault/:id/raw", get(vault_raw))
         // trash
         .route("/api/trash", get(trash_list))
         .route("/api/trash/restore/:id", post(trash_restore))
@@ -905,7 +915,15 @@ async fn storage(
 // ── Semantic search ───────────────────────────────────────────────────────
 
 /// How many nearest photos a semantic query returns.
-const SEMANTIC_LIMIT: usize = 60;
+///
+/// 60 was too low to be honest about: the z-filter below keeps roughly the top
+/// sixth of the library for any query, so on a large library *every* search
+/// truncated to exactly 60 and the result count told you nothing. The response
+/// now also carries `semantic_total` — how many passed the filter before this
+/// cut — so the UI can say "300 of 1,240" instead of implying 60 is all there
+/// is. Still capped, because the payload is whole file rows and the grid pages
+/// through them.
+const SEMANTIC_LIMIT: usize = 300;
 
 /// Keep candidates standing this many standard deviations above the mean score.
 ///
@@ -1125,6 +1143,7 @@ async fn search(
 
     // ── semantic matches
     let mut semantic: Vec<Value> = Vec::new();
+    let mut semantic_total = 0usize;
     let mut searched = false;
     let mut confident = false;
     if embed::is_downloaded(&st.cfg.data_dir) {
@@ -1158,6 +1177,9 @@ async fn search(
             scored.sort_unstable_by(|a, b| {
                 b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal)
             });
+            // Counted before truncating: this is the honest size of the result
+            // set, which is what the header reports.
+            semantic_total = scored.len();
             scored.truncate(SEMANTIC_LIMIT);
 
             let ids: Vec<i64> = scored.iter().map(|(_, id)| *id).collect();
@@ -1183,6 +1205,9 @@ async fn search(
     Ok(Json(json!({
         "name_matches": enrich(name_hits),
         "semantic_matches": semantic,
+        // How many cleared the relevance filter, before the cap above. Equal to
+        // `semantic_matches.len()` until a query genuinely has more.
+        "semantic_total": semantic_total,
         "semantic_available": searched,
         // False when nothing stood out — the UI then says "closest guesses"
         // rather than claiming a match.
@@ -1375,6 +1400,16 @@ async fn owned_media(st: &AppState, user: &AuthUser, id: i64) -> Result<MediaFil
     if m.user != user.username {
         return Err(ApiError::not_found("media not found"));
     }
+    // Hidden files are not reachable with an ordinary login, and every
+    // per-file route — thumb, preview, raw, favourite, trash, albums — comes
+    // through here. Guarding the one function is what makes that true of all
+    // of them rather than of the ones somebody remembered.
+    //
+    // `not_found`, not `forbidden`: a 403 would confirm there is something at
+    // that id to hide.
+    if m.status == db::VAULT {
+        return Err(ApiError::not_found("media not found"));
+    }
     Ok(m)
 }
 
@@ -1442,6 +1477,292 @@ async fn serve_file(path: &FsPath) -> Result<Response, ApiError> {
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────
+
+// ── The hidden vault ───────────────────────────────────────────────────────
+//
+// Reached by tapping the profile chip in Settings three times; nothing else in
+// the UI mentions it. The PIN is its own secret, not the login passcode: the
+// only person a hidden vault defends against is someone who can already open
+// the app.
+
+/// How long one PIN entry stays good for. Short on purpose — this is the window
+/// in which hidden photos are reachable, and it should close on its own.
+const VAULT_TOKEN_MINUTES: i64 = 15;
+
+/// Digits only, 4 to 8 of them. Rejected server-side as well as in the keypad,
+/// because the keypad is not what enforces it.
+fn valid_pin(pin: &str) -> bool {
+    (4..=8).contains(&pin.chars().count()) && pin.chars().all(|c| c.is_ascii_digit())
+}
+
+/// Is a PIN set? The one thing worth knowing before the keypad is drawn, so it
+/// can say "Set a PIN" instead of "Enter PIN".
+async fn vault_status(State(st): State<AppState>, user: AuthUser) -> Result<Json<Value>, ApiError> {
+    let configured = db::vault_pin_hash(&st.db, &user.username).await?.is_some();
+    Ok(Json(json!({ "configured": configured })))
+}
+
+#[derive(Deserialize)]
+struct VaultPinReq {
+    pin: String,
+    /// Required once a PIN exists. Changing it has to prove you know the old
+    /// one, or anyone holding a logged-in phone could lock you out of your own
+    /// vault and read it.
+    current_pin: Option<String>,
+}
+
+async fn vault_set_pin(
+    State(st): State<AppState>,
+    user: AuthUser,
+    Json(req): Json<VaultPinReq>,
+) -> Result<Json<Value>, ApiError> {
+    if !valid_pin(&req.pin) {
+        return Err(ApiError(
+            StatusCode::BAD_REQUEST,
+            "a PIN is 4 to 8 digits".into(),
+        ));
+    }
+    if let Some(existing) = db::vault_pin_hash(&st.db, &user.username).await? {
+        let ok = req
+            .current_pin
+            .as_deref()
+            .map(|c| easyclean_core::auth::verify_passcode(c, &existing))
+            .unwrap_or(false);
+        if !ok {
+            return Err(ApiError(StatusCode::UNAUTHORIZED, "wrong PIN".into()));
+        }
+    }
+    let hash = easyclean_core::auth::hash_passcode(&req.pin).map_err(ApiError::internal)?;
+    db::set_vault_pin(&st.db, &user.username, &hash, now_secs()).await?;
+    Ok(Json(json!({ "configured": true })))
+}
+
+#[derive(Deserialize)]
+struct VaultUnlockReq {
+    pin: String,
+}
+
+/// Trade the PIN for a short-lived token.
+async fn vault_unlock(
+    State(st): State<AppState>,
+    user: AuthUser,
+    Json(req): Json<VaultUnlockReq>,
+) -> Result<Json<Value>, ApiError> {
+    let hash = db::vault_pin_hash(&st.db, &user.username)
+        .await?
+        .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "no PIN set".into()))?;
+    if !easyclean_core::auth::verify_passcode(&req.pin, &hash) {
+        return Err(ApiError(StatusCode::UNAUTHORIZED, "wrong PIN".into()));
+    }
+    let token =
+        easyclean_core::auth::make_vault_token(&user.username, &st.cfg.secret, VAULT_TOKEN_MINUTES)
+            .map_err(ApiError::internal)?;
+    Ok(Json(json!({
+        "vault_token": token,
+        "expires_in": VAULT_TOKEN_MINUTES * 60,
+    })))
+}
+
+async fn vault_list(State(st): State<AppState>, user: VaultUser) -> Result<Json<Value>, ApiError> {
+    let files = db::vault_files(&st.db, &user.username).await?;
+    let total = files.len();
+    Ok(Json(json!({ "files": files, "total": total })))
+}
+
+#[derive(Deserialize)]
+struct VaultIdsReq {
+    ids: Vec<i64>,
+}
+
+/// Hide files.
+///
+/// Four things leave with the photo, and every one of them is a readable copy
+/// that would otherwise survive outside the vault:
+///   * the file itself, into `.vault/`
+///   * its thumbnail, into `.vault/.thumbs/` — not deleted, so the vault's own
+///     grid still has something to draw
+///   * its cached full-screen preview under `<data_dir>/previews/`, deleted
+///   * its CLIP embedding, deleted, so semantic search cannot rank it
+///
+/// It also leaves every album it was filed into, because album counts are
+/// visible without the PIN and a hole in one is a tell.
+async fn vault_add(
+    State(st): State<AppState>,
+    user: VaultUser,
+    Json(req): Json<VaultIdsReq>,
+) -> Result<Json<Value>, ApiError> {
+    let root = UserRoot::new(&st.cfg.media_root, &user.username).map_err(ApiError::internal)?;
+    root.ensure().map_err(ApiError::internal)?;
+    let thumbs = root.vault_thumbs();
+    std::fs::create_dir_all(&thumbs).map_err(ApiError::internal)?;
+
+    let mut hidden = 0usize;
+    let mut touched: std::collections::HashSet<i64> = Default::default();
+
+    for id in req.ids {
+        let Some(m) = db::get_media(&st.db, id).await? else {
+            continue;
+        };
+        if m.user != user.username || m.status == db::VAULT {
+            continue;
+        }
+
+        let src = FsPath::new(&m.path);
+        if !src.starts_with(&st.cfg.media_root) {
+            continue;
+        }
+        let dest = match fileops::to_vault(&root, src) {
+            Ok(d) => d,
+            Err(e) => {
+                tracing::warn!("vault: moving {}: {e}", m.path);
+                continue;
+            }
+        };
+
+        if let Some(tp) = m.thumb_path.as_deref() {
+            let _ = fileops::move_into(FsPath::new(tp), &thumbs);
+        }
+        let _ = std::fs::remove_file(preview_path(&st, id));
+        db::delete_embedding(&st.db, id).await?;
+        for aid in db::remove_from_all_albums(&st.db, id).await? {
+            touched.insert(aid);
+        }
+
+        let rel = rel_to_root(&root, &dest);
+        if db::move_to_vault(&st.db, &user.username, id, &dest.to_string_lossy(), &rel).await? {
+            hidden += 1;
+        }
+    }
+
+    for aid in touched {
+        db::refresh_album_meta(&st.db, aid).await?;
+    }
+    Ok(Json(json!({ "hidden": hidden })))
+}
+
+/// Bring files back out, to the status and path they had before.
+///
+/// `phash` is cleared so the next detection pass regenerates the thumbnail into
+/// the ordinary cache — the old one went into the vault with the file, and
+/// guessing where it landed is worse than rebuilding it.
+async fn vault_restore(
+    State(st): State<AppState>,
+    user: VaultUser,
+    Json(req): Json<VaultIdsReq>,
+) -> Result<Json<Value>, ApiError> {
+    let root = UserRoot::new(&st.cfg.media_root, &user.username).map_err(ApiError::internal)?;
+    let mut restored = 0usize;
+
+    for id in req.ids {
+        let Some(m) = db::vault_file(&st.db, &user.username, id).await? else {
+            continue;
+        };
+        // Where it came from. Without it there is nowhere honest to put the
+        // file back, so the restore is refused rather than guessed at.
+        let Some(target) = db::vault_restore_target(&st.db, &user.username, id).await? else {
+            continue;
+        };
+        let target = FsPath::new(&target);
+        let Some(dir) = target.parent() else { continue };
+        if !dir.starts_with(&st.cfg.media_root) {
+            continue;
+        }
+
+        let dest = match fileops::restore(FsPath::new(&m.path), dir) {
+            Ok(d) => d,
+            Err(e) => {
+                tracing::warn!("vault restore: {}: {e}", m.path);
+                continue;
+            }
+        };
+        let rel = rel_to_root(&root, &dest);
+        if db::commit_vault_restore(&st.db, &user.username, id, &dest.to_string_lossy(), &rel)
+            .await?
+        {
+            restored += 1;
+        }
+    }
+    Ok(Json(json!({ "restored": restored })))
+}
+
+/// Delete hidden files for good.
+///
+/// Not trash-first, and that is deliberate. The trash screen needs no PIN, so
+/// binning a hidden photo would stand it on a shelf anyone holding the phone
+/// can browse — the one thing the vault exists to prevent. Trash-first protects
+/// against a mis-tap; here the protection is an explicit confirmation that says
+/// plainly that this cannot be undone, which is the "explicit purge" the same
+/// rule allows for.
+async fn vault_delete(
+    State(st): State<AppState>,
+    user: VaultUser,
+    Json(req): Json<VaultIdsReq>,
+) -> Result<Json<Value>, ApiError> {
+    let root = UserRoot::new(&st.cfg.media_root, &user.username).map_err(ApiError::internal)?;
+    let mut purged = 0usize;
+
+    for id in req.ids {
+        let Some(m) = db::vault_file(&st.db, &user.username, id).await? else {
+            continue;
+        };
+        let p = FsPath::new(&m.path);
+        if !p.starts_with(&st.cfg.media_root) {
+            continue;
+        }
+        if p.exists() {
+            fileops::purge(p).map_err(ApiError::internal)?;
+        }
+        // The thumbnail moved in here with the file, so it has to go too —
+        // otherwise deleting a hidden photo leaves a readable copy of it.
+        let _ = std::fs::remove_file(root.vault_thumbs().join(format!("{id}.jpg")));
+        db::delete_media_row(&st.db, id).await?;
+        drop_derived(&st, &m);
+        purged += 1;
+    }
+    Ok(Json(json!({ "purged": purged })))
+}
+
+/// A hidden file's thumbnail, from inside the vault.
+async fn vault_thumb(
+    State(st): State<AppState>,
+    user: VaultUser,
+    Path(id): Path<i64>,
+) -> Result<Response, ApiError> {
+    let m = db::vault_file(&st.db, &user.username, id)
+        .await?
+        .ok_or_else(|| ApiError::not_found("not in the vault"))?;
+    let root = UserRoot::new(&st.cfg.media_root, &user.username).map_err(ApiError::internal)?;
+    // Named by id, not by the photo's filename: thumbnails are `<id>.jpg` in
+    // the shared cache and keep that name when they move in here. Looking for
+    // `<filename>.jpg` missed every time and fell through to the original —
+    // which happened to render for images and left videos as a broken tile.
+    let tp = root.vault_thumbs().join(format!("{id}.jpg"));
+    if tp.exists() {
+        return serve_file(&tp).await;
+    }
+    // No cached thumbnail. An image can stand in for its own thumbnail; a video
+    // cannot, and saying so beats serving bytes no <img> can decode.
+    if m.media_type == "image" {
+        return serve_file(FsPath::new(&m.path)).await;
+    }
+    Err(ApiError::not_found("no thumbnail yet"))
+}
+
+/// A hidden file itself, from inside the vault.
+async fn vault_raw(
+    State(st): State<AppState>,
+    user: VaultUser,
+    Path(id): Path<i64>,
+) -> Result<Response, ApiError> {
+    let m = db::vault_file(&st.db, &user.username, id)
+        .await?
+        .ok_or_else(|| ApiError::not_found("not in the vault"))?;
+    let p = FsPath::new(&m.path);
+    if !p.starts_with(&st.cfg.media_root) || !p.exists() {
+        return Err(ApiError::not_found("file missing on disk"));
+    }
+    serve_file(p).await
+}
 
 #[cfg(test)]
 mod tests {
@@ -2095,6 +2416,310 @@ mod tests {
     }
 
     /// The Gallery's three tabs must actually separate cleaned from not.
+    /// Everything a POST with a JSON body needs, since the vault flow is all
+    /// posts.
+    async fn post_json(
+        st: AppState,
+        auth: &str,
+        vault: Option<&str>,
+        uri: &str,
+        body: &'static str,
+    ) -> Response {
+        let mut req = Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("authorization", auth)
+            .header("content-type", "application/json");
+        if let Some(v) = vault {
+            req = req.header("x-vault-token", v);
+        }
+        app(st)
+            .oneshot(req.body(Body::from(body)).unwrap())
+            .await
+            .unwrap()
+    }
+
+    /// A vaulted photo must be absent from every way of listing the library.
+    ///
+    /// This is the test that has to keep passing. Hiding is enforced by an
+    /// `AND status <> 'vault'` in a handful of queries, and the failure mode of
+    /// that design is a *new* query that forgets one — which leaks silently,
+    /// because nothing else breaks. Every assertion below is one of those
+    /// queries, so adding a listing without the exclusion fails here rather
+    /// than in front of whoever the vault was hiding from.
+    #[tokio::test]
+    async fn vault_leaks_into_nothing() {
+        let st = test_state().await;
+        let auth = bearer(&st);
+
+        // Vaulting moves the file, so it has to be on disk.
+        let dir = st.cfg.media_root.join("saiz");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("x.jpg"), b"jpeg-bytes").unwrap();
+
+        // Keep it first, so it is a real part of the library before it is hidden.
+        post_json(
+            st.clone(),
+            &auth,
+            None,
+            "/api/media/swipe",
+            r#"{"file_id":1,"action":"keep"}"#,
+        )
+        .await;
+
+        let seen = |st: AppState, auth: String, uri: &str| {
+            let uri = uri.to_string();
+            async move {
+                let r = app(st)
+                    .oneshot(
+                        Request::builder()
+                            .uri(uri)
+                            .header("authorization", auth)
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                body_json(r).await
+            }
+        };
+
+        // Visible to begin with — otherwise the assertions below prove nothing.
+        assert_eq!(
+            seen(
+                st.clone(),
+                auth.clone(),
+                "/api/media/batch?mode=library&size=50"
+            )
+            .await["files"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1,
+            "precondition: the photo is in the library"
+        );
+
+        // Set a PIN and unlock.
+        let r = post_json(
+            st.clone(),
+            &auth,
+            None,
+            "/api/vault/pin",
+            r#"{"pin":"4821"}"#,
+        )
+        .await;
+        assert_eq!(r.status(), StatusCode::OK, "PIN accepted");
+        let r = post_json(
+            st.clone(),
+            &auth,
+            None,
+            "/api/vault/unlock",
+            r#"{"pin":"4821"}"#,
+        )
+        .await;
+        assert_eq!(r.status(), StatusCode::OK);
+        let vt = body_json(r).await["vault_token"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let r = post_json(
+            st.clone(),
+            &auth,
+            Some(&vt),
+            "/api/vault/add",
+            r#"{"ids":[1]}"#,
+        )
+        .await;
+        assert_eq!(r.status(), StatusCode::OK);
+        assert_eq!(body_json(r).await["hidden"], 1, "one photo hidden");
+
+        // ── Now it must be gone from all of these. ────────────────────────
+        for mode in [
+            "library",
+            "original",
+            "cleaned",
+            "timeline",
+            "onthisday",
+            "recents",
+        ] {
+            let uri = format!("/api/media/batch?mode={mode}&size=50");
+            let n = seen(st.clone(), auth.clone(), &uri).await["files"]
+                .as_array()
+                .unwrap()
+                .len();
+            assert_eq!(n, 0, "batch mode `{mode}` still shows the hidden photo");
+        }
+
+        let s = seen(st.clone(), auth.clone(), "/api/stats/summary").await;
+        assert_eq!(s["total"], 0, "stats counts the hidden photo");
+        assert_eq!(s["keep"], 0, "stats counts it as kept");
+
+        let tl = seen(st.clone(), auth.clone(), "/api/stats/timeline").await;
+        let months = tl["months"].as_array().map(|m| m.len()).unwrap_or(0);
+        assert_eq!(months, 0, "the timeline checklist still lists its month");
+
+        let alb = seen(st.clone(), auth.clone(), "/api/albums").await;
+        for a in alb["albums"].as_array().unwrap() {
+            assert_eq!(a["file_count"], 0, "album {} still counts it", a["name"]);
+        }
+
+        let tr = seen(st.clone(), auth.clone(), "/api/trash").await;
+        assert_eq!(
+            tr["files"].as_array().map(|f| f.len()).unwrap_or(0),
+            0,
+            "the trash shows it"
+        );
+
+        // Per-file routes must not serve it with an ordinary login.
+        for uri in [
+            "/api/media/1/thumb",
+            "/api/media/1/preview",
+            "/api/media/1/raw",
+            "/api/media/1/albums",
+        ] {
+            let r = app(st.clone())
+                .oneshot(
+                    Request::builder()
+                        .uri(uri)
+                        .header("authorization", &auth)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(r.status(), StatusCode::NOT_FOUND, "{uri} served it");
+        }
+
+        // And it really is in the vault, reachable only with the vault token.
+        let r = app(st.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/api/vault/files")
+                    .header("x-vault-token", &vt)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+        assert_eq!(body_json(r).await["total"], 1, "the vault has it");
+
+        // A login token is not a vault token.
+        let r = app(st.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/api/vault/files")
+                    .header("x-vault-token", &auth.replace("Bearer ", ""))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            r.status(),
+            StatusCode::UNAUTHORIZED,
+            "a login token opened the vault"
+        );
+
+        // The photo left the shared caches rather than merely being filtered.
+        assert!(
+            !preview_path(&st, 1).exists(),
+            "the cached preview is still readable outside the vault"
+        );
+        assert!(
+            !dir.join("x.jpg").exists(),
+            "the original is still sitting in the ordinary library folder"
+        );
+    }
+
+    /// The vault is worthless if the wrong PIN opens it, or if changing the PIN
+    /// doesn't need the old one.
+    #[tokio::test]
+    async fn the_vault_pin_is_actually_checked() {
+        let st = test_state().await;
+        let auth = bearer(&st);
+
+        // Locked before a PIN exists, and unlock has nothing to check against.
+        let r = post_json(
+            st.clone(),
+            &auth,
+            None,
+            "/api/vault/unlock",
+            r#"{"pin":"1234"}"#,
+        )
+        .await;
+        assert_eq!(r.status(), StatusCode::NOT_FOUND);
+
+        // Too short, and not digits.
+        for bad in [r#"{"pin":"12"}"#, r#"{"pin":"abcd"}"#] {
+            let r = post_json(st.clone(), &auth, None, "/api/vault/pin", bad).await;
+            assert_eq!(r.status(), StatusCode::BAD_REQUEST, "accepted {bad}");
+        }
+
+        post_json(
+            st.clone(),
+            &auth,
+            None,
+            "/api/vault/pin",
+            r#"{"pin":"4821"}"#,
+        )
+        .await;
+
+        let r = post_json(
+            st.clone(),
+            &auth,
+            None,
+            "/api/vault/unlock",
+            r#"{"pin":"0000"}"#,
+        )
+        .await;
+        assert_eq!(
+            r.status(),
+            StatusCode::UNAUTHORIZED,
+            "wrong PIN unlocked it"
+        );
+
+        // Changing it without proving the old one.
+        let r = post_json(
+            st.clone(),
+            &auth,
+            None,
+            "/api/vault/pin",
+            r#"{"pin":"9999"}"#,
+        )
+        .await;
+        assert_eq!(
+            r.status(),
+            StatusCode::UNAUTHORIZED,
+            "the PIN was replaced without the current one"
+        );
+
+        // With it.
+        let r = post_json(
+            st.clone(),
+            &auth,
+            None,
+            "/api/vault/pin",
+            r#"{"pin":"9999","current_pin":"4821"}"#,
+        )
+        .await;
+        assert_eq!(r.status(), StatusCode::OK);
+
+        // Vault routes refuse a request with no vault token at all.
+        let r = app(st.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/api/vault/files")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
+    }
+
     #[tokio::test]
     async fn gallery_scopes_split_original_from_cleaned() {
         let st = test_state().await;

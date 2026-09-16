@@ -3,6 +3,7 @@ import { IC } from '../icons'
 import { api, type Album } from '../api/client'
 import { AlbumDetail } from './AlbumDetail'
 import { useStickyHeader } from '../hooks/useStickyHeader'
+import { useScrollLock } from '../hooks/useScrollLock'
 
 function AlCard({ album, cls, onOpen }: { album: Album; cls?: string; onOpen: () => void }) {
   return (
@@ -77,6 +78,7 @@ function NewAlbumDialog({
 }) {
   const [name, setName] = useState('')
   const ref = useRef<HTMLInputElement>(null)
+  useScrollLock()
 
   useEffect(() => {
     ref.current?.focus()
@@ -87,7 +89,7 @@ function NewAlbumDialog({
 
   return (
     <div
-      className="confirm-backdrop"
+      className="confirm-backdrop at-top"
       role="presentation"
       onClick={(e) => { if (e.target === e.currentTarget && !busy) onCancel() }}
     >
@@ -158,17 +160,21 @@ export function AlbumsTab({ onOpenTrash, toast }: { onOpenTrash: () => void; toa
       .finally(() => setBusy(false))
   }
 
-  // The server's category_type vocabulary: year · videos · screenshots ·
-  // favorites · place (auto, see core/src/categorize.rs) plus `manual`, which
-  // is an album you made yourself.
+  // The server's category_type vocabulary: year · videos · format ·
+  // screenshots · favorites · place (auto, see core/src/categorize.rs) plus
+  // `manual`, which is an album you made yourself.
   //
   // `manual` belongs in Collections. Leaving it out of every bucket is why an
   // album created from the viewer's Add to album simply never appeared — it
   // existed, held its photos, and was rendered nowhere.
+  //
+  // Screenshots sits here rather than under the media types: a screenshot is a
+  // PNG like any other, so listing it as a format would say the wrong thing.
   const collections = albums.filter((a) =>
-    ['manual', 'favorites', 'place'].includes(a.category_type),
+    ['manual', 'favorites', 'place', 'screenshots'].includes(a.category_type),
   )
-  const suggested = albums.filter((a) => ['videos', 'screenshots'].includes(a.category_type))
+  // What a file *is* — Videos, plus one album per image format.
+  const mediaTypes = albums.filter((a) => ['videos', 'format'].includes(a.category_type))
   // Years only now; `month` is kept in the filter so albums from before the
   // 0005 migration don't vanish mid-upgrade on a database it hasn't run on yet.
   const memories = albums.filter((a) => ['month', 'year'].includes(a.category_type))
@@ -213,11 +219,11 @@ export function AlbumsTab({ onOpenTrash, toast }: { onOpenTrash: () => void; toa
             onOpen={setOpen}
           />
           <Section
-            label="Suggested Collections"
-            albums={suggested}
+            label="Media Types"
+            albums={mediaTypes}
             cls="al-sm"
-            icon="album"
-            hint="Videos and screenshots you keep are grouped here for you."
+            icon="photo"
+            hint="Videos and image formats — JPEG, PNG, HEIC — as you keep them."
             onOpen={setOpen}
           />
           <Section

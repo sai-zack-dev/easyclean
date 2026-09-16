@@ -6,7 +6,51 @@ All notable changes to EasyClean are documented here. The format follows
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+- **A hidden vault.** Three fast taps on the profile chip in Setting opens it; nothing else in the
+  app refers to it. Photos moved in leave the Gallery, albums, search, the stats and the timeline,
+  and their file, thumbnail, cached preview and CLIP embedding all move or are deleted with them —
+  so nothing readable survives outside `.vault/`. Guarded by its own 4–8 digit PIN, hashed the way
+  the login passcode is and deliberately separate from it: the only person a hidden vault defends
+  against is someone who can already open the app. Unlocking mints a 15-minute token that leaving
+  the screen discards.
+- **Media Types in Albums**, replacing Suggested Collections: Videos plus one album per image
+  format — JPEG, PNG, HEIC, GIF, WebP, TIFF, BMP, RAW. Screenshots moves to Collections, where it
+  belongs; a screenshot is a PNG like any other, so listing it as a format would say the wrong
+  thing.
+- **A full search overlay** with suggestions and recent searches, in place of the inline field that
+  expanded inside the Gallery header. Results are headed by their count and a chip naming the query,
+  which is also how you clear it.
+- **Delete inside the vault.** Permanent, and it says so: the trash screen needs no PIN, so binning
+  a hidden photo would stand it on a shelf anyone can browse.
+
+### Changed
+- **Semantic search returns up to 300 photos, not 60.** The relevance filter keeps roughly the top
+  sixth of a library for any query, so on a large one *every* search truncated to exactly 60 and the
+  result count said nothing. Responses now also carry `semantic_total` — how many cleared the filter
+  before the cap — so the count can be honest about what it is showing.
+- **One header for every full-screen sub-view.** The swipe decks, Duplicates, Trash, the vault and
+  an opened album now share the same back button, centred title and insets.
+
+### Fixed
+- **Backdrop blur did nothing in Chromium.** Where the stylesheet hand-wrote a `-webkit-` twin
+  beside the standard property, Lightning CSS read the pair as one prefixed declaration and emitted
+  the prefix alone — which Chromium does not support. Every frosted surface in the app rendered as a
+  flat tinted slab there while looking correct on iOS Safari, which does accept the prefixed form.
+  All seven hand-written prefixes removed so the build generates them, and `build.cssTarget` now
+  names the baseline instead of leaving it inferred.
+- **Sub-screen titles were never centred.** "On this day", "Duplicates" and the rest sat wherever
+  the back button and UNDO left room. Measured 32px off centre even after a first attempt with a
+  three-column grid, because `1fr` is a minimum of auto and a wide action slot simply grows past its
+  share.
+- **No header allowed for the notch except the photo viewer's**, so on a notched phone every other
+  back button and title sat under the status bar.
+- **Page headers were inset 20px while the content below them was inset 16px**, leaving every large
+  title four pixels out of line with its own cards.
+- **Modals with a text field opened where the keyboard does.** New album and search now open against
+  the top edge, under the title nav.
+- **The page scrolled behind open modals**, and the tab bar rode up with the layout when the
+  keyboard appeared instead of staying at the bottom edge.
 
 ## [0.2.2] — 2026-09-15
 

@@ -42,9 +42,25 @@ impl UserRoot {
         self.root.join(".trash")
     }
 
-    /// Create the three folders if missing.
+    /// Where hidden files live. Inside the user's own root like `.trash`, so
+    /// the same traversal guard covers it.
+    pub fn vault(&self) -> PathBuf {
+        self.root.join(".vault")
+    }
+
+    /// Thumbnails for hidden files.
+    ///
+    /// Inside the vault rather than in the shared `<data_dir>/thumbs`, because
+    /// a cached thumbnail is a readable copy of the photo: leaving it in the
+    /// ordinary cache would mean anything "hidden" was still sitting in plain
+    /// sight one folder away.
+    pub fn vault_thumbs(&self) -> PathBuf {
+        self.vault().join(".thumbs")
+    }
+
+    /// Create the managed folders if missing.
     pub fn ensure(&self) -> Result<()> {
-        for d in [self.source(), self.clean(), self.trash()] {
+        for d in [self.source(), self.clean(), self.trash(), self.vault()] {
             std::fs::create_dir_all(d)?;
         }
         Ok(())

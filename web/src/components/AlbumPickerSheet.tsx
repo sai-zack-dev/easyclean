@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { useScrollLock } from '../hooks/useScrollLock'
 import { api, type Album } from '../api/client'
 
 interface Props {
@@ -21,6 +22,7 @@ export function AlbumPickerSheet({ title, busy = false, onPick, onClose }: Props
   const [albums, setAlbums] = useState<Album[] | null>(null)
   const [name, setName] = useState('')
   const ref = useRef<HTMLDivElement>(null)
+  useScrollLock()
   const drag = useRef({ y: 0, dragging: false })
 
   useEffect(() => {
