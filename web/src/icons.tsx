@@ -201,6 +201,12 @@ export const IC = {
       <circle cx="12" cy="7" r="4" />
     </svg>
   ),
+  close: () => (
+    <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+      <line x1="6" y1="6" x2="18" y2="18" />
+      <line x1="18" y1="6" x2="6" y2="18" />
+    </svg>
+  ),
   plus: () => (
     <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
       <line x1="12" y1="5" x2="12" y2="19" />

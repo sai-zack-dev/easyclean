@@ -13,6 +13,7 @@ import { GalleryTab } from './screens/GalleryTab'
 import { AlbumsTab } from './screens/AlbumsTab'
 import { SettingsTab } from './screens/SettingsTab'
 import { TrashScreen } from './screens/TrashScreen'
+import { VaultScreen } from './screens/VaultScreen'
 
 export type TabId = 'clean' | 'gallery' | 'albums' | 'setting'
 
@@ -28,6 +29,7 @@ export function App() {
   const [swipe, setSwipe] = useState<SwipeTarget | null>(null)
   const [dupOpen, setDupOpen] = useState(false)
   const [trashOpen, setTrashOpen] = useState(false)
+  const [vaultOpen, setVaultOpen] = useState(false)
   const [toastMsg, setToastMsg] = useState('')
   /** A newer build is installed and waiting for a reload. */
   const [updateReady, setUpdateReady] = useState(false)
@@ -106,6 +108,10 @@ export function App() {
         <DuplicateScreen onClose={() => setDupOpen(false)} toast={toast} />
       ) : trashOpen ? (
         <TrashScreen onClose={() => setTrashOpen(false)} toast={toast} />
+      ) : vaultOpen ? (
+        // Replaces the whole shell, tab bar included: the vault is not a tab,
+        // and leaving one visible would be a way back out that skips the lock.
+        <VaultScreen onClose={() => setVaultOpen(false)} toast={toast} />
       ) : (
         <>
           <Sidebar tab={tab} setTab={setTab} username={user.username} />
@@ -121,7 +127,9 @@ export function App() {
             {tab === 'albums' && (
               <AlbumsTab onOpenTrash={() => setTrashOpen(true)} toast={toast} />
             )}
-            {tab === 'setting' && <SettingsTab toast={toast} />}
+            {tab === 'setting' && (
+              <SettingsTab toast={toast} onSecret={() => setVaultOpen(true)} />
+            )}
             <TabBar tab={tab} setTab={setTab} />
           </div>
         </>

@@ -34,5 +34,16 @@ export default defineConfig({
   },
   build: {
     outDir: 'dist',
+    /*
+     * Name the CSS baseline explicitly.
+     *
+     * Left unset, esbuild picked a target that only wanted the `-webkit-`
+     * spelling of `backdrop-filter` and dropped the standard property from the
+     * bundle. Safari accepts the prefixed form, so every frosted surface — the
+     * nav, the viewer's chrome, the sheets — blurred correctly on an iPhone and
+     * silently rendered as a flat tinted slab in Chrome. Listing a Chromium
+     * target alongside Safari 16 makes it emit both spellings.
+     */
+    cssTarget: ['chrome111', 'edge111', 'firefox111', 'safari16'],
   },
 })

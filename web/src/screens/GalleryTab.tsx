@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef } from 'react'
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import { IC } from '../icons'
 import { api, type MediaFile, type SearchResult, type SearchHit } from '../api/client'
 import { PhotoViewer } from './PhotoViewer'
@@ -6,6 +6,7 @@ import { Spinner } from '../components/Spinner'
 import { ShareSheet } from '../components/ShareSheet'
 import { ConfirmDialog } from '../components/ConfirmDialog'
 import { AlbumPickerSheet } from '../components/AlbumPickerSheet'
+import { SearchOverlay } from '../components/SearchOverlay'
 import { useStickyHeader } from '../hooks/useStickyHeader'
 
 /**
@@ -27,7 +28,6 @@ type TypeFilter = '' | 'image' | 'video'
 /** Rows per request. Enough to fill a screen, small enough to stay snappy. */
 const PAGE_SIZE = 120
 /** Wait for a pause in typing before asking the server again. */
-const SEARCH_DEBOUNCE_MS = 300
 
 /** A labelled grid of search hits. */
 function HitGrid({
@@ -141,7 +141,7 @@ export function GalleryTab({ toast }: Props) {
   const [page, setPage] = useState(1)
   const [loading, setLoading] = useState(true)
   const [done, setDone] = useState(false)
-  const [searching, setSearching] = useState(false)
+  const [searchOpen, setSearchOpen] = useState(false)
   const [viewing, setViewing] = useState<number | null>(null)
   /** Ids picked in select mode. Null means select mode is off entirely. */
   const [picked, setPicked] = useState<Set<number> | null>(null)
@@ -150,9 +150,13 @@ export function GalleryTab({ toast }: Props) {
   const [albumPick, setAlbumPick] = useState(false)
   const [bulkBusy, setBulkBusy] = useState(false)
 
-  /** What's in the box, updated on every keystroke. */
-  const [query, setQuery] = useState('')
-  /** What the server has actually been asked for — `query` after the debounce. */
+  /**
+   * The query the server has been asked for.
+   *
+   * One string, not two: the old inline box updated on every keystroke and
+   * needed a debounced `applied` alongside it. The overlay submits on Enter or
+   * Search, so there is no half-typed state to hold.
+   */
   const [applied, setApplied] = useState('')
   /** Merged name + semantic results; null while browsing. */
   const [results, setResults] = useState<SearchResult | null>(null)
@@ -162,22 +166,25 @@ export function GalleryTab({ toast }: Props) {
   const { ref: screenRef, onScroll } = useStickyHeader()
   const sentinel = useRef<HTMLDivElement>(null)
 
-  // Debounce the box into `applied`, so a five-letter word is one request
-  // rather than five. Resetting the page is what makes a new query start from
-  // the top instead of appending to the previous results.
-  useEffect(() => {
-    if (query === applied) return
-    const t = setTimeout(() => {
-      setApplied(query)
+  /** How many rows the search actually returned, and whether more matched. */
+  const resultCount =
+    (results?.name_matches.length ?? 0) + (results?.semantic_matches.length ?? 0)
+  const resultTruncated =
+    results != null && (results.semantic_total ?? 0) > results.semantic_matches.length
+
+  /** Start a search, or clear one by passing an empty string. */
+  const runSearch = useCallback(
+    (text: string) => {
+      setApplied(text)
       setResults(null)
       setFiles([])
       setPage(1)
       setDone(false)
       setLoading(true)
       screenRef.current?.scrollTo({ top: 0 })
-    }, SEARCH_DEBOUNCE_MS)
-    return () => clearTimeout(t)
-  }, [query, applied, screenRef])
+    },
+    [screenRef],
+  )
 
   // A response landing after the filters moved on would splice the wrong rows
   // in, so each request remembers what it asked for.
@@ -330,7 +337,6 @@ export function GalleryTab({ toast }: Props) {
       .finally(() => setBulkBusy(false))
   }
 
-  const pending = query !== applied
   let flat = -1
 
   const emptyMessage = applied
@@ -352,30 +358,20 @@ export function GalleryTab({ toast }: Props) {
         <div className="page-header">
           <div style={{ minWidth: 0 }}>
             <div className="page-title">Gallery</div>
-            <div className="page-subtitle">
-              {applied
-                ? `${(results?.name_matches.length ?? 0) + (results?.semantic_matches.length ?? 0)} result${
-                    (results?.name_matches.length ?? 0) + (results?.semantic_matches.length ?? 0) === 1 ? '' : 's'
-                  } across the whole library`
-                : `${total} item${total === 1 ? '' : 's'}`}
-            </div>
+            {/* While a search is on, the count moves to the row below so it can
+                sit opposite the query chip. */}
+            {!applied && (
+              <div className="page-subtitle">
+                {total} item{total === 1 ? '' : 's'}
+              </div>
+            )}
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            {searching && (
-              <input
-                className="gallery-search"
-                autoFocus
-                value={query}
-                placeholder="Search name, album, or what\u2019s in the photo…"
-                onChange={(e) => setQuery(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Escape') { setQuery(''); setSearching(false) } }}
-              />
-            )}
             <button
-              className="pill-btn"
+              className={`pill-btn ${applied ? 'on' : ''}`}
               style={{ padding: '8px 10px' }}
-              aria-label={searching ? 'Close search' : 'Search'}
-              onClick={() => { if (searching) setQuery(''); setSearching((v) => !v) }}
+              aria-label="Search"
+              onClick={() => setSearchOpen(true)}
             >
               <IC.search />
             </button>
@@ -389,6 +385,23 @@ export function GalleryTab({ toast }: Props) {
             </button>
           </div>
         </div>
+
+        {/* What you searched for, and how much it found. The chip is the only
+            way out of a search, so it carries the clear button rather than
+            hiding it behind reopening the overlay. */}
+        {applied && (
+          <div className="gal-query">
+            <span className="gal-query-count">
+              {resultCount} item{resultCount === 1 ? '' : 's'}
+              {resultTruncated && <em> of {results?.semantic_total}</em>}
+            </span>
+            <button className="gal-chip" onClick={() => runSearch('')} title="Clear search">
+              <IC.search />
+              <span>{applied}</span>
+              <IC.close />
+            </button>
+          </div>
+        )}
 
         <div className="gal-tabs" role="tablist">
           {TABS.map((t) => (
@@ -424,7 +437,7 @@ export function GalleryTab({ toast }: Props) {
         <SearchResults
           results={results}
           query={applied}
-          loading={loading || pending}
+          loading={loading}
           onOpen={(list, i) => { setResultList(list); setViewing(i) }}
         />
       ) : groups.length === 0 && !loading ? (
@@ -519,7 +532,7 @@ export function GalleryTab({ toast }: Props) {
             disabled={chosen.length === 0 || bulkBusy}
             onClick={() => setAlbumPick(true)}
           >
-            <IC.album /><span>Album</span>
+            <IC.plus /><span>Album</span>
           </button>
           <button
             className="select-act danger"
@@ -533,6 +546,17 @@ export function GalleryTab({ toast }: Props) {
 
       {sharing && chosen.length > 0 && (
         <ShareSheet files={chosen} onClose={() => setSharing(false)} toast={toast} />
+      )}
+
+      {searchOpen && (
+        <SearchOverlay
+          initial={applied}
+          onSearch={(q) => {
+            setSearchOpen(false)
+            runSearch(q)
+          }}
+          onClose={() => setSearchOpen(false)}
+        />
       )}
 
       {albumPick && (

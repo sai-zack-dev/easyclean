@@ -54,6 +54,13 @@
   --r-pill: 100px;
   --sidebar: 240px;
   --tab: 72px;
+  /* Where a modal holding a text field starts: clear of the title nav, and
+     well clear of where the keyboard comes up. Shared by the New album box and
+     the search overlay so the two open at the same height. */
+  --modal-top: 72px;
+  /* The bottom bar's full height, notch included. Drawers rest on this line
+     rather than crossing it, so the bar is never something they slide over. */
+  --bar-h: calc(var(--tab) + env(safe-area-inset-bottom));
   --ease: cubic-bezier(0.25, 0.46, 0.45, 0.94);
 }
 
@@ -264,7 +271,6 @@ body,
   height: var(--tab);
   background: var(--tabbar-bg);
   backdrop-filter: blur(24px) saturate(180%);
-  -webkit-backdrop-filter: blur(24px) saturate(180%);
   border-top: 1px solid var(--border);
   flex-shrink: 0;
   align-items: flex-start;
@@ -341,7 +347,10 @@ body,
  * reads as a rendering bug.
  */
 .page-header {
-  padding: 16px 20px 12px;
+  /* 16px sides, matching `.page-pad` and the grids — it was 20px, so every
+     big title sat four pixels inboard of the cards under it. And the top inset
+     the notch needs, which only the photo viewer had. */
+  padding: calc(16px + env(safe-area-inset-top)) 16px 12px;
   display: flex;
   align-items: flex-end;
   justify-content: space-between;
@@ -759,12 +768,94 @@ body,
   display: flex;
   flex-direction: column;
 }
+/*
+ * The header every full-screen sub-view shares: back, centred title, one action.
+ *
+ * The title is centred on the *header*, not between the buttons.
+ *
+ * Flexed with `space-between` it sat wherever the two buttons left room, and
+ * since UNDO is far wider than a 38px back button, "On this day" and
+ * "Duplicates" were pushed left of centre. A three-column grid was no better:
+ * `1fr` is a minimum of auto, so a wide right-hand slot simply grew past its
+ * share and shoved the middle along with it — measured 32px off.
+ *
+ * Taking the title out of flow is what makes it exact. It spans the header's
+ * content box and centres itself, so no button width can move it, and
+ * `pointer-events: none` keeps it from swallowing taps meant for either side.
+ *
+ * The top inset is the other half of the fix: this header had none, so on a
+ * notched phone the back button sat under the status bar — while the photo
+ * viewer, which did have one, sat correctly. Same value here now.
+ */
 .swipe-header {
-  padding: 12px 16px;
+  position: relative;
+  padding: calc(10px + env(safe-area-inset-top)) 16px 10px;
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
   flex-shrink: 0;
+}
+/*
+ * Symmetric insets, wide enough for the busiest header's buttons.
+ *
+ * Symmetric is what keeps the title on the header's true midline; the width is
+ * what keeps it off the buttons. 104px clears two icon buttons plus the gutter
+ * — measured, the vault's title was overlapping its own controls by 20px
+ * before this, invisible only because the text is dim.
+ */
+.swipe-title-wrap {
+  position: absolute;
+  top: calc(10px + env(safe-area-inset-top));
+  bottom: 10px;
+  left: 104px;
+  right: 104px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+/* A long album name ellipsises rather than widening past its lane. */
+.swipe-title,
+.swipe-sub {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Right-hand slot when a screen has more than one action there. */
+.swipe-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+/* A round button matching `.back-btn`, for the other side of the header. */
+.icon-btn {
+  width: 38px;
+  height: 38px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--bg3);
+  border: none;
+  color: var(--text);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.icon-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.icon-btn svg {
+  width: 18px;
+  height: 18px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 .back-btn {
   width: 38px;
@@ -1113,7 +1204,6 @@ body,
   border-radius: 50%;
   background: rgba(0, 0, 0, 0.42);
   backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
   color: #fff;
   cursor: pointer;
   transition: transform 0.15s, color 0.15s;
@@ -2233,13 +2323,16 @@ body.viewer-open .tabbar {
   display: flex;
   align-items: flex-start;
   justify-content: space-around;
-  height: calc(var(--tab) + env(safe-area-inset-bottom));
+  height: var(--bar-h);
   padding: 8px 0 env(safe-area-inset-bottom);
   background: var(--viewer-chrome);
   backdrop-filter: blur(24px) saturate(180%);
-  -webkit-backdrop-filter: blur(24px) saturate(180%);
   border-top: 1px solid var(--viewer-border);
-  z-index: 2;
+  /* Above the drawers (z-index 3). A drawer sliding in is translated down by
+     its own height, which put it straight over these icons for the length of
+     the animation — the bar appeared to be cut in half every time you opened
+     Info. Now the drawer emerges from behind the bar and the bar stays whole. */
+  z-index: 6;
 }
 .viewer-act {
   flex: 1;
@@ -2638,7 +2731,6 @@ button.trash-meta {
   padding: 24px;
   background: rgba(0, 0, 0, 0.55);
   backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
   animation: confirm-in 0.14s var(--ease);
 }
 @keyframes confirm-in {
@@ -3105,11 +3197,10 @@ body.select-mode .tabbar {
   display: flex;
   align-items: flex-start;
   justify-content: space-around;
-  height: calc(var(--tab) + env(safe-area-inset-bottom));
+  height: var(--bar-h);
   padding: 8px 0 env(safe-area-inset-bottom);
   background: var(--tabbar-bg);
   backdrop-filter: blur(24px) saturate(180%);
-  -webkit-backdrop-filter: blur(24px) saturate(180%);
   border-top: 1px solid var(--border);
   animation: sheet-up 0.2s var(--ease);
 }
@@ -3152,27 +3243,36 @@ body.select-mode .tabbar {
   opacity: 0.35;
   cursor: default;
 }
-/* The running count, where the swipe screen puts its totals. */
+/*
+ * The running count, where the swipe screen puts its totals.
+ *
+ * Built out of the same box as `.select-act` — same flex share, same padding,
+ * same gap — so the number lands on the icon line and the word lands on the
+ * label line. Sized to its own content it sat a few pixels high and narrow,
+ * and the four items along the bar stopped agreeing with each other.
+ */
 .select-count {
-  flex: 0 0 auto;
+  flex: 1;
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
-  gap: 1px;
-  padding: 0 6px;
-  min-width: 62px;
+  gap: 4px;
+  padding: 4px 0;
 }
 .select-count b {
-  font-size: 17px;
+  /* The icons' box, so the digits sit exactly where the glyphs do. */
+  display: flex;
+  align-items: center;
+  height: 22px;
+  font-size: 19px;
   font-weight: 800;
   color: var(--accent);
   line-height: 1;
 }
 .select-count span {
-  font-size: 9.5px;
-  font-weight: 600;
-  letter-spacing: 0.3px;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.2px;
   color: var(--text3);
   text-transform: uppercase;
 }
@@ -3187,8 +3287,13 @@ body.select-mode .tabbar {
   justify-content: center;
   background: rgba(0, 0, 0, 0.5);
   backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
   animation: confirm-in 0.15s var(--ease);
+  /* Share and Add-to-album behave like the viewer's drawers: they come to rest
+     on top of the bottom bar, and the clip keeps them — and the dim — off it
+     while they travel, so the bar reads as the floor the sheet slides out of
+     rather than something the sheet runs over. */
+  padding-bottom: var(--bar-h);
+  clip-path: inset(0 0 var(--bar-h) 0);
 }
 .share-sheet {
   width: 100%;
@@ -3200,7 +3305,6 @@ body.select-mode .tabbar {
   border: 1px solid var(--border);
   border-bottom: none;
   border-radius: var(--r-lg) var(--r-lg) 0 0;
-  padding-bottom: env(safe-area-inset-bottom);
   animation: sheet-up 0.22s var(--ease);
   transition: transform 0.2s var(--ease);
   touch-action: none;
@@ -3356,4 +3460,374 @@ body.select-mode .tabbar {
 }
 .album-name-input::placeholder {
   color: var(--text3);
+}
+
+/* ── THE HIDDEN VAULT ───────────────────────────────── */
+.vault-screen {
+  padding-bottom: 32px;
+}
+
+/* The keypad. Centred in the screen rather than pinned low: this is the whole
+   content of the locked state, not a bar attached to something else. */
+.pin-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 24px 24px 40px;
+}
+.pin-icon {
+  width: 54px;
+  height: 54px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--fill);
+  margin-bottom: 16px;
+}
+.pin-icon svg {
+  width: 26px;
+  height: 26px;
+  fill: var(--text2);
+}
+.pin-label {
+  font-size: 17px;
+  font-weight: 700;
+}
+.pin-hint {
+  margin-top: 6px;
+  max-width: 280px;
+  text-align: center;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text3);
+}
+.pin-dots {
+  display: flex;
+  gap: 16px;
+  margin: 28px 0 32px;
+}
+.pin-dot {
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  border: 1.5px solid var(--ring);
+  transition: background 0.12s, border-color 0.12s, transform 0.12s;
+}
+.pin-dot.on {
+  background: var(--accent);
+  border-color: var(--accent);
+  transform: scale(1.12);
+}
+/* A wrong PIN has to be felt, not read: the toast is at the other end of the
+   screen from where you are looking. */
+.pin-dots.shake {
+  animation: pin-shake 0.4s var(--ease);
+}
+@keyframes pin-shake {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-9px); }
+  40% { transform: translateX(8px); }
+  60% { transform: translateX(-5px); }
+  80% { transform: translateX(3px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pin-dots.shake { animation: none; }
+}
+.pin-pad {
+  display: grid;
+  grid-template-columns: repeat(3, 72px);
+  gap: 14px;
+}
+.pin-key {
+  height: 72px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--fill);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 26px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.12s, transform 0.08s;
+}
+.pin-key:active:not(:disabled) {
+  background: var(--fill-hi);
+  transform: scale(0.94);
+}
+.pin-key:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.pin-key.pin-del {
+  background: none;
+  border-color: transparent;
+}
+.pin-key.pin-del svg {
+  width: 24px;
+  height: 24px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.8;
+}
+
+/* ── SEARCH OVERLAY ─────────────────────────────────── */
+/*
+ * Anchored to the top, not centred.
+ *
+ * A centred panel containing a text field is exactly where the on-screen
+ * keyboard appears, so the thing you are typing into is the thing that gets
+ * covered. Everything with an input in it opens against the top edge instead.
+ */
+.search-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: calc(var(--modal-top) + env(safe-area-inset-top)) 14px 24px;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(10px) saturate(140%);
+  animation: confirm-in 0.14s var(--ease);
+}
+.search-panel {
+  width: 100%;
+  max-width: 460px;
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+  animation: search-drop 0.18s var(--ease);
+}
+@keyframes search-drop {
+  from { transform: translateY(-12px); opacity: 0; }
+  to   { transform: translateY(0);     opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .search-panel { animation: none; }
+}
+.search-field {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.search-field > svg {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  stroke: var(--text3);
+  fill: none;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+}
+.search-field input {
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: none;
+  outline: none;
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 16px; /* 16px or iOS zooms the page on focus */
+}
+.search-clear {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 50%;
+  background: var(--fill-hi);
+  color: var(--text2);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.search-clear svg {
+  width: 13px;
+  height: 13px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+}
+.search-go {
+  flex-shrink: 0;
+  padding: 7px 13px;
+  border: none;
+  border-radius: var(--r-pill);
+  background: var(--accent);
+  color: var(--accent-on);
+  font-family: var(--font);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.search-go:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.search-sugs {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px 0;
+}
+.search-sugs-lbl {
+  padding: 6px 16px 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--text3);
+}
+.search-sug {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 11px 16px;
+  border: none;
+  background: none;
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 14.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.search-sug:hover {
+  background: var(--hover);
+}
+.search-sug svg {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  stroke: var(--text3);
+  fill: none;
+  stroke-width: 1.8;
+}
+.search-none {
+  padding: 10px 16px 14px;
+  font-size: 13px;
+  color: var(--text3);
+}
+.search-cancel {
+  flex-shrink: 0;
+  padding: 14px;
+  border: none;
+  border-top: 1px solid var(--border);
+  background: none;
+  color: var(--text2);
+  font-family: var(--font);
+  font-size: 14.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+/* The applied query, opposite its result count. */
+.gal-query {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 2px 16px 10px;
+}
+.gal-query-count {
+  font-size: 13px;
+  color: var(--text2);
+  white-space: nowrap;
+}
+.gal-query-count em {
+  font-style: normal;
+  color: var(--text3);
+}
+.gal-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  max-width: 62%;
+  padding: 6px 11px;
+  border: 1px solid var(--border2);
+  border-radius: var(--r-pill);
+  background: var(--fill);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.gal-chip span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gal-chip svg {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+.gal-chip svg:last-child {
+  opacity: 0.6;
+}
+
+/* ── MODALS: KEYBOARD AND SCROLL ────────────────────── */
+/*
+ * Modals that contain a text field open against the top edge.
+ *
+ * Centred, the New album box sat exactly where the on-screen keyboard appears:
+ * you tapped the field, the keyboard rose, and the box you were typing into was
+ * behind it. `flex-start` with a header-sized offset puts it just under the
+ * title nav, where the keyboard cannot reach.
+ */
+.confirm-backdrop.at-top {
+  align-items: flex-start;
+  padding-top: calc(var(--modal-top) + env(safe-area-inset-top));
+}
+
+/*
+ * Freeze the page behind any modal.
+ *
+ * `body { overflow: hidden }` has no effect — the app is a flex column and
+ * `.screen` owns the scrolling, not the document. Set by `useScrollLock`, which
+ * counts nested modals so the first to close does not unlock the page while
+ * another is still open.
+ */
+body.modal-open .screen,
+body.modal-open .vault-screen {
+  overflow: hidden !important;
+}
+
+/*
+ * Pin the tab bar to the viewport.
+ *
+ * In flow it rode up with the layout when the keyboard opened, ending up
+ * stranded above it mid-screen. Fixed, it stays at the real bottom edge and the
+ * keyboard simply covers it. `.main .screen` then has to reserve the row the
+ * bar no longer occupies — scoped to `.main` because Trash and the swipe decks
+ * replace the whole shell and have no tab bar to make room for.
+ */
+@media (max-width: 700px) {
+  .tabbar {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 45;
+    padding-bottom: env(safe-area-inset-bottom);
+    height: calc(var(--tab) + env(safe-area-inset-bottom));
+  }
+  .main .screen {
+    padding-bottom: calc(var(--tab) + env(safe-area-inset-bottom));
+  }
 }

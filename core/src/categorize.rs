@@ -12,6 +12,60 @@ pub mod cat {
     pub const SCREENSHOTS: &str = "screenshots";
     pub const FAVORITES: &str = "favorites";
     pub const PLACE: &str = "place";
+    /// The file's container format — JPEG, PNG, HEIC. One album per format,
+    /// shown together under Media Types.
+    pub const FORMAT: &str = "format";
+}
+
+/// Extension → (category key, album name).
+///
+/// One table rather than two functions, so the key a photo is filed under and
+/// the name its album carries cannot drift apart. Several extensions share a
+/// key on purpose: `.jpg` and `.jpeg` are one format, and every raw flavour is
+/// filed as RAW because nobody wants an album per camera vendor.
+const FORMATS: &[(&str, &str, &str)] = &[
+    ("jpg", "jpeg", "JPEG"),
+    ("jpeg", "jpeg", "JPEG"),
+    ("jpe", "jpeg", "JPEG"),
+    ("png", "png", "PNG"),
+    ("heic", "heic", "HEIC"),
+    ("heif", "heic", "HEIC"),
+    ("gif", "gif", "GIF"),
+    ("webp", "webp", "WebP"),
+    ("tif", "tiff", "TIFF"),
+    ("tiff", "tiff", "TIFF"),
+    ("bmp", "bmp", "BMP"),
+    ("dng", "raw", "RAW"),
+    ("cr2", "raw", "RAW"),
+    ("cr3", "raw", "RAW"),
+    ("nef", "raw", "RAW"),
+    ("arw", "raw", "RAW"),
+    ("orf", "raw", "RAW"),
+    ("rw2", "raw", "RAW"),
+];
+
+/// The format key for a filename, or `None` if the extension isn't one we name.
+///
+/// Unrecognised extensions get no album at all rather than one named after
+/// whatever the extension happened to be — a stray `.txt` that found its way
+/// into the library should not produce a "Txt" collection.
+fn format_key(filename: &str) -> Option<&'static str> {
+    let ext = std::path::Path::new(filename)
+        .extension()?
+        .to_str()?
+        .to_ascii_lowercase();
+    FORMATS
+        .iter()
+        .find(|(e, _, _)| *e == ext)
+        .map(|(_, k, _)| *k)
+}
+
+/// Display name for a format key, e.g. `"heic"` → `"HEIC"`.
+fn format_label(key: &str) -> Option<&'static str> {
+    FORMATS
+        .iter()
+        .find(|(_, k, _)| *k == key)
+        .map(|(_, _, l)| *l)
 }
 
 /// Return every category key that `mf` belongs to.
@@ -31,6 +85,11 @@ pub fn categories_for(mf: &MediaFile) -> Vec<String> {
 
     if mf.media_type == "video" {
         cats.push(format!("{}:videos", cat::VIDEOS));
+    } else if let Some(k) = format_key(&mf.filename) {
+        // Images only. A video already has its own Videos album, and splitting
+        // it again by container would list MP4 beside Videos saying the same
+        // thing twice.
+        cats.push(format!("{}:{k}", cat::FORMAT));
     }
 
     if mf.is_favorite {
@@ -65,6 +124,13 @@ pub fn album_name(cat_key: &str) -> String {
     }
     if let Some(y) = cat_key.strip_prefix("year:") {
         return y.to_string();
+    }
+    // Formats are acronyms, so the generic capitalise-the-first-letter path
+    // below would render them "Jpeg" and "Heic".
+    if let Some(k) = cat_key.strip_prefix("format:") {
+        if let Some(label) = format_label(k) {
+            return label.to_string();
+        }
     }
     // "videos:videos" → "Videos" etc.
     if let Some(label) = cat_key.split(':').nth(1) {
@@ -130,6 +196,35 @@ mod tests {
     fn screenshot_detected() {
         let cats = categories_for(&mf("Screenshot 2026-01.png", 1_746_057_600, "image"));
         assert!(cats.iter().any(|c| c.contains("screenshots")));
+    }
+
+    #[test]
+    fn images_are_filed_by_format_and_videos_are_not() {
+        let jpg = categories_for(&mf("photo.JPG", 1_746_057_600, "image"));
+        assert!(jpg.contains(&"format:jpeg".to_string()), "{jpg:?}");
+
+        let heic = categories_for(&mf("IMG_4821.heic", 1_746_057_600, "image"));
+        assert!(heic.contains(&"format:heic".to_string()), "{heic:?}");
+
+        // A video gets Videos and no format album — two names for one fact.
+        let vid = categories_for(&mf("clip.mp4", 1_746_057_600, "video"));
+        assert!(vid.iter().any(|c| c.contains("videos")));
+        assert!(!vid.iter().any(|c| c.starts_with("format:")), "{vid:?}");
+
+        // An extension we don't name produces no format album at all.
+        let odd = categories_for(&mf("notes.txt", 1_746_057_600, "image"));
+        assert!(!odd.iter().any(|c| c.starts_with("format:")), "{odd:?}");
+        // …and neither does a file with no extension.
+        let bare = categories_for(&mf("IMG_0001", 1_746_057_600, "image"));
+        assert!(!bare.iter().any(|c| c.starts_with("format:")), "{bare:?}");
+    }
+
+    #[test]
+    fn format_albums_are_named_as_acronyms() {
+        assert_eq!(album_name("format:jpeg"), "JPEG");
+        assert_eq!(album_name("format:heic"), "HEIC");
+        assert_eq!(album_name("format:webp"), "WebP");
+        assert_eq!(album_name("format:raw"), "RAW");
     }
 
     #[test]
