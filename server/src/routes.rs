@@ -2538,6 +2538,19 @@ mod tests {
         let row = db::get_media(&st.db, file_id).await.unwrap().unwrap();
         assert_eq!(row.content_hash.as_deref(), Some(sha256_hex(data).as_str()));
         assert_eq!(row.status, "pending", "an upload is waiting to be reviewed");
+
+        // Nothing may be left in the scratch area. The sweeper only reclaims
+        // sessions it still holds, and a finished one is forgotten immediately —
+        // so a directory left here is one leaked per upload until the next
+        // restart. A container smoke test caught exactly that.
+        let scratch = st.cfg.data_dir.join("uploads/saiz");
+        let leftovers: Vec<_> = std::fs::read_dir(&scratch)
+            .map(|d| d.filter_map(|e| e.ok()).map(|e| e.path()).collect())
+            .unwrap_or_default();
+        assert!(
+            leftovers.is_empty(),
+            "a finished upload left scratch behind: {leftovers:?}"
+        );
     }
 
     /// Nothing that fails the hash check may be filed.

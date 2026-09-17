@@ -259,6 +259,13 @@ impl UploadManager {
             .await?
             .ok_or_else(|| Error::UnsupportedMedia(guard.filename.clone()))?;
 
+        // The session directory is empty now that the file has moved out, and
+        // nothing will ever look at it again. Leaving it behind leaks one
+        // directory per successful upload until the next restart — the sweeper
+        // only reclaims sessions it still holds in memory, and this one is
+        // about to be forgotten.
+        discard(&guard.part_path).await;
+
         let out = Finished {
             file_id,
             filename: dest
