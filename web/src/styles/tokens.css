@@ -788,13 +788,46 @@ body,
  * viewer, which did have one, sat correctly. Same value here now.
  */
 .swipe-header {
-  position: relative;
+  /*
+   * Pinned, like `.page-header` already is.
+   *
+   * Three of the five screens that use this header keep it outside their
+   * scrolling element, where sticky changes nothing; the other two — an album's
+   * contents and the vault — put it inside `.screen`, so the way back scrolled
+   * away and getting to it meant flinging a grid of photos all the way home.
+   * One rule fixes both and keeps the other three honest if they are ever
+   * restructured.
+   *
+   * The opaque ground is what makes it a header rather than a set of buttons
+   * with photos sliding under them; `flex-shrink: 0` still matters for the
+   * three where this is a flex child.
+   */
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: var(--bg);
   padding: calc(10px + env(safe-area-inset-top)) 16px 10px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
   flex-shrink: 0;
+}
+/* A hairline once something has scrolled beneath it — the same tell the tab
+   headers give, wired by `useStickyHeader`. */
+.swipe-header::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1px;
+  background: var(--border);
+  opacity: 0;
+  transition: opacity 0.15s var(--ease);
+}
+.screen.scrolled > .swipe-header::after {
+  opacity: 1;
 }
 /*
  * Symmetric insets, wide enough for the busiest header's buttons.
@@ -969,6 +1002,23 @@ body,
 .swipe-card-img .full.in {
   opacity: 1;
 }
+/*
+ * The clip itself, mounted over the still only once Play is tapped.
+ *
+ * Same box as the two image layers so starting playback is a swap in place,
+ * and `pointer-events: auto` because `.swipe-card img` turns them off for the
+ * stills — the video needs its own scrub bar to be reachable.
+ */
+.swipe-card-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+  pointer-events: auto;
+  display: block;
+}
 .swipe-card-empty {
   width: 100%;
   height: 100%;
@@ -1032,6 +1082,24 @@ body,
   right: 0;
   padding: 16px;
   background: linear-gradient(transparent, rgba(0, 0, 0, 0.75));
+  transition: opacity 0.18s var(--ease);
+}
+/*
+ * Out of the way for as long as the clip's own controls are on the card.
+ *
+ * The browser draws a video's scrub bar along the bottom edge of the element,
+ * which is the same strip this sits in — the name and the timeline rendered on
+ * top of each other, and neither readable. Fading rather than reserving space
+ * above the bar: control-bar height is the browser's business and differs
+ * between them, so any number here would be wrong somewhere.
+ *
+ * Tied to the player existing rather than to it playing, because a *paused*
+ * video is exactly when the browser keeps its controls on screen — the state
+ * where hiding this matters most.
+ */
+.swipe-card.playing .card-info-bar {
+  opacity: 0;
+  pointer-events: none;
 }
 .card-fname {
   font-size: 13px;
@@ -1227,6 +1295,52 @@ body,
   transform: scale(0.9);
 }
 .fav-btn:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 2px;
+}
+
+/*
+ * Play, mirroring the heart across the card.
+ *
+ * A video card used to be a single ffmpeg-extracted frame with no way to see
+ * the rest, so "is this clip worth keeping" was a question the deck could not
+ * answer. Same size, ground and press behaviour as `.fav-btn` — they are a
+ * pair, one per top corner — and it sits above the clip's own controls, which
+ * the browser draws along the bottom edge.
+ */
+.play-btn {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 3;
+  width: 38px;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.42);
+  backdrop-filter: blur(10px);
+  color: #fff;
+  cursor: pointer;
+  transition: transform 0.15s;
+}
+.play-btn svg {
+  width: 17px;
+  height: 17px;
+  /* Optically centred: a triangle's mass sits left of its bounding box, so
+     geometric centring reads as a pixel off to the left. */
+  margin-left: 2px;
+}
+.play-btn svg rect {
+  /* …and the pause bars are symmetric, so they want none of that. */
+  transform: translateX(-2px);
+}
+.play-btn:active {
+  transform: scale(0.9);
+}
+.play-btn:focus-visible {
   outline: 2px solid #fff;
   outline-offset: 2px;
 }

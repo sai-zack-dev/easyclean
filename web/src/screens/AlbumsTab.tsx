@@ -182,7 +182,9 @@ export function AlbumsTab({ onOpenTrash, toast }: { onOpenTrash: () => void; toa
   // Counts and covers can change while the detail view is open (a swipe session
   // finishing behind it), so reload the list on the way back out.
   if (open) {
-    return <AlbumDetail album={open} onClose={() => { setOpen(null); load() }} />
+    return (
+      <AlbumDetail album={open} onClose={() => { setOpen(null); load() }} toast={toast} />
+    )
   }
 
   return (

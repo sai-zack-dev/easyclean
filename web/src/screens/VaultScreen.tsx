@@ -3,6 +3,7 @@ import { IC } from '../icons'
 import { api, ApiError, setVaultToken, type MediaFile } from '../api/client'
 import { ConfirmDialog } from '../components/ConfirmDialog'
 import { evictCachedThumbs } from '../pwa'
+import { useStickyHeader } from '../hooks/useStickyHeader'
 
 interface Props {
   onClose: () => void
@@ -31,6 +32,7 @@ export function VaultScreen({ onClose, toast }: Props) {
   const [confirmRestore, setConfirmRestore] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [busy, setBusy] = useState(false)
+  const { ref: screenRef, onScroll } = useStickyHeader()
 
   useEffect(() => {
     api.vault
@@ -140,7 +142,9 @@ export function VaultScreen({ onClose, toast }: Props) {
   }
 
   return (
-    <div className="screen vault-screen">
+    // The grid can run long, and the header is sticky now — this is what gives
+    // it the hairline once photos pass underneath it.
+    <div className="screen vault-screen" ref={screenRef} onScroll={onScroll}>
       <VaultHeader
         onClose={close}
         count={files.length}

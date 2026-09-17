@@ -4,22 +4,44 @@ import { api, type Album, type MediaFile } from '../api/client'
 import { PhotoViewer } from './PhotoViewer'
 import { Spinner } from '../components/Spinner'
 import { useStickyHeader } from '../hooks/useStickyHeader'
+import { useEdgeBack } from '../hooks/useEdgeBack'
 
 interface Props {
   album: Album
   onClose: () => void
+  toast?: (msg: string) => void
 }
 
 /** One page of album contents; more load as the user reaches the bottom. */
 const PAGE_SIZE = 60
 
-export function AlbumDetail({ album, onClose }: Props) {
+export function AlbumDetail({ album, onClose, toast }: Props) {
   const [files, setFiles] = useState<MediaFile[]>([])
   const [page, setPage] = useState(1)
   const [loading, setLoading] = useState(true)
   const [done, setDone] = useState(false)
   const [viewing, setViewing] = useState<number | null>(null)
   const { ref: screenRef, onScroll } = useStickyHeader()
+  // Disabled while the viewer is up: it owns the whole screen and reads
+  // horizontal drags as paging between photos.
+  const edgeBack = useEdgeBack(onClose, viewing === null)
+
+  /**
+   * The album's own count, minus anything binned while looking at it.
+   *
+   * `album.file_count` is a stored column fetched with the Albums tab, so it
+   * cannot know about a photo deleted from inside here. The server has already
+   * recomputed it; this is the same correction applied to the copy in hand,
+   * rather than refetching the whole list to change one number.
+   */
+  const [dropped, setDropped] = useState(0)
+  const count = Math.max(album.file_count - dropped, 0)
+
+  /** A photo binned from the viewer leaves this grid with it. */
+  const drop = (id: number) => {
+    setFiles((fs) => fs.filter((f) => f.id !== id))
+    setDropped((n) => n + 1)
+  }
 
   // `loading` is raised by whoever asks for a page (initial state, or the Load
   // more button), never inside the effect — a synchronous setState in an effect
@@ -39,7 +61,7 @@ export function AlbumDetail({ album, onClose }: Props) {
   }, [album.id, page])
 
   return (
-    <div className="screen" ref={screenRef} onScroll={onScroll}>
+    <div className="screen" ref={screenRef} onScroll={onScroll} {...edgeBack}>
       {/* The sub-screen header, not a tab header: you got here from somewhere
           and the way back belongs on the left, with the album's name centred
           between it and whatever sits opposite — the same shape as Duplicates,
@@ -51,7 +73,7 @@ export function AlbumDetail({ album, onClose }: Props) {
         <div className="swipe-title-wrap">
           <div className="swipe-title">{album.name}</div>
           <div className="swipe-sub">
-            {album.file_count} {album.file_count === 1 ? 'item' : 'items'}
+            {count} {count === 1 ? 'item' : 'items'}
           </div>
         </div>
         <span aria-hidden="true" />
@@ -108,6 +130,8 @@ export function AlbumDetail({ album, onClose }: Props) {
           index={viewing}
           onIndex={setViewing}
           onClose={() => setViewing(null)}
+          onRemoved={drop}
+          toast={toast}
         />
       )}
     </div>

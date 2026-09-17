@@ -80,6 +80,20 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
+    // Reconcile the album shelves with what they are now allowed to show.
+    //
+    // Counts and covers are stored columns, and this release stops them
+    // counting binned and hidden files — so every database that predates it is
+    // carrying numbers computed under the old rule. One statement at boot is
+    // what makes the correction arrive with the upgrade rather than whenever
+    // each album next happens to be touched.
+    match easyclean_core::db::refresh_all_album_meta(&db).await {
+        Ok(n) => tracing::info!("albums: recomputed counts and covers for {n} album(s)"),
+        // Not fatal: stale counts are a cosmetic wrong number, and refusing to
+        // start over one would be the larger outage.
+        Err(e) => tracing::warn!("albums: could not recompute counts and covers: {e}"),
+    }
+
     let port = cfg.port;
     let state = AppState {
         db,

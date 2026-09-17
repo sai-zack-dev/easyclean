@@ -561,6 +561,17 @@ pub async fn list_albums(pool: &Db, user: &str) -> Result<Vec<Album>> {
     Ok(rows)
 }
 
+/// What an album is allowed to show.
+///
+/// Membership in `album_file` outlives a deletion on purpose — putting a photo
+/// back from the trash has to put it back in the albums it was filed under, and
+/// a manual album is never rebuilt, so a row deleted here would be gone for
+/// good. The filtering is therefore done on the way out, in every query that
+/// reads an album: its contents, its count and its cover.
+///
+/// `m.` prefixed because each of those queries joins `media_file` as `m`.
+const ALBUM_VISIBLE: &str = "m.status NOT IN ('trashed', 'vault')";
+
 /// Paginated files in an album (joined through album_file).
 pub async fn album_files(
     pool: &Db,
@@ -570,12 +581,12 @@ pub async fn album_files(
     size: i64,
 ) -> Result<Vec<MediaFile>> {
     let offset = (page.max(1) - 1) * size;
-    let rows = sqlx::query_as::<_, MediaFile>(
+    let rows = sqlx::query_as::<_, MediaFile>(&format!(
         "SELECT m.* FROM media_file m \
          JOIN album_file af ON af.file_id = m.id \
-         WHERE af.album_id = ? AND m.user = ? \
-         ORDER BY m.created_at DESC LIMIT ? OFFSET ?",
-    )
+         WHERE af.album_id = ? AND m.user = ? AND {ALBUM_VISIBLE} \
+         ORDER BY m.created_at DESC, m.id DESC LIMIT ? OFFSET ?"
+    ))
     .bind(album_id)
     .bind(user)
     .bind(size)
@@ -663,19 +674,72 @@ pub async fn albums_for_file(pool: &Db, user: &str, file_id: i64) -> Result<Vec<
 }
 
 /// Recompute `file_count` and `cover_file_id` for an album.
+///
+/// Both read through [`ALBUM_VISIBLE`], so the count matches what opening the
+/// album actually shows and the cover is never a photo you deleted. Counting
+/// the raw `album_file` rows is what made a binned photo keep its place on the
+/// shelf: the tile said 4, the grid listed 4, and one of them was in the trash.
+///
+/// The cover is the newest visible member rather than whichever row SQLite
+/// happened to return first — an album's picture should not change because a
+/// photo was added at the other end of it.
 pub async fn refresh_album_meta(pool: &Db, album_id: i64) -> Result<()> {
-    sqlx::query(
+    sqlx::query(&format!(
         "UPDATE album SET \
-           file_count = (SELECT COUNT(*) FROM album_file WHERE album_id = ?), \
-           cover_file_id = (SELECT file_id FROM album_file WHERE album_id = ? LIMIT 1) \
-         WHERE id = ?",
-    )
+           file_count = (SELECT COUNT(*) FROM album_file af \
+                           JOIN media_file m ON m.id = af.file_id \
+                          WHERE af.album_id = ? AND {ALBUM_VISIBLE}), \
+           cover_file_id = (SELECT m.id FROM album_file af \
+                              JOIN media_file m ON m.id = af.file_id \
+                             WHERE af.album_id = ? AND {ALBUM_VISIBLE} \
+                             ORDER BY m.created_at DESC, m.id DESC LIMIT 1) \
+         WHERE id = ?"
+    ))
     .bind(album_id)
     .bind(album_id)
     .bind(album_id)
     .execute(pool)
     .await?;
     Ok(())
+}
+
+/// Recompute count and cover for every album in the database.
+///
+/// Run once at startup. The stored `file_count` and `cover_file_id` are only
+/// as correct as the last thing that touched them, so a release that changes
+/// what counts — this one excludes trashed and vaulted files — leaves every
+/// existing database claiming the old numbers until something happens to each
+/// album. One statement over a table with a handful of rows per user is a
+/// cheaper way to be right than waiting for that.
+pub async fn refresh_all_album_meta(pool: &Db) -> Result<u64> {
+    let res = sqlx::query(&format!(
+        "UPDATE album SET \
+           file_count = (SELECT COUNT(*) FROM album_file af \
+                           JOIN media_file m ON m.id = af.file_id \
+                          WHERE af.album_id = album.id AND {ALBUM_VISIBLE}), \
+           cover_file_id = (SELECT m.id FROM album_file af \
+                              JOIN media_file m ON m.id = af.file_id \
+                             WHERE af.album_id = album.id AND {ALBUM_VISIBLE} \
+                             ORDER BY m.created_at DESC, m.id DESC LIMIT 1)"
+    ))
+    .execute(pool)
+    .await?;
+    Ok(res.rows_affected())
+}
+
+/// Every album id one file is filed under.
+///
+/// The ids, not the albums: the caller is about to refresh each one's count and
+/// cover after the file's status changed, and needs nothing else about them.
+/// Deliberately unscoped by user — `album_file` only ever links a file to an
+/// album of its own owner, and the callers have already checked ownership of
+/// the file they are acting on.
+pub async fn album_ids_for_file(pool: &Db, file_id: i64) -> Result<Vec<i64>> {
+    let rows: Vec<(i64,)> = sqlx::query_as("SELECT album_id FROM album_file WHERE file_id = ?")
+        .bind(file_id)
+        .fetch_all(pool)
+        .await?;
+    Ok(rows.into_iter().map(|(a,)| a).collect())
 }
 
 // ── Swipe log / streak ────────────────────────────────────────────────────

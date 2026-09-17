@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import { motion, useMotionValue, useTransform, animate } from 'framer-motion'
 import { IC } from '../icons'
 import { api, type MediaFile } from '../api/client'
@@ -32,6 +32,39 @@ export function SwipeCard({ file, badge, onKeep, onDelete }: Props) {
   const [imgErr, setImgErr] = useState(false)
   const [loaded, setLoaded] = useState(false)
   const [fav, setFav] = useState(file.is_favorite)
+  const isVideo = file.media_type !== 'image'
+  /**
+   * Whether the `<video>` exists yet — one tap, not one per card.
+   *
+   * A video's card showed its ffmpeg first frame and nothing else, so deciding
+   * whether to keep a clip meant deciding from a single still. The button is
+   * deliberately the only way in: mounting a player for every card would have
+   * the server streaming originals as fast as you can swipe past them.
+   *
+   * Reset by construction — the deck mounts a card per file with `key={id}`.
+   */
+  const [mounted, setMounted] = useState(false)
+  /**
+   * Whether it is *currently* paused, which is a different question.
+   *
+   * Read off the element's own `play`/`pause` events rather than inferred from
+   * the tap that started it: the clip has native controls, so the user can
+   * pause it without this button ever being touched — and a Pause icon over a
+   * stopped video is a control lying about what it will do.
+   */
+  const [paused, setPaused] = useState(true)
+  const videoRef = useRef<HTMLVideoElement>(null)
+
+  const togglePlay = () => {
+    if (!mounted) {
+      setMounted(true) // the element autoplays on mount
+      return
+    }
+    const v = videoRef.current
+    if (!v) return
+    if (v.paused) void v.play()
+    else v.pause()
+  }
 
   const toggleFav = () => {
     setFav((f) => !f) // optimistic; the server is the source of truth below
@@ -61,7 +94,7 @@ export function SwipeCard({ file, badge, onKeep, onDelete }: Props) {
 
   return (
     <motion.div
-      className="swipe-card"
+      className={`swipe-card ${mounted ? 'playing' : ''}`}
       style={{ x, rotate }}
       drag="x"
       dragElastic={0.85}
@@ -87,6 +120,28 @@ export function SwipeCard({ file, badge, onKeep, onDelete }: Props) {
             draggable={false}
             alt=""
           />
+          {mounted && (
+            <video
+              ref={videoRef}
+              className="swipe-card-video"
+              src={api.rawUrl(file.id)}
+              poster={api.thumbUrl(file.id)}
+              autoPlay
+              loop
+              playsInline
+              // The card is a drag surface with `touch-action: none`, so a
+              // pointer that lands on the video would be swiping the deck
+              // rather than scrubbing. Keeping it here is what lets the
+              // controls work without a swipe firing underneath them.
+              onPointerDown={(e) => e.stopPropagation()}
+              onPlay={() => setPaused(false)}
+              onPause={() => setPaused(true)}
+              // Undecodable in this browser: fall back to the still rather
+              // than a black rectangle with a dead control over it.
+              onError={() => setMounted(false)}
+              controls
+            />
+          )}
         </div>
       )}
 
@@ -106,6 +161,19 @@ export function SwipeCard({ file, badge, onKeep, onDelete }: Props) {
         <div className="badge badge-dup">
           <IC.copy /> DUPLICATE
         </div>
+      )}
+
+      {/* Opposite the heart, so the two controls that sit on a photo frame it
+          rather than crowd one corner. */}
+      {isVideo && !imgErr && (
+        <button
+          className="play-btn"
+          onClick={togglePlay}
+          onPointerDown={(e) => e.stopPropagation()}
+          aria-label={mounted && !paused ? 'Pause' : 'Play this video'}
+        >
+          {mounted && !paused ? <IC.pause /> : <IC.play />}
+        </button>
       )}
 
       <button

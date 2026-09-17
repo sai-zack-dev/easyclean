@@ -61,6 +61,15 @@ function ViewerMedia({ file, onErr }: { file: MediaFile; onErr: () => void }) {
       <video
         className="viewer-media in"
         src={api.rawUrl(file.id)}
+        // The first frame, extracted by ffmpeg at scan time, standing in until
+        // the clip itself has decoded one. Without it the stage was an empty
+        // grey rectangle with a play button on it — the video was fine, there
+        // was simply nothing to look at until you pressed play, which is no
+        // way to decide whether to keep it.
+        poster={api.thumbUrl(file.id)}
+        // Enough to draw the first frame and know the duration, without
+        // pulling a 24 MB clip down because you paged past it.
+        preload="metadata"
         controls
         playsInline
         onError={fail}

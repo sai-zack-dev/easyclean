@@ -259,6 +259,20 @@ export const IC = {
       />
     </svg>
   ),
+  /* Solid, and the only pair in here that sits on top of a photograph — a
+     stroked triangle over a busy frame reads as a scratch rather than a
+     control. */
+  play: () => (
+    <svg viewBox="0 0 24 24" className="ic-solid" xmlns="http://www.w3.org/2000/svg">
+      <path d="M8.4 4.6a1.4 1.4 0 012.1-1.2l9.3 6.4a1.4 1.4 0 010 2.4l-9.3 6.4a1.4 1.4 0 01-2.1-1.2V4.6z" />
+    </svg>
+  ),
+  pause: () => (
+    <svg viewBox="0 0 24 24" className="ic-solid" xmlns="http://www.w3.org/2000/svg">
+      <rect x="6" y="4" width="4" height="16" rx="1.3" />
+      <rect x="14" y="4" width="4" height="16" rx="1.3" />
+    </svg>
+  ),
   restore: () => (
     <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
       <path d="M3 12a9 9 0 109-9 9 9 0 00-6.36 2.64L3 8" />

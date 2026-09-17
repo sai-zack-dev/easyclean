@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
 use std::path::Path as FsPath;
 use std::sync::atomic::Ordering;
@@ -525,6 +525,7 @@ async fn duplicates_resolve(
         for _ in 0..restored {
             db::unlog_last_swipe(&st.db, &user.username).await?;
         }
+        refresh_albums_for(&st, &r.undo).await?;
         return Ok(Json(json!({ "restored": restored })));
     }
 
@@ -534,6 +535,8 @@ async fn duplicates_resolve(
     // Each copy decided is a swipe, so the streak counts the work honestly
     // whether it was done one card at a time or a group at a time.
     db::log_swipes(&st.db, &user.username, (kept + deleted) as usize, now).await?;
+    let touched: Vec<i64> = r.keep.iter().chain(r.delete.iter()).copied().collect();
+    refresh_albums_for(&st, &touched).await?;
     Ok(Json(json!({ "kept": kept, "deleted": deleted })))
 }
 
@@ -556,6 +559,8 @@ async fn swipe(
     if s.action == "undo" {
         db::set_status(&st.db, &user.username, s.file_id, "pending", None).await?;
         db::unlog_last_swipe(&st.db, &user.username).await?;
+        // Undoing a delete puts the photo back on the shelves it was on.
+        refresh_albums_for(&st, &[s.file_id]).await?;
         return Ok(Json(json!({ "id": s.file_id, "status": "pending" })));
     }
 
@@ -567,6 +572,10 @@ async fn swipe(
     let trashed_at = (status == "trashed").then_some(now);
     db::set_status(&st.db, &user.username, s.file_id, status, trashed_at).await?;
     db::log_swipes(&st.db, &user.username, 1, now).await?;
+    // A swiped-away photo leaves its albums in the same breath, rather than
+    // sitting in one until the session is finished — or, for an album no
+    // rebuild ever touches, for good.
+    refresh_albums_for(&st, &[s.file_id]).await?;
     Ok(Json(json!({ "id": s.file_id, "status": status })))
 }
 
@@ -815,6 +824,9 @@ async fn trash_one(
     }
     let now = now_secs();
     db::set_status(&st.db, &user.username, id, "trashed", Some(now)).await?;
+    // The bin is the last place this photo is listed: the Gallery already
+    // filters by status, and this is what takes it off the album shelves too.
+    refresh_albums_for(&st, &[id]).await?;
     Ok(Json(
         json!({ "id": id, "status": "trashed", "trashed_at": now }),
     ))
@@ -1371,6 +1383,10 @@ async fn trash_restore(
         .await?;
     }
     db::set_status(&st.db, &user.username, id, "pending", None).await?;
+    // Membership survived the deletion, so putting the file back puts it back
+    // in the albums it was filed under — including manual ones, which nothing
+    // would ever rebuild.
+    refresh_albums_for(&st, &[id]).await?;
     Ok(Json(json!({ "id": id, "status": "pending" })))
 }
 
@@ -1383,9 +1399,12 @@ async fn trash_purge_one(
     if m.status != "trashed" {
         return Err(ApiError::bad("file is not in trash"));
     }
+    // Read the membership before `delete_media_row` takes those rows with it.
+    let touched = albums_holding(&st, &[id]).await?;
     fileops::purge(FsPath::new(&m.path)).map_err(ApiError::internal)?;
     db::delete_media_row(&st.db, id).await?;
     drop_derived(&st, &m);
+    refresh_albums(&st, touched).await?;
     Ok(Json(json!({ "purged": id })))
 }
 
@@ -1394,6 +1413,8 @@ async fn trash_purge_all(
     user: AuthUser,
 ) -> Result<Json<Value>, ApiError> {
     let files = db::list_status(&st.db, &user.username, "trashed").await?;
+    let ids: Vec<i64> = files.iter().map(|f| f.id).collect();
+    let touched = albums_holding(&st, &ids).await?;
     let mut purged = 0usize;
     for f in files {
         fileops::purge(FsPath::new(&f.path)).map_err(ApiError::internal)?;
@@ -1401,6 +1422,7 @@ async fn trash_purge_all(
         drop_derived(&st, &f);
         purged += 1;
     }
+    refresh_albums(&st, touched).await?;
     Ok(Json(json!({ "purged": purged })))
 }
 
@@ -1429,6 +1451,20 @@ async fn run_retention(st: &AppState) {
     for user in users {
         match db::expired_trash(&st.db, &user, retention_secs).await {
             Ok(expired) => {
+                // Album membership outlives a deletion so a restore can undo
+                // it, which means a purge is where those rows finally go — and
+                // the counts they fed have to be recomputed afterwards. Read
+                // straight from `db` rather than through the request helpers:
+                // nothing here has a response to put an `ApiError` in, and a
+                // sweep must not abandon the rest of the user's expired files
+                // because one lookup failed.
+                let mut touched: HashSet<i64> = HashSet::new();
+                for f in &expired {
+                    match db::album_ids_for_file(&st.db, f.id).await {
+                        Ok(ids) => touched.extend(ids),
+                        Err(e) => tracing::warn!("retention: albums for {}: {e}", f.id),
+                    }
+                }
                 for f in expired {
                     if let Err(e) = fileops::purge(FsPath::new(&f.path)) {
                         tracing::warn!("retention purge {}: {e}", f.path);
@@ -1437,6 +1473,11 @@ async fn run_retention(st: &AppState) {
                     } else {
                         drop_derived(st, &f);
                         tracing::info!("retention: purged {}", f.filename);
+                    }
+                }
+                for aid in touched {
+                    if let Err(e) = db::refresh_album_meta(&st.db, aid).await {
+                        tracing::warn!("retention: refreshing album {aid}: {e}");
                     }
                 }
             }
@@ -1472,6 +1513,39 @@ async fn owned_media(st: &AppState, username: &str, id: i64) -> Result<MediaFile
         return Err(ApiError::not_found("media not found"));
     }
     Ok(m)
+}
+
+/// Every album the given files are filed under.
+///
+/// Collected *before* a purge, because the membership rows that name those
+/// albums are deleted along with the file's row.
+async fn albums_holding(st: &AppState, file_ids: &[i64]) -> Result<HashSet<i64>, ApiError> {
+    let mut ids = HashSet::new();
+    for id in file_ids {
+        ids.extend(db::album_ids_for_file(&st.db, *id).await?);
+    }
+    Ok(ids)
+}
+
+/// Recompute count and cover for every album in `album_ids`.
+///
+/// An album's count and cover are stored columns, not live queries — the Albums
+/// tab reads every album at once, and one subquery per card per request is not
+/// a trade worth making. The cost is that nothing notices a file being binned,
+/// restored or purged until its albums are recomputed, which is why this runs
+/// after every status change rather than only when a photo is filed.
+async fn refresh_albums(st: &AppState, album_ids: HashSet<i64>) -> Result<(), ApiError> {
+    for aid in album_ids {
+        db::refresh_album_meta(&st.db, aid).await?;
+    }
+    Ok(())
+}
+
+/// [`albums_holding`] then [`refresh_albums`], for the common case where the
+/// files survive the change and their membership rows are still there to read.
+async fn refresh_albums_for(st: &AppState, file_ids: &[i64]) -> Result<(), ApiError> {
+    let ids = albums_holding(st, file_ids).await?;
+    refresh_albums(st, ids).await
 }
 
 /// Where the cached preview for `id` lives.
@@ -3327,6 +3401,144 @@ mod tests {
         // Neither an id nor a name is a bad request, not a silent no-op.
         let r = add(st.clone(), auth.clone(), r#"{"file_id":1}"#).await;
         assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// A binned photo leaves every album it was filed under — and comes back
+    /// to them when it is put back.
+    ///
+    /// This is the bug that made an album a place a deleted photo could hide:
+    /// the Gallery filters on status and the trash lists it, but the album grid
+    /// joined `album_file` with no filter at all, so the photo stayed on the
+    /// shelf, kept its place in the count, and could not be removed from there
+    /// — the viewer's Delete answers "already in the trash" for a file that is.
+    #[tokio::test]
+    async fn binning_a_photo_takes_it_off_the_album_shelf() {
+        let st = test_state().await;
+        let auth = bearer(&st);
+
+        // File the one test photo into an album of the user's own.
+        let r = app(st.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/albums/add")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"file_id":1,"name":"Trip"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+        let album_id = body_json(r).await["album_id"].as_i64().unwrap();
+
+        let listed = |st: AppState, auth: String, id: i64| async move {
+            let r = app(st)
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/api/albums/{id}/files"))
+                        .header("authorization", auth)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(r.status(), StatusCode::OK);
+            body_json(r).await["files"].as_array().unwrap().len()
+        };
+        let count_of = |st: AppState, id: i64| async move {
+            db::list_albums(&st.db, "saiz")
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|a| a.id == id)
+                .expect("album still there")
+        };
+
+        assert_eq!(listed(st.clone(), auth.clone(), album_id).await, 1);
+        let before = count_of(st.clone(), album_id).await;
+        assert_eq!(before.file_count, 1);
+        assert_eq!(before.cover_file_id, Some(1), "cover is the photo in it");
+
+        // Bin it.
+        let r = app(st.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/media/1/trash")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+
+        assert_eq!(
+            listed(st.clone(), auth.clone(), album_id).await,
+            0,
+            "gone from the album grid"
+        );
+        let after = count_of(st.clone(), album_id).await;
+        assert_eq!(after.file_count, 0, "and gone from the count");
+        assert_eq!(
+            after.cover_file_id, None,
+            "a deleted photo is not an album cover"
+        );
+
+        // …but the membership itself survived, so a restore undoes the whole
+        // thing — including for a manual album, which nothing ever rebuilds.
+        let r = app(st.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/trash/restore/1")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+
+        assert_eq!(
+            listed(st.clone(), auth.clone(), album_id).await,
+            1,
+            "back on the shelf"
+        );
+        assert_eq!(count_of(st.clone(), album_id).await.file_count, 1);
+
+        // Purging for good is what finally drops the membership row.
+        let r = app(st.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/media/1/trash")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+        let r = app(st.clone())
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/api/trash/purge/1")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+
+        assert!(
+            db::album_ids_for_file(&st.db, 1).await.unwrap().is_empty(),
+            "membership goes with the row"
+        );
+        assert_eq!(count_of(st.clone(), album_id).await.file_count, 0);
     }
 
     /// The trash reads as a history of what you just deleted, so it must be
