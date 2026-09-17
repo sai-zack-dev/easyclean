@@ -14,6 +14,7 @@ import { GalleryTab } from './screens/GalleryTab'
 import { AlbumsTab } from './screens/AlbumsTab'
 import { SettingsTab } from './screens/SettingsTab'
 import { TrashScreen } from './screens/TrashScreen'
+import { UploadScreen } from './screens/UploadScreen'
 import { VaultScreen } from './screens/VaultScreen'
 
 export type TabId = 'clean' | 'gallery' | 'albums' | 'setting'
@@ -30,7 +31,16 @@ export function App() {
   const [swipe, setSwipe] = useState<SwipeTarget | null>(null)
   const [dupOpen, setDupOpen] = useState(false)
   const [trashOpen, setTrashOpen] = useState(false)
+  const [uploadOpen, setUploadOpen] = useState(false)
   const [vaultOpen, setVaultOpen] = useState(false)
+  /**
+   * Bumped when an upload lands, so the tab underneath refetches on return.
+   *
+   * A counter rather than a boolean: two batches in a row have to be two
+   * distinct changes, or the second one leaves the Clean tab showing counts
+   * from before it.
+   */
+  const [libraryVersion, setLibraryVersion] = useState(0)
   const [toastMsg, setToastMsg] = useState('')
   /** A newer build is installed and waiting for a reload. */
   const [updateReady, setUpdateReady] = useState(false)
@@ -150,6 +160,12 @@ export function App() {
         <DuplicateScreen onClose={() => setDupOpen(false)} toast={toast} />
       ) : trashOpen ? (
         <TrashScreen onClose={() => setTrashOpen(false)} toast={toast} />
+      ) : uploadOpen ? (
+        <UploadScreen
+          onClose={() => setUploadOpen(false)}
+          toast={toast}
+          onUploaded={() => setLibraryVersion((v) => v + 1)}
+        />
       ) : vaultOpen ? (
         // Replaces the whole shell, tab bar included: the vault is not a tab,
         // and leaving one visible would be a way back out that skips the lock.
@@ -162,6 +178,8 @@ export function App() {
               <CleanTab
                 onSwipe={(t) => setSwipe(t)}
                 onDuplicates={() => setDupOpen(true)}
+                onUpload={() => setUploadOpen(true)}
+                refreshKey={libraryVersion}
                 toast={toast}
               />
             )}

@@ -27,7 +27,15 @@ export default defineConfig({
   server: {
     proxy: {
       '/api': {
-        target: 'http://localhost:8080',
+        /*
+         * Where `npm run dev` looks for the API.
+         *
+         * Overridable because 8080 is a popular port — if something else on the
+         * machine already has it, the server ends up somewhere else and the dev
+         * UI silently proxies to whatever is squatting there. `EASYCLEAN_DEV_API`
+         * points it at the real one; the default is unchanged.
+         */
+        target: process.env.EASYCLEAN_DEV_API ?? 'http://localhost:8080',
         changeOrigin: true,
       },
     },

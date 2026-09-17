@@ -16,10 +16,14 @@ interface Props {
   onSwipe: (target: SwipeTarget) => void
   /** Duplicates open their own compare screen rather than the swipe deck. */
   onDuplicates: () => void
+  /** Sending photos up — the other way to get files into the library. */
+  onUpload: () => void
+  /** Changes when an upload lands, so these counts refetch on return. */
+  refreshKey: number
   toast: (msg: string) => void
 }
 
-export function CleanTab({ onSwipe, onDuplicates, toast }: Props) {
+export function CleanTab({ onSwipe, onDuplicates, onUpload, refreshKey, toast }: Props) {
   const { user } = useSession()
   const [timeline, setTimeline] = useState<TimelineMonth[]>([])
   const [streakStats, setStreak] = useState<StreakStats | null>(null)
@@ -78,7 +82,7 @@ export function CleanTab({ onSwipe, onDuplicates, toast }: Props) {
       .catch(() => {})
   }
 
-  useEffect(() => { load() }, [])
+  useEffect(() => { load() }, [refreshKey])
 
   const scan = async () => {
     setScanning(true)
@@ -122,10 +126,18 @@ export function CleanTab({ onSwipe, onDuplicates, toast }: Props) {
           <div className="page-title">EasyClean</div>
           <div className="page-subtitle">Welcome, {user?.username ?? 'User'}</div>
         </div>
-        <button className="pill-btn" onClick={scan} disabled={scanning}>
-          {scanning ? <Spinner /> : <IC.scan />}
-          {scanning ? scanMsg || 'Scanning…' : 'Scan'}
-        </button>
+        {/* Two ways in, side by side: Scan finds what is already on the
+            server's disk, Add sends files it has never seen. */}
+        <div className="header-actions">
+          <button className="pill-btn ghost" onClick={onUpload} disabled={scanning}>
+            <IC.upload />
+            Add
+          </button>
+          <button className="pill-btn" onClick={scan} disabled={scanning}>
+            {scanning ? <Spinner /> : <IC.scan />}
+            {scanning ? scanMsg || 'Scanning…' : 'Scan'}
+          </button>
+        </div>
       </div>
 
       {/* STREAK CARD */}

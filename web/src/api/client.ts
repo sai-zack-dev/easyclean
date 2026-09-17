@@ -508,6 +508,63 @@ export const api = {
       body,
     ),
 
+  /**
+   * Sending photos to the server.
+   *
+   * `chunk` is the one call that does not go through `request`: its body is raw
+   * bytes, not JSON, so it sets its own Content-Type and skips the serialiser.
+   * It keeps `request`'s 401 handling by hand for the same reason every other
+   * call has it — a session that expired mid-batch should land on the login
+   * screen, not fail silently for the rest of the upload.
+   */
+  upload: {
+    /** Which of these digests the server already holds. */
+    check: (hashes: string[]) =>
+      request<{ have: string[]; need: string[] }>('POST', '/api/upload/check', { hashes }),
+
+    quota: () =>
+      request<{ used: number; limit: number | null; chunk_size: number }>(
+        'GET',
+        '/api/upload/quota',
+      ),
+
+    init: (filename: string, size: number, hash: string) =>
+      request<{ id: string; offset: number; chunk_size: number; filename: string }>(
+        'POST',
+        '/api/upload/init',
+        { filename, size, hash },
+      ),
+
+    /** Where to resume from, after a dropped connection or a 409. */
+    offset: (id: string) =>
+      request<{ id: string; offset: number }>('GET', `/api/upload/${id}`).then((r) => r.offset),
+
+    chunk: async (id: string, offset: number, blob: Blob): Promise<number> => {
+      const h: Record<string, string> = { 'Content-Type': 'application/octet-stream' }
+      const token = useSession.getState().token
+      if (token) h['Authorization'] = `Bearer ${token}`
+      const res = await fetch(`${getBase()}/api/upload/${id}/chunk?offset=${offset}`, {
+        method: 'PUT',
+        headers: h,
+        body: blob,
+      })
+      if (res.status === 401) {
+        useSession.getState().logout()
+        throw new ApiError(401, await errorMessage(res))
+      }
+      if (!res.ok) throw new ApiError(res.status, await errorMessage(res))
+      return ((await res.json()) as { offset: number }).offset
+    },
+
+    finish: (id: string) =>
+      request<{ file_id: number; filename: string; size: number }>(
+        'POST',
+        `/api/upload/${id}/finish`,
+      ),
+
+    abort: (id: string) => request<{ aborted: boolean }>('DELETE', `/api/upload/${id}`),
+  },
+
   trash: () => request<{ files: MediaFile[] }>('GET', '/api/trash').then((r) => r.files ?? []),
   trashRestore: (id: number) => request<void>('POST', `/api/trash/restore/${id}`),
   trashPurge: (id: number) => request<void>('DELETE', `/api/trash/purge/${id}`),

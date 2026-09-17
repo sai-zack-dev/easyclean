@@ -4072,3 +4072,271 @@ body.modal-open .vault-screen {
     padding-bottom: calc(var(--tab) + env(safe-area-inset-bottom));
   }
 }
+
+/* ── ADD PHOTOS ─────────────────────────────────────── */
+/*
+ * Reuses the full-screen shell the Trash and the swipe decks use
+ * (.swipe-screen / .swipe-header), and the .idx-bar / .idx-fill pair the
+ * search-index build already had, rather than inventing a second progress bar
+ * that would drift from it.
+ */
+.up-quota {
+  padding: 12px 20px 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.up-quota-note {
+  font-size: 12px;
+  color: var(--text3);
+}
+
+.up-drop {
+  margin: 20px;
+  padding: 40px 28px;
+  border: 1px dashed var(--border);
+  border-radius: var(--r-lg);
+  background: var(--bg3);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 10px;
+  transition: border-color 0.15s var(--ease), background 0.15s var(--ease);
+}
+.up-drop.over {
+  border-color: var(--accent);
+  background: var(--fill);
+}
+/* Direct child only — a descendant selector also caught the icon inside the
+   button below, blowing it up to 40px. */
+.up-drop > svg {
+  width: 40px;
+  height: 40px;
+  stroke: var(--text3);
+  fill: none;
+  stroke-width: 1.3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  margin-bottom: 2px;
+}
+.up-drop-title {
+  font-size: 17px;
+  font-weight: 600;
+}
+.up-drop-sub {
+  font-size: 13px;
+  color: var(--text3);
+  line-height: 1.5;
+  max-width: 34ch;
+}
+/* Accent-filled here, unlike everywhere else a pill-btn appears. This is the
+   only action on an otherwise empty screen, and the default pill uses the same
+   --bg3 as the card behind it, so it read as plain text. */
+.up-drop .pill-btn {
+  margin-top: 10px;
+  background: var(--accent);
+  color: var(--accent-on);
+  padding: 10px 20px;
+  font-size: 14px;
+}
+.up-drop-hint {
+  font-size: 12px;
+  color: var(--text3);
+}
+/* Dropping is a pointer gesture; on a touch device the line is a lie. */
+@media (hover: none) {
+  .up-drop-hint {
+    display: none;
+  }
+}
+
+.up-summary {
+  margin: 12px 20px 4px;
+  padding: 14px 16px;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.up-summary-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 13px;
+  color: var(--text2);
+}
+.up-pct {
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+  font-weight: 600;
+}
+.up-warn {
+  font-size: 12px;
+  color: var(--delete);
+  line-height: 1.5;
+}
+.up-result {
+  font-size: 13px;
+  color: var(--text2);
+}
+
+.up-list {
+  padding: 8px 20px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.up-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+}
+.up-row.skipped,
+.up-row.failed {
+  opacity: 0.72;
+}
+.up-thumb {
+  width: 44px;
+  height: 44px;
+  flex: none;
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--fill);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text3);
+}
+.up-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.up-thumb svg {
+  width: 18px;
+  height: 18px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.up-meta {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.up-name {
+  font-size: 14px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.up-sub {
+  font-size: 12px;
+  color: var(--text3);
+}
+.up-row.failed .up-sub {
+  color: var(--delete);
+}
+.up-row.done .up-sub {
+  color: var(--keep);
+}
+.up-row-bar {
+  margin-top: 4px;
+}
+.up-state {
+  flex: none;
+  width: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text3);
+}
+.up-state svg {
+  width: 18px;
+  height: 18px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.up-row.done .up-state {
+  color: var(--keep);
+}
+.up-row.failed .up-state {
+  color: var(--delete);
+}
+
+/*
+ * The action row is pinned, not in flow: a 200-file list is long, and a Cancel
+ * button you have to scroll to the bottom to reach is not a cancel button.
+ */
+.up-actions {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  gap: 10px;
+  padding: 12px 20px calc(12px + env(safe-area-inset-bottom));
+  background: var(--bg);
+  border-top: 1px solid var(--border);
+}
+.up-btn {
+  flex: 1;
+  height: 46px;
+  border-radius: var(--r);
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--bg3);
+  color: var(--text);
+  transition: filter 0.15s var(--ease);
+}
+.up-btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-on);
+}
+.up-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.up-btn:not(:disabled):hover {
+  filter: brightness(1.06);
+}
+
+/*
+ * Two header actions where there was one.
+ *
+ * Scan and Add do different jobs — one indexes what is already on the server's
+ * disk, the other sends files it has never seen — so they sit together rather
+ * than one hiding in a menu. Add is outlined rather than filled: on this screen
+ * Scan is still the habitual action, and two identical pills would make the
+ * user read both every time.
+ */
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.pill-btn.ghost {
+  background: transparent;
+  border: 1px solid var(--border2);
+  color: var(--text2);
+}
+.pill-btn.ghost:hover:not(:disabled) {
+  background: var(--bg3);
+  color: var(--text);
+}
