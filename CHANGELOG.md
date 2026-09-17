@@ -8,6 +8,50 @@ All notable changes to EasyClean are documented here. The format follows
 
 Nothing yet.
 
+## [0.4.2] — 2026-09-17
+
+Containment for the part of the pipeline Rust cannot vouch for. Every photo indexed is a file this
+server did not write, and two of the things that read it — libheif for HEIC, ffmpeg for video — are C
+libraries.
+
+Patch: no API change, and the one new setting is optional. **The container hardening does not arrive
+with the image**, though; see Notes.
+
+### Changed
+- **The container is confined.** Read-only root filesystem with a 256 MB `tmpfs` for `/tmp`, all
+  Linux capabilities dropped, `no-new-privileges`, a 2 GB memory ceiling (`EASYCLEAN_MEM_LIMIT`, so
+  you can raise it) and a 512-process limit — in both the production and the from-source compose
+  files, because a local run that behaves differently from production is not much of a rehearsal.
+  The image already ran as a non-root user; this is about what that user can reach if a malformed
+  photo ever gets libheif or ffmpeg to misbehave. Verified end to end under every one of these
+  constraints: boot, login, scan, blur scoring, thumbnail, preview, and `secret.key` generated
+  `0600` on a read-only root.
+- **Decode bounds are stated rather than inherited.** `open_image` goes through `ImageReader` and
+  sets an explicit maximum edge of 65,535 px alongside the allocation cap. Two tests come with it:
+  one pinning the bounds, and one proving the reader actually honours limits on this path — which is
+  the property that would quietly disappear if it ever went back to `image::open`.
+
+### Notes
+- **Correction to the 0.4.1 notes.** Those said no decode limits were set and that a decompression
+  bomb could still cost memory. That was wrong. `image::open` already applies `Limits::default()`,
+  which caps one decode at 512 MiB, and `decode()` enforces it by calling `limits.reserve(...)` with
+  the decoder's declared size *before* allocating. libheif's hook implements `image::ImageDecoder`,
+  so HEIC was covered by that check too. The allocation cap was doing the work all along; this
+  release makes the bounds explicit and adds dimension limits, which is a smaller claim than the one
+  0.4.1 made.
+- **The hardening needs one manual step.** The rollout job rewrites `.env` and runs
+  `docker compose up -d`; it does not replace `/opt/easyclean/docker-compose.yml`. Upgrading the
+  image alone will not confine the container. Re-run `deploy/install.sh` on the server — it
+  overwrites `docker-compose.yml` and deliberately leaves an existing `.env` alone — or copy
+  `deploy/docker-compose.yml` across by hand and `docker compose up -d`.
+- The allocation cap stays at 512 MiB on purpose. A 48-megapixel phone photo needs about 144 MB
+  decoded, so a tighter cap would start refusing real photographs. Total memory is bounded at the
+  container instead, where it also covers what libheif and ffmpeg allocate out of Rust's reach.
+- `.claude/auth-redesign-brief.md` records the account-management work this release does not do:
+  self-service passcode change, token revocation, and making `.env` a bootstrap credential rather
+  than a permanent override. The third blocks the first — 0.4.0 made the environment re-apply on
+  every boot, so an in-app change would be overwritten on restart.
+
 ## [0.4.1] — 2026-09-17
 
 The four surfaces the 0.4.0 audit did not reach: a sweep of every route for authorization, error
