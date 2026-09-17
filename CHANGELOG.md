@@ -8,6 +8,49 @@ All notable changes to EasyClean are documented here. The format follows
 
 Nothing yet.
 
+## [0.4.1] — 2026-09-17
+
+The four surfaces the 0.4.0 audit did not reach: a sweep of every route for authorization, error
+responses, the dependency tree, and what happens when a malformed photo is scanned. Three of the four
+came back clean; this releases the one fix and three dependency bumps.
+
+Patch rather than minor: no API changes, no configuration changes, nothing to do before upgrading.
+
+### Security
+- **Internal errors no longer reach the client.** `From<easyclean_core::Error>` turned any failure
+  into a 500 whose body was the error's own text — which could carry `sqlx` messages naming columns
+  and SQL, an `io::Error`, a `<data_dir>` path, or whatever `EASYCLEAN_CLIP_BASE_URL` points at. The
+  reachable-without-logging-in case was `login`, which queries the database before it has
+  authenticated anyone. The cause is now logged and a fixed sentence is returned instead. Scrubbing
+  happens both where a 500 is built and again in `into_response`, so it holds for any 5xx however it
+  was constructed; messages written by hand for a 4xx are untouched and still explain themselves.
+- **rustls 0.23.44 → 0.23.45** (RUSTSEC-2026-0285, medium): TLS 1.3 handshake messages accepted
+  across encryption level boundaries. This is the TLS client that fetches the CLIP weights.
+- **crossbeam-epoch 0.9.18 → 0.9.21** (RUSTSEC-2026-0204): invalid pointer dereference in the
+  `fmt::Pointer` impl for `Atomic`/`Shared`. Reached through `rayon`, by way of `image`.
+- **anyhow 1.0.102 → 1.0.104** (RUSTSEC-2026-0190): unsoundness in `Error::downcast_mut()`.
+
+### Notes
+- `cargo audit` reports one remaining advisory, `rsa` (RUSTSEC-2023-0071, the Marvin timing attack),
+  for which no fixed version exists. It is not reachable here: `cargo tree -i rsa -e normal` finds no
+  path to it, so no RSA code is compiled into the server. The three remaining warnings — `paste`
+  unmaintained, `event-listener` unsound, `spin` yanked — are transitive with no reachable path.
+- `npm audit` reports two advisories in `browserslist` and `baseline-browser-mapping`. Both are
+  build-time development dependencies and both are denial-of-service class; neither ships to a
+  browser.
+- **The authorization sweep found nothing.** All 44 routes were enumerated and matched to their
+  handlers: only `/api/health` and `/api/auth/login` are unauthenticated, both deliberately. Twelve
+  database functions take an id without a user parameter, and every call site of all twelve is
+  guarded — by `owned_media`, by ids that came from a user-scoped query, or by an explicit ownership
+  check. Album access is scoped in SQL.
+- **Malformed media handling came back clean too.** The EXIF GPS parser bounds-checks before
+  indexing, `decode.rs` propagates every failure rather than unwrapping, and — the part worth
+  recording — no attacker-controlled EXIF *string* is ever stored. Only a timestamp and two
+  coordinates are read out of a photo's metadata, which is what keeps a crafted file from reaching
+  the database as text. Two residual risks stay open by design: no decode limits are set, so a
+  decompression bomb can still cost memory; and libheif and ffmpeg are C libraries, where Rust's
+  guarantees stop.
+
 ## [0.4.0] — 2026-09-16
 
 A security release, from an audit of the whole system: every route, the path and SQL layers, the
