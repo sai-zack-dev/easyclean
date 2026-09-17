@@ -172,6 +172,7 @@ mod tests {
             gps_lon: None,
             is_favorite: false,
             thumb_path: None,
+            content_hash: None,
         }
     }
 

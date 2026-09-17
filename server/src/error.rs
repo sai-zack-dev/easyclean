@@ -53,8 +53,58 @@ impl IntoResponse for ApiError {
 }
 
 impl From<easyclean_core::Error> for ApiError {
+    /// Most core errors are nobody's business but the log's, so the default
+    /// stays [`ApiError::internal`]. The upload variants are the exception:
+    /// each names something the *caller* did or must do about it, and answering
+    /// "internal server error" to "you are out of quota" gives a user no way to
+    /// act.
+    ///
+    /// Only variants whose message is safe by construction are passed through —
+    /// fixed sentences and numbers the caller already supplied. None of them
+    /// carries a path, a query or a filesystem detail.
     fn from(e: easyclean_core::Error) -> Self {
-        ApiError::internal(e)
+        use easyclean_core::Error as E;
+        match e {
+            E::InvalidFilename(msg) => ApiError(StatusCode::BAD_REQUEST, msg),
+            E::UnsupportedMedia(name) => ApiError(
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                format!("{name} is not a photo or video EasyClean can read"),
+            ),
+            E::UploadNotFound => ApiError::not_found("no such upload"),
+            // 409 rather than 400: the request was well-formed, it just no
+            // longer matches the server's idea of where the file ends. The
+            // client's move is to re-read the offset and continue from there,
+            // not to give up on the file.
+            E::OffsetMismatch { expected } => ApiError(
+                StatusCode::CONFLICT,
+                format!("chunk offset mismatch: expected {expected}"),
+            ),
+            E::HashMismatch => ApiError(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "uploaded data does not match the declared hash".into(),
+            ),
+            E::QuotaExceeded {
+                used,
+                limit,
+                needed,
+            } => ApiError(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                format!(
+                    "quota exceeded: {used} of {limit} bytes used, {needed} more requested — \
+                     empty the trash or ask the admin for more room"
+                ),
+            ),
+            // 507 is a 5xx, so `into_response` replaces this sentence with the
+            // generic one — deliberately. The status code is what carries the
+            // meaning here, and the client turns it into "the server is out of
+            // space" without the body having to say anything. Weakening the
+            // scrubbing rule for one friendly message is not worth it.
+            E::DiskFull => ApiError(
+                StatusCode::INSUFFICIENT_STORAGE,
+                "the server is out of disk space".into(),
+            ),
+            other => ApiError::internal(other),
+        }
     }
 }
 

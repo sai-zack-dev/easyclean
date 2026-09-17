@@ -101,11 +101,17 @@ async fn main() -> anyhow::Result<()> {
         scan: Default::default(),
         rate_limiter: LoginRateLimiter::default(),
         index: Default::default(),
+        uploads: Default::default(),
+        upload_settle: Default::default(),
         clip: Default::default(),
     };
 
     // Start the 30-day retention purge task (runs every hour).
     routes::spawn_retention_task(state.clone()).await;
+
+    // Clear scratch files left by uploads this process knows nothing about,
+    // then reclaim abandoned sessions hourly.
+    routes::spawn_upload_sweeper(state.clone()).await;
 
     let app = routes::router(state).into_make_service_with_connect_info::<SocketAddr>();
 

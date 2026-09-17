@@ -9,18 +9,29 @@ pub struct UserRoot {
     root: PathBuf,
 }
 
+/// Check that a username is safe to use as a single directory name.
+///
+/// Its own function because the media root is no longer the only place a
+/// username becomes a path: upload scratch files live under
+/// `<data_dir>/uploads/<user>/` too, and a second hand-written copy of this
+/// check is how the two drift apart.
+pub fn validate_user_segment(user: &str) -> Result<()> {
+    if user.is_empty()
+        || user == "."
+        || user == ".."
+        || user.contains('/')
+        || user.contains('\\')
+        || user.contains('\0')
+    {
+        return Err(Error::InvalidUser(user.to_string()));
+    }
+    Ok(())
+}
+
 impl UserRoot {
     /// `media_root/<user>`. Rejects usernames that aren't a single safe segment.
     pub fn new(media_root: &Path, user: &str) -> Result<Self> {
-        if user.is_empty()
-            || user == "."
-            || user == ".."
-            || user.contains('/')
-            || user.contains('\\')
-            || user.contains('\0')
-        {
-            return Err(Error::InvalidUser(user.to_string()));
-        }
+        validate_user_segment(user)?;
         Ok(Self {
             root: media_root.join(user),
         })

@@ -42,8 +42,9 @@ pub async fn init(db_path: &Path) -> Result<Db> {
 pub async fn insert_media(pool: &Db, m: &NewMedia) -> Result<i64> {
     let res = sqlx::query(
         "INSERT OR IGNORE INTO media_file \
-         (user, path, rel_path, filename, media_type, size_bytes, created_at, gps_lat, gps_lon) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         (user, path, rel_path, filename, media_type, size_bytes, created_at, gps_lat, gps_lon, \
+          content_hash) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&m.user)
     .bind(&m.path)
@@ -54,6 +55,7 @@ pub async fn insert_media(pool: &Db, m: &NewMedia) -> Result<i64> {
     .bind(m.created_at)
     .bind(m.gps_lat)
     .bind(m.gps_lon)
+    .bind(&m.content_hash)
     .execute(pool)
     .await?;
     Ok(res.last_insert_rowid())
@@ -80,6 +82,60 @@ pub async fn existing_paths(pool: &Db, user: &str) -> Result<HashSet<String>> {
         .fetch_all(pool)
         .await?;
     Ok(rows.into_iter().map(|(p,)| p).collect())
+}
+
+/// Which of `hashes` this user already has indexed.
+///
+/// The question an uploading client asks before sending anything: a phone that
+/// re-offers its whole camera roll next month should transfer only what is
+/// genuinely new. Scoped to the user because a hash is a fact about *their*
+/// library — telling one user that another already holds a file would leak the
+/// contents of a folder they cannot see.
+///
+/// Trashed rows count as present. The file is still on disk in `.trash` and
+/// still inside the quota, and re-uploading a photo the user just deleted would
+/// silently resurrect it.
+pub async fn hashes_present(pool: &Db, user: &str, hashes: &[String]) -> Result<HashSet<String>> {
+    let mut found = HashSet::new();
+    if hashes.is_empty() {
+        return Ok(found);
+    }
+    // SQLite caps bound parameters per statement (999 on builds older than
+    // 3.32). Chunk well under it rather than discovering the ceiling in
+    // production, with a large camera roll, on someone else's phone.
+    for batch in hashes.chunks(500) {
+        let placeholders = std::iter::repeat_n("?", batch.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT content_hash FROM media_file \
+             WHERE user = ? AND content_hash IN ({placeholders})"
+        );
+        let mut q = sqlx::query_as::<_, (String,)>(&sql).bind(user);
+        for h in batch {
+            q = q.bind(h);
+        }
+        for (h,) in q.fetch_all(pool).await? {
+            found.insert(h);
+        }
+    }
+    Ok(found)
+}
+
+/// Bytes this user's indexed media occupies, for quota accounting.
+///
+/// Every status counts, trashed and vaulted included. Both are still files on
+/// the disk — a quota that ignored them would let someone upload their ceiling,
+/// delete it all, and upload it again, with the disk filling the whole time.
+/// Emptying the trash is what frees quota, which is also the honest thing to
+/// tell a user who has run out.
+pub async fn bytes_used(pool: &Db, user: &str) -> Result<i64> {
+    let row: (i64,) =
+        sqlx::query_as("SELECT COALESCE(SUM(size_bytes), 0) FROM media_file WHERE user = ?")
+            .bind(user)
+            .fetch_one(pool)
+            .await?;
+    Ok(row.0)
 }
 
 /// Files that still need analysis (no perceptual hash yet): `(id, path, media_type)`.
@@ -1511,6 +1567,7 @@ mod tests {
                 created_at: 1_700_000_000,
                 gps_lat: None,
                 gps_lon: None,
+                content_hash: None,
             },
         )
         .await

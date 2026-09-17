@@ -24,6 +24,10 @@ services:
       # Set it explicitly to manage rotation yourself: openssl rand -hex 32
       EASYCLEAN_SECRET: ${EASYCLEAN_SECRET:-}
       EASYCLEAN_TRASH_RETENTION_DAYS: ${EASYCLEAN_TRASH_RETENTION_DAYS:-30}
+      # Upload limits — see deploy/docker-compose.yml for what each one means.
+      EASYCLEAN_QUOTAS: ${EASYCLEAN_QUOTAS:-}
+      EASYCLEAN_DISK_FLOOR: ${EASYCLEAN_DISK_FLOOR:-5G}
+      EASYCLEAN_UPLOAD_CHUNK_SIZE: ${EASYCLEAN_UPLOAD_CHUNK_SIZE:-10M}
       RUST_LOG: ${RUST_LOG:-info}
     ports:
       - "${PORT:-8080}:8080"

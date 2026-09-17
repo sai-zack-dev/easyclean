@@ -6,7 +6,50 @@ All notable changes to EasyClean are documented here. The format follows
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+- **Uploads, resumable and verified.** Six endpoints under `/api/upload`. A client hashes its files
+  first and asks `check` which ones the server already holds, so re-offering a whole camera roll next
+  month transfers only what is new. Each remaining file then goes `init` → `chunk` → `finish`, with
+  every chunk carrying the offset it belongs at: a dropped connection resumes from
+  `GET /api/upload/:id` rather than starting the file again.
+
+  The verification is the point. The server recomputes SHA-256 over the bytes it received and
+  discards anything that does not match what was promised — the case that matters is not a liar but
+  a truncated transfer, which would otherwise become a permanently broken photo with the evidence
+  gone. Filenames are stripped to their last component and checked against the extensions this app
+  can actually decode, so `../../etc/evil.jpg` lands in `source/` as `evil.jpg` and `payload.sh` is
+  refused before a single byte moves.
+
+  Scratch files live under `<data_dir>/uploads/`, never in the media root: a half-written file there
+  cannot be scanned, indexed, thumbnailed or served, which one sitting in `source/` could be. They
+  are cleared at startup and swept hourly.
+
+- **Per-user quotas and a disk-space floor.** `EASYCLEAN_QUOTAS=lily=20GB,zack=50GB` sets ceilings;
+  `EASYCLEAN_DISK_FLOOR` (default 5 GiB) refuses uploads before the disk can reach zero, because a
+  full disk is not a smaller version of a working one — SQLite cannot write, and the one action that
+  would recover the situation, deleting things, is also the one that stops working.
+
+  Quotas are read live, database first and environment second, and **seeding never writes them**.
+  That is deliberate: account seeding re-applies `.env` on every boot, so a quota stored the same way
+  would be reverted by the next restart — the trap documented in `.claude/auth-redesign-brief.md`.
+  The admin UI can therefore write quotas today, before that brief's work lands, and a restart will
+  not undo it. A user cannot raise their own ceiling: `settings_put` still accepts exactly one field,
+  and there is a test that says so.
+
+- **Uploads process themselves.** A finished upload is indexed immediately, then a debounced pass
+  five seconds after the *last* file in a batch runs thumbnails, blur scoring and duplicate hashing —
+  one pass per batch, not one per photo. Semantic search follows automatically where the CLIP weights
+  are already present; the first ~150 MB download stays an explicit choice in Settings rather than
+  something a photo upload triggers on a home connection.
+
+### Changed
+- `media_file` gains `content_hash` (migration `0009`), written only by uploads. Deliberately not
+  `phash`: that column is perceptual and exists to match photos that merely *look* alike, which is
+  the opposite of what "have I already received these exact bytes?" needs.
+- `core::Error`'s upload variants map to real status codes rather than a blanket 500 — 413 for a full
+  quota with the numbers attached, 409 for a misaimed chunk carrying the offset to resume from, 415,
+  422, 404. The 5xx scrubbing rule is untouched: a full disk answers 507 and lets the status code
+  carry the meaning.
 
 ## [0.4.4] — 2026-09-20
 

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::error::{Error, Result};
@@ -8,6 +9,33 @@ const SECRET_FILE: &str = "secret.key";
 /// Shortest `EASYCLEAN_SECRET` accepted. Matches what [`random_hex_32`]
 /// produces, so an operator-supplied key is held to the generated one's bar.
 const MIN_SECRET_LEN: usize = 32;
+
+/// Default bytes per upload chunk, advertised to clients at `init`.
+///
+/// The tension is re-sent data versus round-trips: a dropped connection costs
+/// the client whatever of the current chunk was already in flight, while a
+/// small chunk pays request overhead on every one. 10 MiB is a comfortable
+/// middle on phone Wi-Fi.
+///
+/// It is also a memory figure. A chunk is buffered whole before being appended,
+/// so the request body limit is set from this value and the worst case is one
+/// chunk per concurrent upload — bounded and predictable, which a streaming
+/// write would not be: a stream that fails halfway leaves bytes on disk that
+/// the session's offset does not know about, and unwinding that is more ways to
+/// be wrong than a household photo server needs. Raising this raises the
+/// ceiling on both counts.
+const DEFAULT_CHUNK_SIZE: u64 = 10 * 1024 * 1024;
+
+/// Default free-space reserve, below which uploads are refused.
+///
+/// A disk at literally zero bytes is not a smaller version of a full disk, it
+/// is a broken one: SQLite cannot write (and a database that runs out of room
+/// mid-write can be left corrupt), `.trash` moves fail, and thumbnails fail —
+/// which means the one action that would recover the situation, deleting
+/// things, is also the one that stops working. Refusing new uploads while a
+/// reserve is still intact keeps deletion, browsing and swiping alive so the
+/// user can dig themselves out.
+const DEFAULT_DISK_FLOOR: u64 = 5 * 1024 * 1024 * 1024;
 
 /// Where the JWT signing secret came from. Surfaced at startup so an operator
 /// can tell a configured secret from a generated one.
@@ -57,6 +85,19 @@ pub struct Config {
     pub cors_origins: Vec<String>,
     /// Users seeded into the DB when it's empty.
     pub users: Vec<UserSeed>,
+    /// Bytes per upload chunk, advertised to clients.
+    pub upload_chunk_size: u64,
+    /// Refuse uploads when free space on the media filesystem drops below this.
+    pub disk_floor_bytes: u64,
+    /// Per-user upload ceilings from `EASYCLEAN_QUOTAS`, in bytes.
+    ///
+    /// A *fallback*, never the authority: [`quota_bytes`] consults the database
+    /// first so an admin's in-app change wins. Seeding deliberately does not
+    /// copy these into the database — that is the trap `.env` already sets for
+    /// passcodes, where re-seeding on every boot would overwrite whatever the
+    /// admin changed (see `.claude/auth-redesign-brief.md`). Read live at
+    /// request time, written nowhere, nothing to clobber.
+    pub quotas: HashMap<String, u64>,
 }
 
 impl Default for Config {
@@ -79,6 +120,11 @@ impl Default for Config {
             // server refuses to seed a first user without an explicit
             // `EASYCLEAN_PASSCODE` instead (see `main`).
             users: Vec::new(),
+            upload_chunk_size: DEFAULT_CHUNK_SIZE,
+            disk_floor_bytes: DEFAULT_DISK_FLOOR,
+            // No quotas ⇒ unlimited. The disk floor is the backstop that keeps
+            // an unlimited install from filling the disk to zero.
+            quotas: HashMap::new(),
         }
     }
 }
@@ -134,6 +180,15 @@ impl Config {
                 .map(|v| parse_origins(&v))
                 .unwrap_or(d.cors_origins),
             users,
+            upload_chunk_size: var("EASYCLEAN_UPLOAD_CHUNK_SIZE")
+                .and_then(|v| parse_size(&v))
+                .unwrap_or(d.upload_chunk_size),
+            disk_floor_bytes: var("EASYCLEAN_DISK_FLOOR")
+                .and_then(|v| parse_size(&v))
+                .unwrap_or(d.disk_floor_bytes),
+            quotas: var("EASYCLEAN_QUOTAS")
+                .map(|v| parse_quotas(&v))
+                .unwrap_or(d.quotas),
         }
     }
 
@@ -227,6 +282,63 @@ fn parse_origins(spec: &str) -> Vec<String> {
     spec.split(',')
         .map(|s| s.trim().trim_end_matches('/').to_string())
         .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// Parse a byte size: a plain number, or one with a `K`/`M`/`G`/`T` suffix
+/// (`B` and `iB` optional and ignored — `20G`, `20GB` and `20GiB` are the same
+/// number). Multiples are binary, so `1GB` here is 1073741824 bytes.
+///
+/// Returns `None` on anything unparseable, which leaves the caller on its
+/// default rather than silently reading a typo as a tiny quota. An operator who
+/// writes `EASYCLEAN_QUOTAS=lily=20Gb` should get 20 GiB, not 20 bytes.
+fn parse_size(raw: &str) -> Option<u64> {
+    let s = raw.trim();
+    if s.is_empty() {
+        return None;
+    }
+    // No non-digit at all means a plain byte count, so the split point is the
+    // end of the string rather than a failure.
+    let digits_end = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
+    if digits_end == 0 {
+        return None;
+    }
+    let (num, unit) = s.split_at(digits_end);
+    let n: u64 = num.parse().ok()?;
+    let mult = match unit.trim().to_ascii_lowercase().as_str() {
+        "" | "b" => 1u64,
+        "k" | "kb" | "kib" => 1024,
+        "m" | "mb" | "mib" => 1024 * 1024,
+        "g" | "gb" | "gib" => 1024 * 1024 * 1024,
+        "t" | "tb" | "tib" => 1024u64 * 1024 * 1024 * 1024,
+        _ => return None,
+    };
+    n.checked_mul(mult)
+}
+
+/// Parse `user=20GB,user2=50GB` into per-user byte ceilings.
+///
+/// An entry that does not parse is dropped with a warning rather than defaulted
+/// to something: a quota guessed wrong is either a lockout or no limit at all,
+/// and both are worse than the operator seeing the warning and fixing the line.
+fn parse_quotas(spec: &str) -> HashMap<String, u64> {
+    spec.split(',')
+        .filter(|e| !e.trim().is_empty())
+        .filter_map(|entry| {
+            let Some((user, size)) = entry.split_once('=') else {
+                tracing::warn!("EASYCLEAN_QUOTAS entry {entry:?} has no '=' — expected user=size");
+                return None;
+            };
+            let user = user.trim().to_string();
+            let Some(bytes) = parse_size(size) else {
+                tracing::warn!("EASYCLEAN_QUOTAS entry {entry:?} has an unreadable size");
+                return None;
+            };
+            if user.is_empty() {
+                return None;
+            }
+            Some((user, bytes))
+        })
         .collect()
 }
 
@@ -406,5 +518,47 @@ mod tests {
         assert!(parse_users("lily:").is_empty());
         assert!(parse_users(":pw").is_empty());
         assert!(parse_users(" , ").is_empty());
+    }
+
+    #[test]
+    fn sizes_parse_with_and_without_units() {
+        assert_eq!(parse_size("1024"), Some(1024));
+        assert_eq!(parse_size("1K"), Some(1024));
+        assert_eq!(parse_size("1kb"), Some(1024));
+        assert_eq!(parse_size("1KiB"), Some(1024));
+        assert_eq!(parse_size("20GB"), Some(20 * 1024 * 1024 * 1024));
+        assert_eq!(parse_size(" 5 G "), Some(5 * 1024 * 1024 * 1024));
+    }
+
+    #[test]
+    fn unreadable_sizes_are_none_not_a_small_number() {
+        // Each of these used to have a tempting wrong answer: `20` for the
+        // first, `0` for the rest. A quota of 20 bytes locks a user out of
+        // their own uploads as surely as a typo'd passcode locks them out of
+        // the app, and it does it silently.
+        assert_eq!(parse_size("20PB"), None);
+        assert_eq!(parse_size("GB"), None);
+        assert_eq!(parse_size(""), None);
+        assert_eq!(parse_size("  "), None);
+        assert_eq!(parse_size("twenty"), None);
+        // Overflow must not wrap into a tiny ceiling.
+        assert_eq!(parse_size("99999999999999999999T"), None);
+    }
+
+    #[test]
+    fn quotas_parse_per_user() {
+        let q = parse_quotas("lily=20GB,zack=50G");
+        assert_eq!(q.get("lily"), Some(&(20 * 1024 * 1024 * 1024)));
+        assert_eq!(q.get("zack"), Some(&(50 * 1024 * 1024 * 1024)));
+        assert_eq!(q.len(), 2);
+    }
+
+    #[test]
+    fn malformed_quota_entries_are_dropped_not_guessed() {
+        // A dropped entry means "no quota" — the disk floor still applies —
+        // which is the safe direction. A guessed one could be a lockout.
+        let q = parse_quotas("lily=20GB,broken,zack=,=10G, ");
+        assert_eq!(q.len(), 1);
+        assert!(q.contains_key("lily"));
     }
 }

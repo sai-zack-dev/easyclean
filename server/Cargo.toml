@@ -27,6 +27,10 @@ futures-util = "0.3"
 tower = { version = "0.5", features = ["util"] }
 
 [dev-dependencies]
+# Only for tests: compute the digest an uploading client would send, so the
+# upload tests exercise the real hash check rather than a value the server
+# handed itself.
+sha2 = "0.10"
 # Only for tests: build a fixture photo, then measure the preview that comes
 # back. Decoding in the server itself always goes through easyclean-core.
 image = { workspace = true }

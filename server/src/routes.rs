@@ -6,11 +6,11 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use axum::body::Body;
-use axum::extract::{Path, Query, State};
+use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::Response;
-use axum::routing::{delete, get, patch, post};
+use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router};
 use futures_util::stream;
 use serde::Deserialize;
@@ -21,6 +21,7 @@ use easyclean_core::categorize;
 use easyclean_core::fileops;
 use easyclean_core::models::MediaFile;
 use easyclean_core::storage::UserRoot;
+use easyclean_core::upload;
 use easyclean_core::{db, detect, embed, scan};
 
 use crate::auth::{AuthUser, MediaUser, VaultUser};
@@ -44,6 +45,20 @@ pub fn router(state: AppState) -> Router {
         // scan
         .route("/api/scan", post(scan_start))
         .route("/api/scan/status", get(scan_status_sse))
+        // upload
+        .route("/api/upload/check", post(upload_check))
+        .route("/api/upload/init", post(upload_init))
+        .route("/api/upload/quota", get(upload_quota))
+        .route("/api/upload/:id", get(upload_status).delete(upload_abort))
+        .route("/api/upload/:id/finish", post(upload_finish))
+        // The one route allowed a large body, and only just large enough for
+        // one chunk. Everything else in this router keeps axum's 2 MB default —
+        // raising the limit globally would mean any endpoint could be made to
+        // buffer megabytes, which is a denial of service with extra steps.
+        .route(
+            "/api/upload/:id/chunk",
+            put(upload_chunk).layer(DefaultBodyLimit::max(chunk_body_limit(&state.cfg))),
+        )
         // media
         .route("/api/media/batch", get(batch))
         .route("/api/media/duplicates", get(duplicate_groups))
@@ -408,6 +423,246 @@ async fn scan_status_sse(
     });
 
     Sse::new(s).keep_alive(KeepAlive::default())
+}
+
+// ── Upload ────────────────────────────────────────────────────────────────
+
+/// Most hashes one `check` may ask about.
+///
+/// A phone with 40,000 photos must not put 40,000 hashes in one request: the
+/// body alone would be 2.6 MB and the reply would hold the lot in memory twice
+/// over. Clients page through their library instead, and the limit is what
+/// makes them.
+const MAX_CHECK_HASHES: usize = 5_000;
+
+/// How long after the last finished upload the processing pass waits.
+///
+/// Long enough that a batch arriving back-to-back settles into one pass, short
+/// enough that a single photo is thumbnailed while the user is still looking at
+/// the screen they uploaded it from.
+const UPLOAD_SETTLE_SECS: u64 = 5;
+
+#[derive(Deserialize)]
+struct CheckReq {
+    hashes: Vec<String>,
+}
+
+/// Which of these files does the server already have?
+///
+/// The first call of any upload batch, and the one that makes re-offering a
+/// whole camera roll cheap: the client sends hashes, and sends bytes only for
+/// what comes back in `need`.
+async fn upload_check(
+    State(st): State<AppState>,
+    user: AuthUser,
+    Json(b): Json<CheckReq>,
+) -> Result<Json<Value>, ApiError> {
+    if b.hashes.len() > MAX_CHECK_HASHES {
+        return Err(ApiError::bad(&format!(
+            "too many hashes in one request (max {MAX_CHECK_HASHES})"
+        )));
+    }
+    // Normalize up front so a client sending uppercase digests gets an answer
+    // rather than a silent "you have none of these" — the failure mode of
+    // comparing unnormalized hex against a lowercase column.
+    let hashes = b
+        .hashes
+        .iter()
+        .map(|h| upload::normalize_hash(h))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let have = db::hashes_present(&st.db, &user.username, &hashes).await?;
+    let need: Vec<&String> = hashes.iter().filter(|h| !have.contains(*h)).collect();
+    Ok(Json(json!({
+        "have": have.iter().collect::<Vec<_>>(),
+        "need": need,
+    })))
+}
+
+#[derive(Deserialize)]
+struct InitReq {
+    filename: String,
+    size: u64,
+    hash: String,
+}
+
+/// Open a session: reserves quota and disk, returns where to start writing.
+async fn upload_init(
+    State(st): State<AppState>,
+    user: AuthUser,
+    Json(b): Json<InitReq>,
+) -> Result<Json<Value>, ApiError> {
+    let init = st
+        .uploads
+        .init(
+            &st.cfg,
+            &st.db,
+            &user.username,
+            &b.filename,
+            b.size,
+            &b.hash,
+        )
+        .await?;
+    Ok(Json(json!({
+        "id": init.id,
+        "offset": init.offset,
+        "chunk_size": init.chunk_size,
+        "filename": init.filename,
+    })))
+}
+
+/// Where a resuming client should continue from.
+async fn upload_status(
+    State(st): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let offset = st.uploads.offset(&id, &user.username).await?;
+    Ok(Json(json!({ "id": id, "offset": offset })))
+}
+
+#[derive(Deserialize)]
+struct ChunkQuery {
+    offset: u64,
+}
+
+/// Append one chunk at an explicit offset.
+///
+/// The body arrives whole — the route's own body limit is what bounds it — so
+/// either the entire chunk is here or the extractor rejected it before this
+/// function ran. That is the point: there is no path that writes half a chunk
+/// and leaves the session's offset describing a file that no longer matches it.
+async fn upload_chunk(
+    State(st): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<String>,
+    Query(q): Query<ChunkQuery>,
+    body: axum::body::Bytes,
+) -> Result<Json<Value>, ApiError> {
+    let offset = st
+        .uploads
+        .write_chunk(&id, &user.username, q.offset, &body)
+        .await?;
+    Ok(Json(json!({ "id": id, "offset": offset })))
+}
+
+/// Verify and file the completed upload, then nudge the processing pass.
+async fn upload_finish(
+    State(st): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let done = st
+        .uploads
+        .finish(&st.cfg, &st.db, &id, &user.username)
+        .await?;
+
+    let token = st.upload_settle.bump(&user.username);
+    tokio::spawn(settle_after_uploads(st.clone(), user.username, token));
+
+    Ok(Json(json!({
+        "file_id": done.file_id,
+        "filename": done.filename,
+        "size": done.size,
+    })))
+}
+
+/// Abandon a session and delete what it had written.
+async fn upload_abort(
+    State(st): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    st.uploads.abort(&id, &user.username).await?;
+    Ok(Json(json!({ "aborted": true })))
+}
+
+/// How much room this user has, for the UI to show before a batch starts.
+async fn upload_quota(State(st): State<AppState>, user: AuthUser) -> Result<Json<Value>, ApiError> {
+    let used = db::bytes_used(&st.db, &user.username).await?;
+    let limit = upload::quota_bytes(&st.db, &st.cfg, &user.username).await?;
+    Ok(Json(json!({
+        "used": used,
+        // Null rather than a huge number: "unlimited" is a different thing from
+        // "a very big quota", and a UI drawing a progress bar needs to know
+        // which it is looking at.
+        "limit": limit,
+        "chunk_size": st.cfg.upload_chunk_size,
+    })))
+}
+
+/// Thumbnail, score and index whatever the last batch brought in.
+///
+/// Debounced: each finished upload bumps a token, and this only proceeds if no
+/// newer upload arrived while it slept. Two hundred photos therefore cost one
+/// detection pass rather than two hundred.
+async fn settle_after_uploads(st: AppState, user: String, token: u64) {
+    tokio::time::sleep(Duration::from_secs(UPLOAD_SETTLE_SECS)).await;
+    if !st.upload_settle.is_current(&user, token) {
+        return; // a later upload owns the pass now
+    }
+    // A scan already running will pick these files up itself — detection works
+    // from "rows without a perceptual hash", not from a list this function
+    // holds — so stepping aside costs nothing and avoids two passes competing
+    // for the same rows.
+    if st.scan.running.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    *st.scan.error.lock().unwrap() = None;
+
+    let thumb_dir = st.cfg.data_dir.join("thumbs");
+    let sp = st.scan.clone();
+    let dup_distance = resolve_dup_distance(&st, &user).await;
+    match detect::run_detection(
+        &st.db,
+        &user,
+        st.cfg.blur_threshold,
+        &thumb_dir,
+        dup_distance,
+        move |n| sp.processed.store(n, Ordering::Relaxed),
+    )
+    .await
+    {
+        Ok(d) => {
+            st.scan.blurry.store(d.blurry, Ordering::Relaxed);
+            st.scan
+                .dup_groups
+                .store(d.duplicate_groups, Ordering::Relaxed);
+            st.scan.thumbs.store(d.thumbs, Ordering::Relaxed);
+        }
+        Err(e) => *st.scan.error.lock().unwrap() = Some(format!("detect: {e}")),
+    }
+    st.scan.running.store(false, Ordering::SeqCst);
+
+    // Semantic search too, but only once the weights are on disk. Pulling
+    // ~150 MB because somebody uploaded a photo is not a decision to make on
+    // their behalf over a home connection — the first download stays an
+    // explicit choice in Settings, and every upload after it is automatic.
+    if embed::is_downloaded(&st.cfg.data_dir) && !st.index.running.swap(true, Ordering::SeqCst) {
+        st.index.done.store(0, Ordering::Relaxed);
+        st.index.total.store(0, Ordering::Relaxed);
+        *st.index.error.lock().unwrap() = None;
+        tokio::spawn(run_index(st.clone(), user));
+    }
+}
+
+/// Reclaim sessions whose client walked away, hourly.
+pub async fn spawn_upload_sweeper(state: AppState) {
+    // Anything on disk from before this process started belongs to sessions
+    // that no longer exist, so it can never be resumed — only take up the free
+    // space the disk floor is there to protect.
+    if let Err(e) = easyclean_core::upload::purge_orphans(&state.cfg) {
+        tracing::warn!("could not clear stale upload scratch files: {e}");
+    }
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(60 * 60)).await;
+            let n = state.uploads.sweep(upload::SESSION_IDLE_SECS).await;
+            if n > 0 {
+                tracing::info!("reclaimed {n} abandoned upload session(s)");
+            }
+        }
+    });
 }
 
 // ── Media ─────────────────────────────────────────────────────────────────
@@ -1496,6 +1751,17 @@ async fn run_retention(st: &AppState) {
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
+/// Body ceiling for one chunk: the advertised chunk size plus a little slack.
+///
+/// The slack absorbs a client that rounds its chunk size up slightly or adds
+/// framing, so an honest uploader is never rejected for being a few hundred
+/// bytes over. It is deliberately small — this number is also the worst-case
+/// memory one request can make the server allocate.
+fn chunk_body_limit(cfg: &easyclean_core::Config) -> usize {
+    const SLACK: u64 = 64 * 1024;
+    cfg.upload_chunk_size.saturating_add(SLACK) as usize
+}
+
 fn now_secs() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -2169,6 +2435,7 @@ mod tests {
                 created_at: 1_700_000_000,
                 gps_lat: None,
                 gps_lon: None,
+                content_hash: None,
             },
         )
         .await
@@ -2179,6 +2446,8 @@ mod tests {
             scan: Default::default(),
             rate_limiter: Default::default(),
             index: Default::default(),
+            uploads: Default::default(),
+            upload_settle: Default::default(),
             clip: Default::default(),
         }
     }
@@ -2188,6 +2457,436 @@ mod tests {
             "Bearer {}",
             core_auth::make_token("saiz", "admin", &st.cfg.secret, 7).unwrap()
         )
+    }
+
+    // ── Upload helpers ────────────────────────────────────────────────────
+
+    /// What an honest client would compute for these bytes.
+    fn sha256_hex(data: &[u8]) -> String {
+        use sha2::{Digest, Sha256};
+        Sha256::digest(data)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    }
+
+    fn json_req(uri: &str, auth: &str, body: Value) -> Request<Body> {
+        Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("authorization", auth)
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap()
+    }
+
+    /// init → one chunk → finish, returning the `finish` response.
+    async fn upload_one(st: &AppState, auth: &str, filename: &str, data: &[u8]) -> Response {
+        let hash = sha256_hex(data);
+        let r = app(st.clone())
+            .oneshot(json_req(
+                "/api/upload/init",
+                auth,
+                json!({ "filename": filename, "size": data.len(), "hash": hash }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK, "init should succeed");
+        let id = body_json(r).await["id"].as_str().unwrap().to_string();
+
+        let r = app(st.clone())
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/api/upload/{id}/chunk?offset=0"))
+                    .header("authorization", auth)
+                    .body(Body::from(data.to_vec()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK, "chunk should be accepted");
+
+        app(st.clone())
+            .oneshot(json_req(
+                &format!("/api/upload/{id}/finish"),
+                auth,
+                json!({}),
+            ))
+            .await
+            .unwrap()
+    }
+
+    /// The happy path, end to end: the bytes land in `source/` under the name
+    /// the client asked for, and the row carries the hash the *server* computed.
+    #[tokio::test]
+    async fn an_upload_lands_in_the_library() {
+        let st = test_state().await;
+        let auth = bearer(&st);
+        let data = b"not really a jpeg, but the indexer only reads the extension";
+
+        let r = upload_one(&st, &auth, "IMG_0001.jpg", data).await;
+        assert_eq!(r.status(), StatusCode::OK);
+        let body = body_json(r).await;
+        let file_id = body["file_id"].as_i64().unwrap();
+        assert_eq!(body["filename"], "IMG_0001.jpg");
+
+        let on_disk = st.cfg.media_root.join("saiz/source/IMG_0001.jpg");
+        assert!(on_disk.exists(), "file should be in source/: {on_disk:?}");
+        assert_eq!(std::fs::read(&on_disk).unwrap(), data);
+
+        let row = db::get_media(&st.db, file_id).await.unwrap().unwrap();
+        assert_eq!(row.content_hash.as_deref(), Some(sha256_hex(data).as_str()));
+        assert_eq!(row.status, "pending", "an upload is waiting to be reviewed");
+    }
+
+    /// Nothing that fails the hash check may be filed.
+    ///
+    /// The case that matters is not a liar but a truncated transfer: bytes that
+    /// arrive wrong and are indexed anyway become a permanently broken photo in
+    /// someone's library, and the only evidence is gone.
+    #[tokio::test]
+    async fn a_hash_that_does_not_match_files_nothing() {
+        let st = test_state().await;
+        let auth = bearer(&st);
+        let data = b"the bytes actually sent";
+        let before = db::count_media(&st.db, "saiz").await.unwrap();
+
+        let r = app(st.clone())
+            .oneshot(json_req(
+                "/api/upload/init",
+                &auth,
+                // A digest for entirely different content.
+                json!({
+                    "filename": "liar.jpg",
+                    "size": data.len(),
+                    "hash": sha256_hex(b"something else"),
+                }),
+            ))
+            .await
+            .unwrap();
+        let id = body_json(r).await["id"].as_str().unwrap().to_string();
+
+        app(st.clone())
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/api/upload/{id}/chunk?offset=0"))
+                    .header("authorization", &auth)
+                    .body(Body::from(data.to_vec()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let r = app(st.clone())
+            .oneshot(json_req(
+                &format!("/api/upload/{id}/finish"),
+                &auth,
+                json!({}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        assert!(
+            !st.cfg.media_root.join("saiz/source/liar.jpg").exists(),
+            "a file that failed verification must not reach source/"
+        );
+        assert_eq!(
+            db::count_media(&st.db, "saiz").await.unwrap(),
+            before,
+            "and must not be indexed"
+        );
+    }
+
+    /// A chunk aimed at the wrong place is refused, and the reply says where
+    /// the file really ends so the client can carry on rather than start over.
+    #[tokio::test]
+    async fn a_misaimed_chunk_is_refused_with_the_real_offset() {
+        let st = test_state().await;
+        let auth = bearer(&st);
+        let data = b"0123456789";
+
+        let r = app(st.clone())
+            .oneshot(json_req(
+                "/api/upload/init",
+                &auth,
+                json!({ "filename": "a.jpg", "size": 10, "hash": sha256_hex(data) }),
+            ))
+            .await
+            .unwrap();
+        let id = body_json(r).await["id"].as_str().unwrap().to_string();
+
+        // First four bytes land.
+        app(st.clone())
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/api/upload/{id}/chunk?offset=0"))
+                    .header("authorization", &auth)
+                    .body(Body::from(&data[..4]))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Then a chunk that claims to start at 9 — a gap.
+        let r = app(st.clone())
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/api/upload/{id}/chunk?offset=9"))
+                    .header("authorization", &auth)
+                    .body(Body::from(&data[9..]))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::CONFLICT);
+        assert!(
+            body_json(r).await["error"].as_str().unwrap().contains("4"),
+            "the client needs to be told where to resume"
+        );
+
+        // And asking directly gives the same answer.
+        let r = app(st.clone())
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/upload/{id}"))
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(body_json(r).await["offset"], 4);
+    }
+
+    /// The call that makes re-offering a camera roll cheap.
+    #[tokio::test]
+    async fn check_reports_what_is_already_held() {
+        let st = test_state().await;
+        let auth = bearer(&st);
+        let held = b"already uploaded once";
+        upload_one(&st, &auth, "held.jpg", held).await;
+
+        let known = sha256_hex(held);
+        let unknown = sha256_hex(b"never seen");
+        let r = app(st.clone())
+            .oneshot(json_req(
+                "/api/upload/check",
+                &auth,
+                json!({ "hashes": [known, unknown] }),
+            ))
+            .await
+            .unwrap();
+        let body = body_json(r).await;
+        assert_eq!(body["have"], json!([known]));
+        assert_eq!(body["need"], json!([unknown]));
+    }
+
+    /// An upload belongs to the account that opened it. Anyone else gets the
+    /// same answer as for an id that never existed.
+    #[tokio::test]
+    async fn another_account_cannot_touch_your_upload() {
+        let st = test_state().await;
+        let auth = bearer(&st);
+        let lily = format!(
+            "Bearer {}",
+            core_auth::make_token("lily", "user", &st.cfg.secret, 7).unwrap()
+        );
+
+        let r = app(st.clone())
+            .oneshot(json_req(
+                "/api/upload/init",
+                &auth,
+                json!({ "filename": "mine.jpg", "size": 4, "hash": sha256_hex(b"mine") }),
+            ))
+            .await
+            .unwrap();
+        let id = body_json(r).await["id"].as_str().unwrap().to_string();
+
+        for req in [
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/upload/{id}/chunk?offset=0"))
+                .header("authorization", &lily)
+                .body(Body::from("mine"))
+                .unwrap(),
+            Request::builder()
+                .uri(format!("/api/upload/{id}"))
+                .header("authorization", &lily)
+                .body(Body::empty())
+                .unwrap(),
+            json_req(&format!("/api/upload/{id}/finish"), &lily, json!({})),
+        ] {
+            let r = app(st.clone()).oneshot(req).await.unwrap();
+            assert_eq!(
+                r.status(),
+                StatusCode::NOT_FOUND,
+                "another user's session must look like no session at all"
+            );
+        }
+    }
+
+    /// Anything that is not a photo or video is refused before a single byte is
+    /// sent, not after the upload completes.
+    #[tokio::test]
+    async fn non_media_is_refused_at_init() {
+        let st = test_state().await;
+        let auth = bearer(&st);
+        for name in ["payload.sh", "index.html", "photo.jpg.exe", "noextension"] {
+            let r = app(st.clone())
+                .oneshot(json_req(
+                    "/api/upload/init",
+                    &auth,
+                    json!({ "filename": name, "size": 10, "hash": sha256_hex(b"x") }),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(
+                r.status(),
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "{name} should not be accepted"
+            );
+        }
+    }
+
+    /// A filename carrying a path must not decide where the file lands.
+    #[tokio::test]
+    async fn a_traversing_filename_still_lands_in_source() {
+        let st = test_state().await;
+        let auth = bearer(&st);
+        let data = b"payload";
+
+        let r = upload_one(&st, &auth, "../../../../etc/evil.jpg", data).await;
+        assert_eq!(r.status(), StatusCode::OK);
+        assert_eq!(body_json(r).await["filename"], "evil.jpg");
+        assert!(st.cfg.media_root.join("saiz/source/evil.jpg").exists());
+    }
+
+    /// Two files with the same name both survive, rather than one overwriting
+    /// the other — `IMG_0001.jpg` is what every phone on earth calls a photo.
+    #[tokio::test]
+    async fn a_repeated_filename_does_not_overwrite() {
+        let st = test_state().await;
+        let auth = bearer(&st);
+        upload_one(&st, &auth, "IMG_0001.jpg", b"first photo").await;
+        let r = upload_one(&st, &auth, "IMG_0001.jpg", b"second photo").await;
+
+        assert_eq!(body_json(r).await["filename"], "IMG_0001_1.jpg");
+        let src = st.cfg.media_root.join("saiz/source");
+        assert_eq!(
+            std::fs::read(src.join("IMG_0001.jpg")).unwrap(),
+            b"first photo"
+        );
+        assert_eq!(
+            std::fs::read(src.join("IMG_0001_1.jpg")).unwrap(),
+            b"second photo"
+        );
+    }
+
+    /// A quota refuses the upload up front, with the numbers the UI needs.
+    #[tokio::test]
+    async fn a_full_quota_refuses_before_any_bytes_move() {
+        let mut st = test_state().await;
+        let cfg = easyclean_core::Config {
+            quotas: [("saiz".to_string(), 16u64)].into_iter().collect(),
+            ..(*st.cfg).clone()
+        };
+        st.cfg = Arc::new(cfg);
+        let auth = bearer(&st);
+
+        // Comfortably inside the ceiling.
+        let r = upload_one(&st, &auth, "small.jpg", b"tiny").await;
+        assert_eq!(r.status(), StatusCode::OK);
+
+        // This one would cross it.
+        let r = app(st.clone())
+            .oneshot(json_req(
+                "/api/upload/init",
+                &auth,
+                json!({ "filename": "big.jpg", "size": 1_000, "hash": sha256_hex(b"big") }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert!(body_json(r).await["error"]
+            .as_str()
+            .unwrap()
+            .contains("quota exceeded"));
+    }
+
+    /// The database beats the environment, so an admin's change is not undone
+    /// by the next restart. This is the whole reason quotas are read live
+    /// instead of seeded.
+    #[tokio::test]
+    async fn an_admin_set_quota_overrides_the_environment() {
+        let mut st = test_state().await;
+        let cfg = easyclean_core::Config {
+            quotas: [("saiz".to_string(), 4u64)].into_iter().collect(),
+            ..(*st.cfg).clone()
+        };
+        st.cfg = Arc::new(cfg);
+        db::set_setting(&st.db, "saiz", upload::QUOTA_SETTING_KEY, "100000")
+            .await
+            .unwrap();
+        let auth = bearer(&st);
+
+        let r = upload_one(&st, &auth, "ok.jpg", b"larger than four bytes").await;
+        assert_eq!(
+            r.status(),
+            StatusCode::OK,
+            "the stored quota, not EASYCLEAN_QUOTAS, decides"
+        );
+
+        let r = app(st.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/api/upload/quota")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(body_json(r).await["limit"], 100_000);
+    }
+
+    /// A user cannot raise their own ceiling through the settings endpoint.
+    #[tokio::test]
+    async fn settings_cannot_be_used_to_grant_yourself_quota() {
+        let mut st = test_state().await;
+        let cfg = easyclean_core::Config {
+            quotas: [("saiz".to_string(), 8u64)].into_iter().collect(),
+            ..(*st.cfg).clone()
+        };
+        st.cfg = Arc::new(cfg);
+        let auth = bearer(&st);
+
+        app(st.clone())
+            .oneshot(json_req(
+                "/api/settings",
+                &auth,
+                json!({ "quota_bytes": 999_999_999 }),
+            ))
+            .await
+            .unwrap();
+
+        let r = app(st.clone())
+            .oneshot(json_req(
+                "/api/upload/init",
+                &auth,
+                json!({ "filename": "big.jpg", "size": 1_000, "hash": sha256_hex(b"big") }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            r.status(),
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "settings_put must not write the quota key"
+        );
     }
 
     async fn body_json(resp: Response) -> Value {
@@ -2780,6 +3479,7 @@ mod tests {
                         created_at: 1_700_000_000 + i,
                         gps_lat: None,
                         gps_lon: None,
+                        content_hash: None,
                     },
                 )
                 .await
@@ -2827,6 +3527,7 @@ mod tests {
                     created_at: 1_700_000_000,
                     gps_lat: None,
                     gps_lon: None,
+                    content_hash: None,
                 },
             )
             .await
@@ -3876,6 +4577,7 @@ mod tests {
                     created_at: 1_700_000_000,
                     gps_lat: None,
                     gps_lon: None,
+                    content_hash: None,
                 },
             )
             .await
@@ -4236,6 +4938,7 @@ mod tests {
                 created_at: 1_000_000_000, // taken long ago
                 gps_lat: None,
                 gps_lon: None,
+                content_hash: None,
             },
         )
         .await
@@ -4270,6 +4973,7 @@ mod tests {
                 created_at,
                 gps_lat: None,
                 gps_lon: None,
+                content_hash: None,
             },
         )
         .await
@@ -4744,6 +5448,7 @@ mod tests {
                     created_at: 1_700_000_000,
                     gps_lat: None,
                     gps_lon: None,
+                    content_hash: None,
                 },
             )
             .await
@@ -4964,6 +5669,7 @@ mod tests {
                 created_at: 1_700_000_000,
                 gps_lat: None,
                 gps_lon: None,
+                content_hash: None,
             },
         )
         .await

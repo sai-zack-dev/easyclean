@@ -78,37 +78,99 @@ pub async fn scan_folder(
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
 
-        let (exif_ts, lat, lon) = read_exif(path);
-        let created_at = exif_ts.unwrap_or(mtime);
-        let filename = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or_default()
-            .to_string();
-        let rel_path = path
-            .strip_prefix(dir)
-            .ok()
-            .map(|p| p.to_string_lossy().to_string());
-
         db::insert_media(
             pool,
-            &NewMedia {
-                user: user.to_string(),
-                path: path_str,
-                rel_path,
-                filename,
-                media_type: media_type.to_string(),
-                size_bytes: size,
-                created_at,
-                gps_lat: lat,
-                gps_lon: lon,
-            },
+            &describe(user, path, dir, media_type, size, mtime, None),
         )
         .await?;
         stats.added += 1;
         progress(stats.added);
     }
     Ok(stats)
+}
+
+/// Index one already-placed file, without walking anything.
+///
+/// The upload path's counterpart to [`scan_folder`]: the bytes are already
+/// verified and moved into `source/`, and re-walking the whole directory to
+/// notice a single new file would cost the entire library per photo received.
+///
+/// Returns `None` for an extension this app does not handle, so a caller that
+/// somehow lands a `.txt` in `source/` gets a clear answer instead of a row
+/// nothing can render. `content_hash` is what the server computed while
+/// receiving the file — never what the client claimed.
+pub async fn index_file(
+    pool: &Db,
+    user: &str,
+    path: &Path,
+    base_dir: &Path,
+    content_hash: Option<String>,
+) -> Result<Option<i64>> {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_ascii_lowercase());
+    let Some(media_type) = ext.as_deref().and_then(classify) else {
+        return Ok(None);
+    };
+    let meta = std::fs::metadata(path)?;
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    let id = db::insert_media(
+        pool,
+        &describe(
+            user,
+            path,
+            base_dir,
+            media_type,
+            meta.len() as i64,
+            mtime,
+            content_hash,
+        ),
+    )
+    .await?;
+    Ok(Some(id))
+}
+
+/// Build the row for one file: EXIF date and GPS where available, filesystem
+/// mtime where not.
+///
+/// Shared by the scanner and the uploader so a photo's recorded date does not
+/// depend on which door it came in through.
+fn describe(
+    user: &str,
+    path: &Path,
+    base_dir: &Path,
+    media_type: &str,
+    size: i64,
+    mtime: i64,
+    content_hash: Option<String>,
+) -> NewMedia {
+    let (exif_ts, lat, lon) = read_exif(path);
+    NewMedia {
+        user: user.to_string(),
+        path: path.to_string_lossy().to_string(),
+        rel_path: path
+            .strip_prefix(base_dir)
+            .ok()
+            .map(|p| p.to_string_lossy().to_string()),
+        filename: path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default()
+            .to_string(),
+        media_type: media_type.to_string(),
+        size_bytes: size,
+        created_at: exif_ts.unwrap_or(mtime),
+        gps_lat: lat,
+        gps_lon: lon,
+        content_hash,
+    }
 }
 
 /// Best-effort EXIF read: `(epoch_seconds, gps_lat, gps_lon)`. Any failure ⇒ `None`s.

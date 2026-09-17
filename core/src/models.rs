@@ -28,6 +28,8 @@ pub struct MediaFile {
     pub gps_lon: Option<f64>,
     pub is_favorite: bool,
     pub thumb_path: Option<String>,
+    /// SHA-256 of the file's bytes, set only for uploads. See migration 0007.
+    pub content_hash: Option<String>,
 }
 
 /// Fields needed to register a freshly-scanned file.
@@ -42,6 +44,9 @@ pub struct NewMedia {
     pub created_at: i64,
     pub gps_lat: Option<f64>,
     pub gps_lon: Option<f64>,
+    /// `Some` for an upload (the server verified these bytes), `None` for a
+    /// file found by a filesystem scan.
+    pub content_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]

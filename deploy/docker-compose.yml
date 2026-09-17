@@ -31,6 +31,23 @@ services:
       EASYCLEAN_SECRET: ${EASYCLEAN_SECRET:-}
       EASYCLEAN_TRASH_RETENTION_DAYS: ${EASYCLEAN_TRASH_RETENTION_DAYS:-30}
       EASYCLEAN_BLUR_THRESHOLD: ${EASYCLEAN_BLUR_THRESHOLD:-100}
+      # Per-user upload ceilings: "name=20GB,name2=50GB". Sizes take K/M/G/T
+      # suffixes and are binary (20GB = 20 GiB); a user not listed here is
+      # unlimited, bounded only by EASYCLEAN_DISK_FLOOR below.
+      #
+      # A *fallback*, not the authority: a quota set in the app is stored per
+      # user and wins over this. Nothing copies these values into the database,
+      # so unlike the account seeding above, a restart cannot undo an admin's
+      # change.
+      EASYCLEAN_QUOTAS: ${EASYCLEAN_QUOTAS:-}
+      # Refuse new uploads once free space on the media filesystem falls below
+      # this. Deleting, browsing and emptying the trash keep working — which
+      # they would not if the disk were allowed to reach zero, since SQLite
+      # cannot write and a trash move needs somewhere to write to.
+      EASYCLEAN_DISK_FLOOR: ${EASYCLEAN_DISK_FLOOR:-5G}
+      # Bytes per upload chunk. Also the ceiling on one request body, so raising
+      # it raises the memory a single upload can make the server hold.
+      EASYCLEAN_UPLOAD_CHUNK_SIZE: ${EASYCLEAN_UPLOAD_CHUNK_SIZE:-10M}
       # No EASYCLEAN_DUPLICATE_DISTANCE_THRESHOLD: duplicate sensitivity moved
       # to a per-user setting in the app. The server still falls back to its
       # own default (10) for a user who has never touched that slider.

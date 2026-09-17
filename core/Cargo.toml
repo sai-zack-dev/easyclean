@@ -38,6 +38,14 @@ libheif-rs = { version = "2.7", optional = true, default-features = false, featu
     "image",
 ] }
 
+# Free-space checks before accepting an upload (`statvfs`). The standard library
+# has no answer for "how much room is left on this filesystem", and this is the
+# portable POSIX one. Unix-only on purpose: the deployment is a Linux container,
+# and on anything else the check reports "unknown" and the quota carries the
+# weight alone.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [features]
 default = []
 heic = ["dep:libheif-rs"]
