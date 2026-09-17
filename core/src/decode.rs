@@ -36,11 +36,43 @@ pub const fn heic_supported() -> bool {
     cfg!(feature = "heic")
 }
 
+/// Largest edge this will decode, in pixels.
+///
+/// Well past any real camera — a 100-megapixel medium-format frame is about
+/// 12000 across — and below the point where the dimensions alone are evidence
+/// the file is not a photograph.
+const MAX_EDGE: u32 = 65_535;
+
+/// Bounds for decoding a file we did not create.
+///
+/// `image` already refuses to allocate more than 512 MiB for one decode, and
+/// applies it to anything implementing `ImageDecoder` — libheif's hook
+/// included, so HEIC is covered by the same check. That default is doing the
+/// real work here; what this adds is to say so on purpose rather than inherit
+/// it, and to bound the declared dimensions as well as the allocation.
+///
+/// The allocation cap is deliberately left at 512 MiB: a 48-megapixel phone
+/// photo needs about 144 MB decoded, so anything much tighter would start
+/// refusing real photographs. Total memory is bounded at the container instead,
+/// where it also covers what libheif and ffmpeg allocate out of Rust's reach.
+fn decode_limits() -> image::Limits {
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_EDGE);
+    limits.max_image_height = Some(MAX_EDGE);
+    limits
+}
+
 /// Decode an image from disk with its EXIF orientation already applied, so a
 /// phone photo shot in portrait doesn't come out sideways in the thumbnail.
+///
+/// Spelled out rather than `image::open`, which is the same thing with the
+/// default limits; going through the reader is what makes room for
+/// [`decode_limits`].
 pub fn open_image(path: &Path) -> Result<DynamicImage> {
     init_decoders();
-    let mut img = image::open(path)?;
+    let mut reader = image::ImageReader::open(path)?.with_guessed_format()?;
+    reader.limits(decode_limits());
+    let mut img = reader.decode()?;
     if let Some(orientation) = exif_orientation(path) {
         img.apply_orientation(orientation);
     }
@@ -93,6 +125,56 @@ mod tests {
         let img = open_image(&p).unwrap();
         assert_eq!((img.width(), img.height()), (8, 4));
         assert!(exif_orientation(&p).is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The bounds we ask for, stated so a change to them is deliberate.
+    ///
+    /// The allocation cap is the part that actually stops a decompression bomb;
+    /// it comes from `image`'s own default, so this asserts we did not drop it
+    /// while adding the dimension bounds.
+    #[test]
+    fn our_limits_bound_dimensions_and_keep_the_allocation_cap() {
+        let l = decode_limits();
+        assert_eq!(l.max_image_width, Some(MAX_EDGE));
+        assert_eq!(l.max_image_height, Some(MAX_EDGE));
+        assert!(
+            l.max_alloc.is_some_and(|b| b > 0),
+            "the allocation cap is what refuses an image that decodes to more memory than we have"
+        );
+    }
+
+    /// Limits set on the reader are honoured on this code path.
+    ///
+    /// `open_image` used to be `image::open`, which applies the defaults and
+    /// gives no way to say otherwise. If it ever goes back to that, the bounds
+    /// above become decoration — so this checks the mechanism rather than the
+    /// numbers: a cap far below what the file needs must refuse it.
+    #[test]
+    fn a_decode_over_the_allocation_cap_is_refused() {
+        let dir = std::env::temp_dir().join(format!("ec-limits-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("big.png");
+        // 64×64 RGB is ~12 KB decoded; the cap below is 1 KB.
+        RgbImage::from_pixel(64, 64, Rgb([7, 7, 7]))
+            .save(&p)
+            .unwrap();
+
+        let mut reader = image::ImageReader::open(&p)
+            .unwrap()
+            .with_guessed_format()
+            .unwrap();
+        let mut tiny = image::Limits::default();
+        tiny.max_alloc = Some(1024);
+        reader.limits(tiny);
+        assert!(
+            reader.decode().is_err(),
+            "the reader ignored the limits it was given"
+        );
+
+        // The same file decodes fine under the limits we actually ship.
+        assert!(open_image(&p).is_ok());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

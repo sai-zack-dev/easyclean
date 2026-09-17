@@ -41,6 +41,32 @@ services:
     ports:
       - "${BIND_ADDRESS:-0.0.0.0}:${PORT:-8080}:8080"
 
+    # ── Containment ────────────────────────────────────────────────────────
+    #
+    # Every photo indexed is a file this server did not write, and two of the
+    # things that read it are C libraries: libheif decodes iPhone HEIC, ffmpeg
+    # reads video. Rust's guarantees stop at that boundary, so the answer to "a
+    # malformed file reaches libheif" is not a safer decoder — it is to make the
+    # process it runs in worth as little as possible.
+    security_opt:
+      # No setuid binary inside can raise privileges, however it is invoked.
+      - no-new-privileges:true
+    cap_drop:
+      # The server binds 8080 inside the container, which needs no capability
+      # at all — it is above 1024 and the port is published by Docker.
+      - ALL
+    read_only: true
+    tmpfs:
+      # The root filesystem is read-only, so the one writable path left is
+      # small, private to the container, and gone on restart. ffmpeg writes its
+      # thumbnails into /data, which is a volume and stays writable.
+      - /tmp:size=256m,mode=1777
+    # Bounds what any single decode — Rust's, libheif's or ffmpeg's — can cost
+    # the host. `image` refuses to allocate more than 512 MiB for one decode,
+    # but nothing inside libheif is bound by that.
+    mem_limit: ${EASYCLEAN_MEM_LIMIT:-2g}
+    pids_limit: 512
+
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8080/api/health"]
       interval: 30s
