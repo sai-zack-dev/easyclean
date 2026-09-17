@@ -8,6 +8,58 @@ All notable changes to EasyClean are documented here. The format follows
 
 Nothing yet.
 
+## [0.4.3] — 2026-09-17
+
+Five fixes from a day of real use on a phone. The first is a correctness bug — a deleted photo could
+still be sitting in an album, with no way to get it out of one — and the other four are the places
+the UI made a phone harder to use than it needed to be.
+
+Patch: no API change and nothing to configure. One new migration (an index), applied on start.
+
+### Fixed
+- **A binned photo leaves its albums.** The Gallery filters on status and the trash lists what you
+  deleted, but the album grid joined `album_file` with no filter at all — so a photo you had already
+  deleted kept its tile, kept its place in the count, and could even be the album's cover. There was
+  no way out of that state from inside the album either: the viewer's Delete answers *"already in the
+  trash"* for a file that is. Album contents, counts and covers now all read through one visibility
+  rule that excludes trashed and vaulted files, and every route that changes a file's status
+  recomputes the albums holding it.
+
+  Membership itself survives a deletion on purpose, so **putting a photo back from the trash puts it
+  back on the shelves it was filed on** — including a manual album, which nothing would ever rebuild.
+  A permanent purge is what finally drops the row.
+
+  Existing databases are reconciled at startup: counts and covers were computed under the old rule,
+  so one statement at boot corrects every album rather than waiting for each to be touched.
+- **Video previews show the video.** The detail viewer mounted a `<video>` with no `poster`, so a
+  clip was a blank grey stage with a play button on it until you pressed play — the one thing you
+  could not judge from it being whether it was worth keeping. It now shows the first frame ffmpeg
+  already extracted at scan time, and loads metadata only, rather than pulling a 24 MB clip down
+  because you paged past it.
+
+### Added
+- **Play a video from the swipe deck.** A video's card was a single still with no way to see the
+  rest of the clip. There is now a Play button in the top-right corner — opposite the heart, framing
+  the card rather than crowding one corner — that plays it inline with its own controls, without
+  leaving the deck. Nothing streams until you ask: mounting a player per card would have the server
+  serving originals as fast as you can swipe past them.
+- **Swipe in from the left edge to go back**, in an album's contents. The screen follows your finger
+  and springs back if you let go early, so the gesture says what it will do before you commit to it.
+  Touch only, and only from within 28px of the edge — further in is an ordinary scroll.
+
+### Changed
+- **Sub-screen headers stay put.** `.page-header` was already pinned on the tabs, but the header an
+  album's contents and the vault share scrolled away with the grid, so getting back meant flinging a
+  few hundred photos all the way home first. It is sticky now, with the same hairline the tab headers
+  grow once something passes under them.
+- A photo deleted from inside an album leaves that grid immediately, and the item count in the header
+  follows it down.
+
+### Notes
+- Migration `0007` adds an index on `album_file(file_id)`. "Which albums is this file in" now runs on
+  every swipe, bin and restore, and that table's primary key only answers the opposite question — at
+  100K files an unindexed lookup would be a full scan per swipe.
+
 ## [0.4.2] — 2026-09-17
 
 Containment for the part of the pipeline Rust cannot vouch for. Every photo indexed is a file this
