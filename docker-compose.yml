@@ -27,3 +27,17 @@ services:
       RUST_LOG: ${RUST_LOG:-info}
     ports:
       - "${PORT:-8080}:8080"
+
+    # Same containment as the production compose — a malformed photo reaches
+    # libheif and ffmpeg here too, and a local run that behaves differently from
+    # production is not much of a rehearsal. See deploy/docker-compose.yml for
+    # why each of these is here.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    mem_limit: ${EASYCLEAN_MEM_LIMIT:-2g}
+    pids_limit: 512
