@@ -5,7 +5,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::SqlitePool;
 
 use crate::error::Result;
-use crate::models::{Album, MediaFile, NewMedia, StatsSummary, TimelineMonth};
+use crate::models::{Album, MediaFile, NewMedia, StatsSummary, TimelineMonth, VaultFolder};
 
 /// Shared database handle.
 pub type Db = SqlitePool;
@@ -1149,21 +1149,29 @@ pub async fn set_vault_pin(pool: &Db, user: &str, pin_hash: &str, now: i64) -> R
 /// alternative — putting everything back as `pending` in `source/` — would drop
 /// a photo you had already reviewed back into the Clean tab, which reads as the
 /// app having lost your decision.
+///
+/// `folder` is set on every hide, `None` included, rather than left alone. A
+/// release older than vault folders ignores the column, so a photo hidden and
+/// put back under one would still carry whatever folder it last had; writing it
+/// here is what stops that stale id resurfacing the next time it is hidden.
 pub async fn move_to_vault(
     pool: &Db,
     user: &str,
     id: i64,
     new_path: &str,
     new_rel: &str,
+    folder: Option<i64>,
 ) -> Result<bool> {
     let res = sqlx::query(
         "UPDATE media_file \
             SET pre_vault_status = status, pre_vault_path = path, \
-                status = 'vault', path = ?, rel_path = ?, thumb_path = NULL \
+                status = 'vault', path = ?, rel_path = ?, thumb_path = NULL, \
+                vault_folder_id = ? \
           WHERE id = ? AND user = ? AND status <> 'vault'",
     )
     .bind(new_path)
     .bind(new_rel)
+    .bind(folder)
     .bind(id)
     .bind(user)
     .execute(pool)
@@ -1202,7 +1210,8 @@ pub async fn commit_vault_restore(
     let res = sqlx::query(
         "UPDATE media_file \
             SET status = COALESCE(pre_vault_status, 'keep'), path = ?, rel_path = ?, \
-                phash = NULL, pre_vault_status = NULL, pre_vault_path = NULL \
+                phash = NULL, pre_vault_status = NULL, pre_vault_path = NULL, \
+                vault_folder_id = NULL \
           WHERE id = ? AND user = ? AND status = 'vault'",
     )
     .bind(path)
@@ -1214,15 +1223,197 @@ pub async fn commit_vault_restore(
     Ok(res.rows_affected() > 0)
 }
 
-/// Everything in a user's vault, newest first.
-pub async fn vault_files(pool: &Db, user: &str) -> Result<Vec<MediaFile>> {
-    Ok(sqlx::query_as::<_, MediaFile>(
-        "SELECT * FROM media_file WHERE user = ? AND status = 'vault' \
-         ORDER BY created_at DESC, id DESC",
+/// Which part of the vault a listing covers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VaultScope {
+    /// Every hidden file, filed or not.
+    All,
+    /// Hidden files in no folder.
+    Unfiled,
+    /// One folder's contents. The caller has checked the folder is the user's.
+    Folder(i64),
+}
+
+/// A user's hidden files in `scope`, newest first.
+pub async fn vault_files(pool: &Db, user: &str, scope: VaultScope) -> Result<Vec<MediaFile>> {
+    let (filter, folder) = match scope {
+        VaultScope::All => ("", None),
+        VaultScope::Unfiled => (" AND vault_folder_id IS NULL", None),
+        VaultScope::Folder(id) => (" AND vault_folder_id = ?", Some(id)),
+    };
+    let sql = format!(
+        "SELECT * FROM media_file WHERE user = ? AND status = 'vault'{filter} \
+         ORDER BY created_at DESC, id DESC"
+    );
+    let mut q = sqlx::query_as::<_, MediaFile>(&sql).bind(user);
+    if let Some(id) = folder {
+        q = q.bind(id);
+    }
+    Ok(q.fetch_all(pool).await?)
+}
+
+/// A user's vault folders with their live counts and covers, by name.
+///
+/// Counts are computed here rather than stored: a stored count is only as right
+/// as the last thing that touched it, which is the bug 0.4.3 fixed for albums.
+/// The cover is the newest photo in the folder, matching how albums pick one.
+pub async fn vault_folders(pool: &Db, user: &str) -> Result<Vec<VaultFolder>> {
+    Ok(sqlx::query_as::<_, VaultFolder>(
+        "SELECT f.id, f.name, f.created_at, \
+                (SELECT COUNT(*) FROM media_file m \
+                  WHERE m.vault_folder_id = f.id AND m.user = f.user \
+                    AND m.status = 'vault') AS file_count, \
+                (SELECT m.id FROM media_file m \
+                  WHERE m.vault_folder_id = f.id AND m.user = f.user \
+                    AND m.status = 'vault' \
+                  ORDER BY m.created_at DESC, m.id DESC LIMIT 1) AS cover_file_id \
+           FROM vault_folder f WHERE f.user = ? \
+          ORDER BY f.name COLLATE NOCASE, f.id",
     )
     .bind(user)
     .fetch_all(pool)
     .await?)
+}
+
+/// How many hidden files are in no folder.
+pub async fn vault_unfiled_count(pool: &Db, user: &str) -> Result<i64> {
+    let (n,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM media_file \
+          WHERE user = ? AND status = 'vault' AND vault_folder_id IS NULL",
+    )
+    .bind(user)
+    .fetch_one(pool)
+    .await?;
+    Ok(n)
+}
+
+/// Is `id` one of this user's vault folders?
+///
+/// Every route that takes a folder id asks this first, so a folder id from
+/// another account is indistinguishable from one that does not exist.
+pub async fn vault_folder_owned(pool: &Db, user: &str, id: i64) -> Result<bool> {
+    let row: Option<(i64,)> =
+        sqlx::query_as("SELECT id FROM vault_folder WHERE id = ? AND user = ?")
+            .bind(id)
+            .bind(user)
+            .fetch_optional(pool)
+            .await?;
+    Ok(row.is_some())
+}
+
+/// Make a folder. `None` when the user already has one by that name (compared
+/// case-insensitively), so the caller can say so instead of failing opaquely.
+pub async fn create_vault_folder(
+    pool: &Db,
+    user: &str,
+    name: &str,
+    now: i64,
+) -> Result<Option<i64>> {
+    let res = sqlx::query(
+        "INSERT INTO vault_folder (user, name, created_at) VALUES (?, ?, ?) \
+         ON CONFLICT(user, name) DO NOTHING",
+    )
+    .bind(user)
+    .bind(name)
+    .bind(now)
+    .execute(pool)
+    .await?;
+    Ok((res.rows_affected() > 0).then(|| res.last_insert_rowid()))
+}
+
+/// Outcome of renaming a vault folder.
+#[derive(Debug, PartialEq, Eq)]
+pub enum RenameOutcome {
+    Renamed,
+    /// No such folder for this user.
+    Missing,
+    /// Another of the user's folders already has that name.
+    Taken,
+}
+
+/// Rename a folder, refusing a name another folder already uses.
+///
+/// Renaming a folder to a different capitalisation of its own name is allowed —
+/// it is the same folder, and "personal" → "Personal" is a fair thing to want.
+pub async fn rename_vault_folder(
+    pool: &Db,
+    user: &str,
+    id: i64,
+    name: &str,
+) -> Result<RenameOutcome> {
+    if !vault_folder_owned(pool, user, id).await? {
+        return Ok(RenameOutcome::Missing);
+    }
+    let clash: Option<(i64,)> =
+        sqlx::query_as("SELECT id FROM vault_folder WHERE user = ? AND name = ? AND id <> ?")
+            .bind(user)
+            .bind(name)
+            .bind(id)
+            .fetch_optional(pool)
+            .await?;
+    if clash.is_some() {
+        return Ok(RenameOutcome::Taken);
+    }
+    sqlx::query("UPDATE vault_folder SET name = ? WHERE id = ? AND user = ?")
+        .bind(name)
+        .bind(id)
+        .bind(user)
+        .execute(pool)
+        .await?;
+    Ok(RenameOutcome::Renamed)
+}
+
+/// Delete a folder. Its photos stay hidden and become Unfiled; returns how many.
+///
+/// Never deletes a photo. Erasing hidden files is its own action with its own
+/// "this cannot be undone" confirmation, and folding it into tidying up the
+/// folder list would make the cheap action the destructive one.
+pub async fn delete_vault_folder(pool: &Db, user: &str, id: i64) -> Result<Option<u64>> {
+    if !vault_folder_owned(pool, user, id).await? {
+        return Ok(None);
+    }
+    let mut tx = pool.begin().await?;
+    let moved = sqlx::query(
+        "UPDATE media_file SET vault_folder_id = NULL WHERE user = ? AND vault_folder_id = ?",
+    )
+    .bind(user)
+    .bind(id)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+    sqlx::query("DELETE FROM vault_folder WHERE id = ? AND user = ?")
+        .bind(id)
+        .bind(user)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(Some(moved))
+}
+
+/// File hidden photos into `folder`, or into none. Returns how many moved.
+///
+/// `status = 'vault'` in the filter so this can only ever touch what is already
+/// hidden: a list of ids from the request body must not be a way to stamp a
+/// folder onto an ordinary library photo. The caller checks folder ownership.
+pub async fn move_vault_files(
+    pool: &Db,
+    user: &str,
+    ids: &[i64],
+    folder: Option<i64>,
+) -> Result<u64> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let holes = vec!["?"; ids.len()].join(",");
+    let sql = format!(
+        "UPDATE media_file SET vault_folder_id = ? \
+          WHERE user = ? AND status = 'vault' AND id IN ({holes})"
+    );
+    let mut q = sqlx::query(&sql).bind(folder).bind(user);
+    for id in ids {
+        q = q.bind(id);
+    }
+    Ok(q.execute(pool).await?.rows_affected())
 }
 
 /// One vaulted file, by id. `None` for a file that isn't yours or isn't hidden,

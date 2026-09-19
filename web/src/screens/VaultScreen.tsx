@@ -1,9 +1,17 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { IC } from '../icons'
-import { api, ApiError, setVaultToken, type MediaFile } from '../api/client'
+import {
+  api,
+  ApiError,
+  setVaultToken,
+  type MediaFile,
+  type VaultFolder,
+  type VaultScope,
+} from '../api/client'
 import { ConfirmDialog } from '../components/ConfirmDialog'
 import { evictCachedThumbs } from '../pwa'
 import { useStickyHeader } from '../hooks/useStickyHeader'
+import { useScrollLock } from '../hooks/useScrollLock'
 
 interface Props {
   onClose: () => void
@@ -11,6 +19,12 @@ interface Props {
 }
 
 type Phase = 'checking' | 'setup' | 'locked' | 'open'
+
+/** The server's refusals start lowercase; a toast is a sentence. */
+function sentence(e: unknown, fallback: string) {
+  const m = e instanceof ApiError ? e.message : fallback
+  return m.charAt(0).toUpperCase() + m.slice(1)
+}
 
 /**
  * The hidden vault.
@@ -34,22 +48,75 @@ export function VaultScreen({ onClose, toast }: Props) {
   const [busy, setBusy] = useState(false)
   const { ref: screenRef, onScroll } = useStickyHeader()
 
+  /** Which part of the vault the grid shows: everything, no folder, or one. */
+  const [scope, setScope] = useState<VaultScope>('all')
+  const [folders, setFolders] = useState<VaultFolder[]>([])
+  const [unfiled, setUnfiled] = useState(0)
+  const [total, setTotal] = useState(0)
+  /** The name prompt, when one is up: making a folder or renaming this one. */
+  const [naming, setNaming] = useState<'create' | 'rename' | null>(null)
+  const [confirmFolderDelete, setConfirmFolderDelete] = useState(false)
+  const [moving, setMoving] = useState(false)
+
+  /** The folder on screen, when the scope is one. */
+  const current = typeof scope === 'number' ? (folders.find((f) => f.id === scope) ?? null) : null
+
+  // The newest callbacks, for the one-shot check below to call.
+  const onCloseRef = useRef(onClose)
+  const toastRef = useRef(toast)
+  useEffect(() => {
+    onCloseRef.current = onClose
+    toastRef.current = toast
+  })
+
+  /*
+   * Locked or unset — asked once, when the screen opens.
+   *
+   * It used to re-run whenever `onClose` changed, and App passes a fresh inline
+   * one on every render. Every toast re-renders App, so every action here that
+   * said anything — hiding, putting back, deleting — set the phase back to
+   * `locked` and dropped you on the keypad with the job done behind it. Through
+   * refs, the check depends on nothing and runs exactly once.
+   */
   useEffect(() => {
     api.vault
       .status()
       .then((s) => setPhase(s.configured ? 'locked' : 'setup'))
       .catch(() => {
-        toast('Could not reach the vault')
-        onClose()
+        toastRef.current('Could not reach the vault')
+        onCloseRef.current()
       })
-  }, [onClose, toast])
+  }, [])
 
-  const load = useCallback(() => {
-    api.vault
-      .files()
-      .then((r) => setFiles(r.files))
-      .catch(() => toast('The vault locked itself — enter your PIN again'))
-  }, [toast])
+  /**
+   * The grid for `s`, and the folder strip with its counts, in one go.
+   *
+   * Both after every change, because nearly every change moves a count on the
+   * strip as well as the grid — hiding into a folder, moving between two,
+   * putting one back. The scope is passed in rather than read from state so a
+   * caller that has just changed it loads the new one, not the old.
+   */
+  const load = useCallback(
+    (s: VaultScope) => {
+      Promise.all([api.vault.files(s), api.vault.folders()])
+        .then(([r, f]) => {
+          setFiles(r.files)
+          setFolders(f.folders)
+          setUnfiled(f.unfiled)
+          setTotal(f.total)
+        })
+        .catch(() => toast('The vault locked itself — enter your PIN again'))
+    },
+    [toast],
+  )
+
+  /** Switch the grid to another folder. A selection belongs to the grid it
+      was made in, so it does not follow you. */
+  const show = (s: VaultScope) => {
+    setScope(s)
+    setPicked(null)
+    load(s)
+  }
 
   /* Locking on the way out is the point of a short-lived token: leaving the
      screen should not leave the vault readable. */
@@ -60,7 +127,7 @@ export function VaultScreen({ onClose, toast }: Props) {
 
   const onUnlocked = useCallback(() => {
     setPhase('open')
-    load()
+    load('all')
   }, [load])
 
   const chosen = useMemo(
@@ -100,7 +167,7 @@ export function VaultScreen({ onClose, toast }: Props) {
         toast(`${r.restored} back in your library`)
         setPicked(null)
         setConfirmRestore(false)
-        load()
+        load(scope)
       })
       .catch(() => toast('Could not put those back'))
       .finally(() => setBusy(false))
@@ -115,10 +182,88 @@ export function VaultScreen({ onClose, toast }: Props) {
         toast(r.purged === 1 ? 'Deleted' : `${r.purged} deleted`)
         setPicked(null)
         setConfirmDelete(false)
-        load()
+        load(scope)
       })
       .catch(() => toast('Could not delete those'))
       .finally(() => setBusy(false))
+  }
+
+  /** Make a folder and open it — you made it to put something in it. */
+  const createFolder = (name: string) => {
+    setBusy(true)
+    api.vault
+      .createFolder(name)
+      .then((r) => {
+        setNaming(null)
+        toast(`“${r.name}” created`)
+        show(r.id)
+      })
+      .catch((e) => toast(sentence(e, 'Could not make that folder')))
+      .finally(() => setBusy(false))
+  }
+
+  const renameFolder = (name: string) => {
+    if (!current) return
+    setBusy(true)
+    api.vault
+      .renameFolder(current.id, name)
+      .then(() => {
+        setNaming(null)
+        load(scope)
+      })
+      .catch((e) => toast(sentence(e, 'Could not rename it')))
+      .finally(() => setBusy(false))
+  }
+
+  /** The folder goes; what was in it stays hidden, in Unfiled. */
+  const deleteFolder = () => {
+    if (!current) return
+    const { id, name } = current
+    setBusy(true)
+    api.vault
+      .deleteFolder(id)
+      .then((r) => {
+        setConfirmFolderDelete(false)
+        toast(
+          r.unfiled === 0
+            ? `“${name}” deleted`
+            : `“${name}” deleted — ${r.unfiled} photo${r.unfiled === 1 ? '' : 's'} moved to Unfiled`,
+        )
+        show('all')
+      })
+      .catch(() => toast('Could not delete that folder'))
+      .finally(() => setBusy(false))
+  }
+
+  /** File the selection into a folder, making it first if it was named. */
+  const moveTo = async (dest: { folder_id: number | null } | { name: string }) => {
+    if (chosen.length === 0) return
+    setBusy(true)
+    try {
+      let folderId: number | null
+      let label: string
+      if ('name' in dest) {
+        const made = await api.vault.createFolder(dest.name)
+        folderId = made.id
+        label = made.name
+      } else {
+        folderId = dest.folder_id
+        label =
+          folderId === null ? 'Unfiled' : (folders.find((f) => f.id === folderId)?.name ?? 'folder')
+      }
+      const r = await api.vault.move(
+        chosen.map((f) => f.id),
+        folderId,
+      )
+      toast(`${r.moved} moved to ${label}`)
+      setMoving(false)
+      setPicked(null)
+      load(scope)
+    } catch (e) {
+      toast(sentence(e, 'Could not move those'))
+    } finally {
+      setBusy(false)
+    }
   }
 
   if (phase === 'checking') {
@@ -147,7 +292,7 @@ export function VaultScreen({ onClose, toast }: Props) {
     <div className="screen vault-screen" ref={screenRef} onScroll={onScroll}>
       <VaultHeader
         onClose={close}
-        count={files.length}
+        count={total}
         right={
           <div className="swipe-actions">
             {!picked && (
@@ -176,10 +321,42 @@ export function VaultScreen({ onClose, toast }: Props) {
         }
       />
 
+      <FolderStrip
+        folders={folders}
+        scope={scope}
+        total={total}
+        unfiled={unfiled}
+        onShow={show}
+        onNew={() => setNaming('create')}
+      />
+
+      {/* The folder you are in, and the two things you can do to it. Only for a
+          real folder — All and Unfiled are views, not things you can rename. */}
+      {current && (
+        <div className="vf-bar">
+          <span className="vf-bar-name">{current.name}</span>
+          <button className="pill-btn" onClick={() => setNaming('rename')} disabled={!!picked}>
+            Rename
+          </button>
+          <button
+            className="pill-btn vf-danger"
+            onClick={() => setConfirmFolderDelete(true)}
+            disabled={!!picked}
+          >
+            Delete folder
+          </button>
+        </div>
+      )}
+
       {files.length === 0 ? (
-        <div className="al-empty" style={{ marginTop: 32 }}>
-          Nothing hidden yet. Tap + to add photos — they leave your Gallery, your albums, your
-          search and your stats, and only come back here.
+        <div className="al-empty" style={{ marginTop: 16 }}>
+          {total === 0
+            ? 'Nothing hidden yet. Tap + to add photos — they leave your Gallery, your albums, your search and your stats, and only come back here.'
+            : current
+              ? `Nothing in ${current.name} yet. Tap + to hide photos straight into it, or select some in another folder and move them here.`
+              : scope === 'unfiled'
+                ? 'Everything hidden is in a folder.'
+                : 'Nothing here.'}
         </div>
       ) : (
         <div className="gallery-grid">
@@ -214,6 +391,10 @@ export function VaultScreen({ onClose, toast }: Props) {
             <IC.restore />
             <span>Put back</span>
           </button>
+          <button className="select-act" disabled={busy} onClick={() => setMoving(true)}>
+            <IC.folder />
+            <span>Move</span>
+          </button>
           <div className="select-count">
             <b>{chosen.length}</b>
             <span>selected</span>
@@ -234,13 +415,55 @@ export function VaultScreen({ onClose, toast }: Props) {
 
       {adding && (
         <AddSheet
+          folder={current}
           onClose={() => setAdding(false)}
           onDone={(n) => {
             setAdding(false)
-            toast(n === 1 ? '1 photo hidden' : `${n} photos hidden`)
-            load()
+            const what = n === 1 ? '1 photo hidden' : `${n} photos hidden`
+            toast(current ? `${what} in ${current.name}` : what)
+            load(scope)
           }}
           toast={toast}
+        />
+      )}
+
+      {moving && (
+        <MoveSheet
+          folders={folders}
+          scope={scope}
+          count={chosen.length}
+          busy={busy}
+          onPick={(d) => void moveTo(d)}
+          onClose={() => setMoving(false)}
+        />
+      )}
+
+      {naming && (
+        <NameDialog
+          title={naming === 'create' ? 'New folder' : 'Rename folder'}
+          initial={naming === 'rename' ? (current?.name ?? '') : ''}
+          confirmLabel={naming === 'create' ? 'Create' : 'Rename'}
+          busyLabel={naming === 'create' ? 'Creating…' : 'Renaming…'}
+          busy={busy}
+          onSubmit={naming === 'create' ? createFolder : renameFolder}
+          onCancel={() => setNaming(null)}
+        />
+      )}
+
+      {confirmFolderDelete && current && (
+        <ConfirmDialog
+          title="Delete this folder?"
+          subject={current.name}
+          body={
+            current.file_count === 0
+              ? 'The folder is empty, so nothing else changes.'
+              : `Only the folder goes. Its ${current.file_count} photo${current.file_count === 1 ? ' stays' : 's stay'} hidden and ${current.file_count === 1 ? 'moves' : 'move'} to Unfiled.`
+          }
+          confirmLabel="Delete folder"
+          danger
+          busy={busy}
+          onConfirm={deleteFolder}
+          onCancel={() => setConfirmFolderDelete(false)}
         />
       )}
 
@@ -435,10 +658,13 @@ function PinPad({
  * already hidden — so there is nothing to filter out here.
  */
 function AddSheet({
+  folder,
   onClose,
   onDone,
   toast,
 }: {
+  /** The folder on screen, which is where these land. Null for Unfiled/All. */
+  folder: VaultFolder | null
   onClose: () => void
   onDone: (n: number) => void
   toast: (m: string) => void
@@ -459,7 +685,7 @@ function AddSheet({
     const ids = [...picked]
     setBusy(true)
     api.vault
-      .add(ids)
+      .add(ids, folder?.id)
       .then((r) => {
         // The server drops every derived copy it owns; this is the one it
         // cannot reach. A thumbnail cached while the photo was still ordinary
@@ -474,10 +700,15 @@ function AddSheet({
 
   return (
     <div className="share-backdrop" role="presentation" onClick={(e) => { if (e.target === e.currentTarget) onClose() }}>
-      <div className="viewer-sheet share-sheet" role="dialog" aria-modal="true" aria-label="Add to the vault">
+      <div
+        className="viewer-sheet share-sheet"
+        role="dialog"
+        aria-modal="true"
+        aria-label={folder ? `Add to ${folder.name}` : 'Add to the vault'}
+      >
         <div className="viewer-sheet-grip" aria-hidden="true" />
         <div className="viewer-sheet-head">
-          <span>Add to the vault</span>
+          <span className="vf-sheet-title">{folder ? `Add to ${folder.name}` : 'Add to the vault'}</span>
           <button className="pill-btn" disabled={busy || picked.size === 0} onClick={hide}>
             {busy ? 'Hiding…' : `Hide ${picked.size || ''}`.trim()}
           </button>
@@ -509,6 +740,243 @@ function AddSheet({
               })}
             </div>
           )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * The vault's folders, as a row of cards above the grid.
+ *
+ * A filter rather than a way into a separate screen: the vault has one header,
+ * one grid and one selection, and a folder changes which photos are in that
+ * grid — so moving between folders is a tap, not a back-and-forth. All and
+ * Unfiled are drawn as glyphs rather than covers, which is what sets the two
+ * views apart from the folders you made.
+ */
+function FolderStrip({
+  folders,
+  scope,
+  total,
+  unfiled,
+  onShow,
+  onNew,
+}: {
+  folders: VaultFolder[]
+  scope: VaultScope
+  total: number
+  unfiled: number
+  onShow: (s: VaultScope) => void
+  onNew: () => void
+}) {
+  return (
+    <div className="albums-scroll vf-strip" role="tablist" aria-label="Vault folders">
+      <button
+        className={`al-card vf-card plain ${scope === 'all' ? 'on' : ''}`}
+        role="tab"
+        aria-selected={scope === 'all'}
+        onClick={() => onShow('all')}
+      >
+        <span className="vf-glyph"><IC.photo /></span>
+        <span className="al-label-bar">
+          <span className="vf-name">All</span>
+          <span className="al-count">{total}</span>
+        </span>
+      </button>
+
+      {/* Only once there is a folder to be outside of: with none, Unfiled is
+          All under another name. */}
+      {folders.length > 0 && (
+        <button
+          className={`al-card vf-card plain ${scope === 'unfiled' ? 'on' : ''}`}
+          role="tab"
+          aria-selected={scope === 'unfiled'}
+          onClick={() => onShow('unfiled')}
+        >
+          <span className="vf-glyph"><IC.imgOff /></span>
+          <span className="al-label-bar">
+            <span className="vf-name">Unfiled</span>
+            <span className="al-count">{unfiled}</span>
+          </span>
+        </button>
+      )}
+
+      {folders.map((f) => (
+        <button
+          key={f.id}
+          className={`al-card vf-card ${f.cover_file_id === null ? 'plain' : ''} ${scope === f.id ? 'on' : ''}`}
+          role="tab"
+          aria-selected={scope === f.id}
+          aria-label={`${f.name}, ${f.file_count} item${f.file_count === 1 ? '' : 's'}`}
+          onClick={() => onShow(f.id)}
+        >
+          {f.cover_file_id !== null ? (
+            <img className="al-cover" src={api.vault.thumbUrl(f.cover_file_id)} alt="" loading="lazy" />
+          ) : (
+            <span className="vf-glyph"><IC.folder /></span>
+          )}
+          <span className="al-label-bar">
+            <span className="vf-name">{f.name}</span>
+            <span className="al-count">{f.file_count}</span>
+          </span>
+        </button>
+      ))}
+
+      <button className="al-card vf-card vf-new" onClick={onNew} aria-label="New folder">
+        <span className="vf-glyph"><IC.plus /></span>
+        <span className="al-label-bar">
+          <span className="vf-name">New folder</span>
+        </span>
+      </button>
+    </div>
+  )
+}
+
+/**
+ * Where to move the selection: Unfiled, any folder, or a new one named here.
+ *
+ * The folder they are already in is shown but disabled rather than left out,
+ * so the list reads the same from every folder and the choice you can't make
+ * is visibly the one you are in.
+ */
+function MoveSheet({
+  folders,
+  scope,
+  count,
+  busy,
+  onPick,
+  onClose,
+}: {
+  folders: VaultFolder[]
+  scope: VaultScope
+  count: number
+  busy: boolean
+  onPick: (d: { folder_id: number | null } | { name: string }) => void
+  onClose: () => void
+}) {
+  const [name, setName] = useState('')
+  const title = `Move ${count} ${count === 1 ? 'photo' : 'photos'} to…`
+  return (
+    <div
+      className="share-backdrop"
+      role="presentation"
+      onClick={(e) => { if (e.target === e.currentTarget && !busy) onClose() }}
+    >
+      <div className="viewer-sheet share-sheet" role="dialog" aria-modal="true" aria-label={title}>
+        <div className="viewer-sheet-grip" aria-hidden="true" />
+        <div className="viewer-sheet-head"><span>{title}</span></div>
+        {/* Pinned above the list, so the way to make a folder can't scroll away
+            behind a long one — the same shape as the viewer's album picker. */}
+        <div className="viewer-album-new">
+          <input
+            value={name}
+            maxLength={80}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="New folder name…"
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && name.trim() && !busy) onPick({ name: name.trim() })
+            }}
+          />
+          <button
+            className="pill-btn"
+            disabled={!name.trim() || busy}
+            onClick={() => onPick({ name: name.trim() })}
+          >
+            Create
+          </button>
+        </div>
+        <div className="viewer-album-list viewer-sheet-body">
+          <button
+            className="viewer-album-row"
+            disabled={busy || scope === 'unfiled'}
+            onClick={() => onPick({ folder_id: null })}
+          >
+            <span>Unfiled</span>
+            <span className="viewer-album-count">no folder</span>
+          </button>
+          {folders.map((f) => (
+            <button
+              key={f.id}
+              className="viewer-album-row"
+              disabled={busy || scope === f.id}
+              onClick={() => onPick({ folder_id: f.id })}
+            >
+              <span className="vf-row-name">{f.name}</span>
+              <span className="viewer-album-count">{scope === f.id ? 'here now' : f.file_count}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Name a folder — new, or renaming the one on screen.
+ *
+ * The same box as the Albums tab's New album prompt, so the two read as one
+ * pattern; separate from it because that one is written for albums, and its
+ * copy says so.
+ */
+function NameDialog({
+  title,
+  initial,
+  confirmLabel,
+  busyLabel,
+  busy,
+  onSubmit,
+  onCancel,
+}: {
+  title: string
+  initial: string
+  confirmLabel: string
+  busyLabel: string
+  busy: boolean
+  onSubmit: (name: string) => void
+  onCancel: () => void
+}) {
+  const [name, setName] = useState(initial)
+  const ref = useRef<HTMLInputElement>(null)
+  useScrollLock()
+
+  useEffect(() => {
+    ref.current?.focus()
+    ref.current?.select()
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onCancel() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onCancel])
+
+  const clean = name.trim()
+  // Renaming to exactly the current name is a no-op; say so by disabling.
+  const ready = clean.length > 0 && clean !== initial && !busy
+
+  return (
+    <div
+      className="confirm-backdrop at-top"
+      role="presentation"
+      onClick={(e) => { if (e.target === e.currentTarget && !busy) onCancel() }}
+    >
+      <div className="confirm-box" role="dialog" aria-modal="true" aria-label={title}>
+        <div className="confirm-title">{title}</div>
+        <div className="confirm-body">
+          Folders only sort what is already hidden. Their names never leave the vault.
+        </div>
+        <input
+          ref={ref}
+          className="album-name-input"
+          value={name}
+          maxLength={80}
+          placeholder="Folder name…"
+          onChange={(e) => setName(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter' && ready) onSubmit(clean) }}
+        />
+        <div className="confirm-actions">
+          <button className="confirm-btn" onClick={onCancel} disabled={busy}>Cancel</button>
+          <button className="confirm-btn primary" disabled={!ready} onClick={() => onSubmit(clean)}>
+            {busy ? busyLabel : confirmLabel}
+          </button>
         </div>
       </div>
     </div>

@@ -55,6 +55,21 @@ pub struct Album {
     pub created_at: i64,
 }
 
+/// A folder inside the vault, with its live count and cover.
+///
+/// Not an [`Album`]: those are listed without a PIN, and a folder's name is as
+/// private as what is in it. `file_count` and `cover_file_id` are computed by
+/// the query that returns this, never stored — there are a handful of these per
+/// user, so a stored count would buy nothing but the chance to go stale.
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct VaultFolder {
+    pub id: i64,
+    pub name: String,
+    pub created_at: i64,
+    pub file_count: i64,
+    pub cover_file_id: Option<i64>,
+}
+
 /// A row in the album_file join table.
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct AlbumFile {

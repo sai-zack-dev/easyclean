@@ -10,7 +10,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::Response;
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, patch, post};
 use axum::{Json, Router};
 use futures_util::stream;
 use serde::Deserialize;
@@ -79,6 +79,13 @@ pub fn router(state: AppState) -> Router {
         .route("/api/vault/pin", post(vault_set_pin))
         .route("/api/vault/unlock", post(vault_unlock))
         .route("/api/vault/files", get(vault_list))
+        .route("/api/vault/folders", get(vault_folders_list))
+        .route("/api/vault/folders", post(vault_folder_create))
+        .route(
+            "/api/vault/folders/:id",
+            patch(vault_folder_rename).delete(vault_folder_delete),
+        )
+        .route("/api/vault/move", post(vault_move))
         .route("/api/vault/add", post(vault_add))
         .route("/api/vault/restore", post(vault_restore))
         .route("/api/vault/delete", post(vault_delete))
@@ -1729,8 +1736,29 @@ async fn vault_unlock(
     })))
 }
 
-async fn vault_list(State(st): State<AppState>, user: VaultUser) -> Result<Json<Value>, ApiError> {
-    let files = db::vault_files(&st.db, &user.username).await?;
+#[derive(Deserialize)]
+struct VaultListQuery {
+    /// A folder id, or `unfiled`. Absent means the whole vault.
+    folder: Option<String>,
+}
+
+async fn vault_list(
+    State(st): State<AppState>,
+    user: VaultUser,
+    Query(q): Query<VaultListQuery>,
+) -> Result<Json<Value>, ApiError> {
+    let scope = match q.folder.as_deref() {
+        None | Some("") | Some("all") => db::VaultScope::All,
+        Some("unfiled") => db::VaultScope::Unfiled,
+        Some(raw) => {
+            let id: i64 = raw
+                .parse()
+                .map_err(|_| ApiError::bad("folder must be an id, `unfiled` or `all`"))?;
+            owned_vault_folder(&st, &user.username, id).await?;
+            db::VaultScope::Folder(id)
+        }
+    };
+    let files = db::vault_files(&st.db, &user.username, scope).await?;
     let total = files.len();
     Ok(Json(json!({ "files": files, "total": total })))
 }
@@ -1738,6 +1766,15 @@ async fn vault_list(State(st): State<AppState>, user: VaultUser) -> Result<Json<
 #[derive(Deserialize)]
 struct VaultIdsReq {
     ids: Vec<i64>,
+}
+
+#[derive(Deserialize)]
+struct VaultAddReq {
+    ids: Vec<i64>,
+    /// Hide straight into this folder — the one on screen when you tapped +.
+    /// Absent or null leaves them Unfiled.
+    #[serde(default)]
+    folder_id: Option<i64>,
 }
 
 /// Hide files.
@@ -1755,8 +1792,13 @@ struct VaultIdsReq {
 async fn vault_add(
     State(st): State<AppState>,
     user: VaultUser,
-    Json(req): Json<VaultIdsReq>,
+    Json(req): Json<VaultAddReq>,
 ) -> Result<Json<Value>, ApiError> {
+    // Checked before anything moves, so a bad folder id refuses the whole
+    // request instead of hiding the photos and then failing to file them.
+    if let Some(fid) = req.folder_id {
+        owned_vault_folder(&st, &user.username, fid).await?;
+    }
     let root = UserRoot::new(&st.cfg.media_root, &user.username).map_err(ApiError::internal)?;
     root.ensure().map_err(ApiError::internal)?;
     let thumbs = root.vault_thumbs();
@@ -1795,7 +1837,16 @@ async fn vault_add(
         }
 
         let rel = rel_to_root(&root, &dest);
-        if db::move_to_vault(&st.db, &user.username, id, &dest.to_string_lossy(), &rel).await? {
+        if db::move_to_vault(
+            &st.db,
+            &user.username,
+            id,
+            &dest.to_string_lossy(),
+            &rel,
+            req.folder_id,
+        )
+        .await?
+        {
             hidden += 1;
         }
     }
@@ -1886,6 +1937,121 @@ async fn vault_delete(
         purged += 1;
     }
     Ok(Json(json!({ "purged": purged })))
+}
+
+// ── Vault folders ─────────────────────────────────────────────────────────
+//
+// Grouping only: the files stay flat in `.vault/` and a folder is a row in
+// `vault_folder` plus a column on the photo. Nothing about a folder touches the
+// disk, so no name the user types ever becomes part of a path.
+
+/// Same bounds as an album name, for the same reasons: it has to fit on a card,
+/// and an empty one is a folder you cannot tell apart from the next.
+fn vault_folder_name(raw: &str) -> Result<String, ApiError> {
+    let name = raw.trim();
+    if name.is_empty() {
+        return Err(ApiError::bad("a folder needs a name"));
+    }
+    if name.chars().count() > 80 {
+        return Err(ApiError::bad("that name is too long"));
+    }
+    Ok(name.to_string())
+}
+
+/// 404 unless `id` is one of this user's folders — the same answer for "not
+/// yours" and "not there", so another account's folder ids can't be probed.
+async fn owned_vault_folder(st: &AppState, username: &str, id: i64) -> Result<(), ApiError> {
+    if db::vault_folder_owned(&st.db, username, id).await? {
+        Ok(())
+    } else {
+        Err(ApiError::not_found("no such folder"))
+    }
+}
+
+/// Every folder with its count and cover, plus the two totals the vault's
+/// folder strip needs: what is in no folder, and everything.
+async fn vault_folders_list(
+    State(st): State<AppState>,
+    user: VaultUser,
+) -> Result<Json<Value>, ApiError> {
+    let folders = db::vault_folders(&st.db, &user.username).await?;
+    let unfiled = db::vault_unfiled_count(&st.db, &user.username).await?;
+    let total = unfiled + folders.iter().map(|f| f.file_count).sum::<i64>();
+    Ok(Json(json!({
+        "folders": folders,
+        "unfiled": unfiled,
+        "total": total,
+    })))
+}
+
+#[derive(Deserialize)]
+struct VaultFolderReq {
+    name: String,
+}
+
+async fn vault_folder_create(
+    State(st): State<AppState>,
+    user: VaultUser,
+    Json(b): Json<VaultFolderReq>,
+) -> Result<Json<Value>, ApiError> {
+    let name = vault_folder_name(&b.name)?;
+    let id = db::create_vault_folder(&st.db, &user.username, &name, now_secs())
+        .await?
+        .ok_or_else(|| {
+            ApiError(
+                StatusCode::CONFLICT,
+                "you already have a folder with that name".into(),
+            )
+        })?;
+    Ok(Json(json!({ "id": id, "name": name })))
+}
+
+async fn vault_folder_rename(
+    State(st): State<AppState>,
+    user: VaultUser,
+    Path(id): Path<i64>,
+    Json(b): Json<VaultFolderReq>,
+) -> Result<Json<Value>, ApiError> {
+    let name = vault_folder_name(&b.name)?;
+    match db::rename_vault_folder(&st.db, &user.username, id, &name).await? {
+        db::RenameOutcome::Renamed => Ok(Json(json!({ "id": id, "name": name }))),
+        db::RenameOutcome::Missing => Err(ApiError::not_found("no such folder")),
+        db::RenameOutcome::Taken => Err(ApiError(
+            StatusCode::CONFLICT,
+            "you already have a folder with that name".into(),
+        )),
+    }
+}
+
+/// Delete a folder. Its photos stay hidden, in Unfiled.
+async fn vault_folder_delete(
+    State(st): State<AppState>,
+    user: VaultUser,
+    Path(id): Path<i64>,
+) -> Result<Json<Value>, ApiError> {
+    let unfiled = db::delete_vault_folder(&st.db, &user.username, id)
+        .await?
+        .ok_or_else(|| ApiError::not_found("no such folder"))?;
+    Ok(Json(json!({ "deleted": id, "unfiled": unfiled })))
+}
+
+#[derive(Deserialize)]
+struct VaultMoveReq {
+    ids: Vec<i64>,
+    /// Destination folder; null moves them to Unfiled.
+    folder_id: Option<i64>,
+}
+
+async fn vault_move(
+    State(st): State<AppState>,
+    user: VaultUser,
+    Json(req): Json<VaultMoveReq>,
+) -> Result<Json<Value>, ApiError> {
+    if let Some(fid) = req.folder_id {
+        owned_vault_folder(&st, &user.username, fid).await?;
+    }
+    let moved = db::move_vault_files(&st.db, &user.username, &req.ids, req.folder_id).await?;
+    Ok(Json(json!({ "moved": moved })))
 }
 
 /// A hidden file's thumbnail, from inside the vault.
@@ -2726,6 +2892,430 @@ mod tests {
             .oneshot(req.body(Body::from(body)).unwrap())
             .await
             .unwrap()
+    }
+
+    /// Any vault call, with a body built at runtime — folder ids are only known
+    /// once the folder exists, so `post_json`'s `&'static str` can't carry them.
+    async fn vault_call(
+        st: AppState,
+        auth: &str,
+        vault: Option<&str>,
+        method: &str,
+        uri: &str,
+        body: Option<String>,
+    ) -> Response {
+        let mut req = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("authorization", auth)
+            .header("content-type", "application/json");
+        if let Some(v) = vault {
+            req = req.header("x-vault-token", v);
+        }
+        app(st)
+            .oneshot(
+                req.body(body.map(Body::from).unwrap_or_else(Body::empty))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    /// Put `n` photos on disk and in the library, set a PIN, unlock, and hide
+    /// them all. Returns the vault token and the hidden ids.
+    async fn vault_with_hidden(st: &AppState, auth: &str, n: usize) -> (String, Vec<i64>) {
+        let dir = st.cfg.media_root.join("saiz").join("source");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut ids = Vec::new();
+        for i in 0..n {
+            let p = dir.join(format!("h{i}.jpg"));
+            std::fs::write(&p, b"jpeg-bytes").unwrap();
+            let id = db::insert_media(
+                &st.db,
+                &NewMedia {
+                    user: "saiz".into(),
+                    path: p.to_string_lossy().into(),
+                    rel_path: None,
+                    filename: format!("h{i}.jpg"),
+                    media_type: "image".into(),
+                    size_bytes: 10,
+                    created_at: 1_700_000_000 + i as i64,
+                    gps_lat: None,
+                    gps_lon: None,
+                },
+            )
+            .await
+            .unwrap();
+            ids.push(id);
+        }
+        let r = post_json(
+            st.clone(),
+            auth,
+            None,
+            "/api/vault/pin",
+            r#"{"pin":"4821"}"#,
+        )
+        .await;
+        assert_eq!(r.status(), StatusCode::OK);
+        let r = post_json(
+            st.clone(),
+            auth,
+            None,
+            "/api/vault/unlock",
+            r#"{"pin":"4821"}"#,
+        )
+        .await;
+        let vt = body_json(r).await["vault_token"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let r = vault_call(
+            st.clone(),
+            auth,
+            Some(&vt),
+            "POST",
+            "/api/vault/add",
+            Some(json!({ "ids": ids }).to_string()),
+        )
+        .await;
+        assert_eq!(body_json(r).await["hidden"], n);
+        (vt, ids)
+    }
+
+    /// Folders sort hidden photos without ever un-hiding them, and their names
+    /// are as private as the photos.
+    #[tokio::test]
+    async fn vault_folders_group_without_leaking() {
+        let st = test_state().await;
+        let auth = bearer(&st);
+        let (vts, ids) = vault_with_hidden(&st, &auth, 3).await;
+        let vt = Some(vts.as_str());
+
+        let listed = |st: AppState, auth: String, vt: String, q: &'static str| async move {
+            let r = vault_call(
+                st,
+                &auth,
+                Some(&vt),
+                "GET",
+                &format!("/api/vault/files{q}"),
+                None,
+            )
+            .await;
+            assert_eq!(r.status(), StatusCode::OK);
+            let mut got: Vec<i64> = body_json(r).await["files"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|f| f["id"].as_i64().unwrap())
+                .collect();
+            got.sort();
+            got
+        };
+
+        // No token, no folders — not even the list of names.
+        let r = vault_call(st.clone(), &auth, None, "GET", "/api/vault/folders", None).await;
+        assert_ne!(r.status(), StatusCode::OK, "folder list needs the PIN");
+        let r = vault_call(
+            st.clone(),
+            &auth,
+            None,
+            "POST",
+            "/api/vault/folders",
+            Some(r#"{"name":"Secret"}"#.into()),
+        )
+        .await;
+        assert_ne!(r.status(), StatusCode::OK, "creating needs the PIN too");
+
+        // Create one; the same name in another case is the same folder.
+        let r = vault_call(
+            st.clone(),
+            &auth,
+            vt,
+            "POST",
+            "/api/vault/folders",
+            Some(r#"{"name":"Secret"}"#.into()),
+        )
+        .await;
+        assert_eq!(r.status(), StatusCode::OK);
+        let secret = body_json(r).await["id"].as_i64().unwrap();
+        let r = vault_call(
+            st.clone(),
+            &auth,
+            vt,
+            "POST",
+            "/api/vault/folders",
+            Some(r#"{"name":"  secret "}"#.into()),
+        )
+        .await;
+        assert_eq!(
+            r.status(),
+            StatusCode::CONFLICT,
+            "names are case-insensitive"
+        );
+        let r = vault_call(
+            st.clone(),
+            &auth,
+            vt,
+            "POST",
+            "/api/vault/folders",
+            Some(r#"{"name":"   "}"#.into()),
+        )
+        .await;
+        assert_eq!(
+            r.status(),
+            StatusCode::BAD_REQUEST,
+            "a blank name is refused"
+        );
+
+        // Everything starts Unfiled.
+        assert_eq!(
+            listed(st.clone(), auth.clone(), vts.clone(), "?folder=unfiled").await,
+            ids
+        );
+        assert_eq!(
+            listed(st.clone(), auth.clone(), vts.clone(), "").await,
+            ids,
+            "All is everything"
+        );
+
+        // Move two in.
+        let r = vault_call(
+            st.clone(),
+            &auth,
+            vt,
+            "POST",
+            "/api/vault/move",
+            Some(json!({ "ids": [ids[0], ids[1]], "folder_id": secret }).to_string()),
+        )
+        .await;
+        assert_eq!(body_json(r).await["moved"], 2);
+
+        let r = vault_call(st.clone(), &auth, vt, "GET", "/api/vault/folders", None).await;
+        let body = body_json(r).await;
+        assert_eq!(body["folders"][0]["name"], "Secret");
+        assert_eq!(body["folders"][0]["file_count"], 2);
+        assert_eq!(
+            body["folders"][0]["cover_file_id"], ids[1],
+            "cover is the newest photo in it"
+        );
+        assert_eq!(body["unfiled"], 1);
+        assert_eq!(body["total"], 3);
+        let r = vault_call(
+            st.clone(),
+            &auth,
+            vt,
+            "GET",
+            &format!("/api/vault/files?folder={secret}"),
+            None,
+        )
+        .await;
+        assert_eq!(body_json(r).await["files"].as_array().unwrap().len(), 2);
+
+        // The folder's name reaches no screen that opens without the PIN.
+        for uri in [
+            "/api/albums",
+            "/api/media/batch?mode=library&size=50",
+            "/api/stats/summary",
+        ] {
+            let r = vault_call(st.clone(), &auth, None, "GET", uri, None).await;
+            let text = String::from_utf8(
+                axum::body::to_bytes(r.into_body(), usize::MAX)
+                    .await
+                    .unwrap()
+                    .to_vec(),
+            )
+            .unwrap();
+            assert!(!text.contains("Secret"), "{uri} mentions the folder");
+            assert!(
+                !text.contains("vault_folder"),
+                "{uri} carries a field that says a vault exists"
+            );
+        }
+
+        // Another account's folder cannot be filed into, read or renamed — and
+        // is indistinguishable from one that does not exist.
+        let theirs = db::create_vault_folder(&st.db, "eve", "Eve's", 1)
+            .await
+            .unwrap()
+            .unwrap();
+        let r = vault_call(
+            st.clone(),
+            &auth,
+            vt,
+            "POST",
+            "/api/vault/move",
+            Some(json!({ "ids": [ids[2]], "folder_id": theirs }).to_string()),
+        )
+        .await;
+        assert_eq!(r.status(), StatusCode::NOT_FOUND);
+        let r = vault_call(
+            st.clone(),
+            &auth,
+            vt,
+            "GET",
+            &format!("/api/vault/files?folder={theirs}"),
+            None,
+        )
+        .await;
+        assert_eq!(r.status(), StatusCode::NOT_FOUND);
+        let r = vault_call(
+            st.clone(),
+            &auth,
+            vt,
+            "PATCH",
+            &format!("/api/vault/folders/{theirs}"),
+            Some(r#"{"name":"mine now"}"#.into()),
+        )
+        .await;
+        assert_eq!(r.status(), StatusCode::NOT_FOUND);
+
+        // Move cannot reach an ordinary library photo: the test's own x.jpg
+        // (id 1) was never hidden.
+        let r = vault_call(
+            st.clone(),
+            &auth,
+            vt,
+            "POST",
+            "/api/vault/move",
+            Some(json!({ "ids": [1], "folder_id": secret }).to_string()),
+        )
+        .await;
+        assert_eq!(
+            body_json(r).await["moved"],
+            0,
+            "only hidden photos can be filed"
+        );
+
+        // Rename, including to a different case of its own name.
+        let r = vault_call(
+            st.clone(),
+            &auth,
+            vt,
+            "PATCH",
+            &format!("/api/vault/folders/{secret}"),
+            Some(r#"{"name":"SECRET"}"#.into()),
+        )
+        .await;
+        assert_eq!(r.status(), StatusCode::OK);
+
+        // Deleting the folder keeps every photo hidden, now Unfiled.
+        let r = vault_call(
+            st.clone(),
+            &auth,
+            vt,
+            "DELETE",
+            &format!("/api/vault/folders/{secret}"),
+            None,
+        )
+        .await;
+        assert_eq!(r.status(), StatusCode::OK);
+        assert_eq!(body_json(r).await["unfiled"], 2);
+        assert_eq!(
+            listed(st.clone(), auth.clone(), vts.clone(), "?folder=unfiled").await,
+            ids
+        );
+        for id in &ids {
+            let m = db::get_media(&st.db, *id).await.unwrap().unwrap();
+            assert_eq!(m.status, "vault", "deleting a folder un-hid photo {id}");
+        }
+    }
+
+    /// Hiding from inside a folder files the photo there; putting it back
+    /// forgets the folder, so hiding it again lands it Unfiled.
+    #[tokio::test]
+    async fn vault_add_into_folder_and_restore_forgets_it() {
+        let st = test_state().await;
+        let auth = bearer(&st);
+        let (vt, ids) = vault_with_hidden(&st, &auth, 1).await;
+
+        let r = vault_call(
+            st.clone(),
+            &auth,
+            Some(&vt),
+            "POST",
+            "/api/vault/folders",
+            Some(r#"{"name":"Docs"}"#.into()),
+        )
+        .await;
+        let docs = body_json(r).await["id"].as_i64().unwrap();
+
+        // The test's own x.jpg, hidden straight into Docs.
+        let dir = st.cfg.media_root.join("saiz");
+        std::fs::create_dir_all(&dir).unwrap();
+        let x = db::get_media(&st.db, 1).await.unwrap().unwrap();
+        std::fs::write(&x.path, b"jpeg-bytes").unwrap();
+        let r = vault_call(
+            st.clone(),
+            &auth,
+            Some(&vt),
+            "POST",
+            "/api/vault/add",
+            Some(json!({ "ids": [1], "folder_id": docs }).to_string()),
+        )
+        .await;
+        assert_eq!(body_json(r).await["hidden"], 1);
+
+        let r = vault_call(
+            st.clone(),
+            &auth,
+            Some(&vt),
+            "GET",
+            &format!("/api/vault/files?folder={docs}"),
+            None,
+        )
+        .await;
+        let f = body_json(r).await;
+        assert_eq!(f["files"].as_array().unwrap().len(), 1);
+        assert_eq!(f["files"][0]["id"], 1);
+
+        // A folder that isn't there refuses the whole add before anything moves.
+        let r = vault_call(
+            st.clone(),
+            &auth,
+            Some(&vt),
+            "POST",
+            "/api/vault/add",
+            Some(json!({ "ids": [ids[0]], "folder_id": 9999 }).to_string()),
+        )
+        .await;
+        assert_eq!(r.status(), StatusCode::NOT_FOUND);
+
+        // Put it back, then hide it again with no folder.
+        let r = vault_call(
+            st.clone(),
+            &auth,
+            Some(&vt),
+            "POST",
+            "/api/vault/restore",
+            Some(r#"{"ids":[1]}"#.into()),
+        )
+        .await;
+        assert_eq!(body_json(r).await["restored"], 1);
+        let r = vault_call(
+            st.clone(),
+            &auth,
+            Some(&vt),
+            "POST",
+            "/api/vault/add",
+            Some(r#"{"ids":[1]}"#.into()),
+        )
+        .await;
+        assert_eq!(body_json(r).await["hidden"], 1);
+
+        let r = vault_call(
+            st.clone(),
+            &auth,
+            Some(&vt),
+            "GET",
+            &format!("/api/vault/files?folder={docs}"),
+            None,
+        )
+        .await;
+        assert_eq!(
+            body_json(r).await["files"].as_array().unwrap().len(),
+            0,
+            "the old folder did not come back with it"
+        );
     }
 
     /// A vaulted photo must be absent from every way of listing the library.

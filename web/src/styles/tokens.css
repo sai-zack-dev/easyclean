@@ -432,6 +432,13 @@ body,
   stroke-linejoin: round;
   flex-shrink: 0;
 }
+/* Visibly off when it can't be pressed — the vault's Hide pill and its folder
+   actions both disable, and without this they looked exactly as live. */
+.pill-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+  pointer-events: none;
+}
 .pill-btn:active {
   opacity: 0.7;
   transform: scale(0.97);
@@ -3579,6 +3586,103 @@ body.select-mode .tabbar {
 /* ── THE HIDDEN VAULT ───────────────────────────────── */
 .vault-screen {
   padding-bottom: 32px;
+}
+
+/* ── VAULT FOLDERS ──────────────────────────────────── */
+/*
+ * The folder strip reuses the Albums tab's cards (`.al-card`, `.al-cover`,
+ * `.al-label-bar`) at a smaller size, so a vault folder reads as the same kind
+ * of thing as an album — which is what it is, minus being listed anywhere else.
+ */
+.vf-strip {
+  margin: 2px 0 14px;
+}
+.vf-card {
+  width: 104px;
+  aspect-ratio: 1;
+}
+/* The label bar's white-on-shade is written for a photo behind it. With a
+   glyph on the plain card ground instead, it needs the ordinary text colour
+   or it vanishes in the light theme. */
+.vf-card.plain .al-label-bar,
+.vf-new .al-label-bar {
+  color: var(--text);
+  background: none;
+}
+.vf-glyph {
+  position: absolute;
+  inset: 0 0 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text3);
+}
+.vf-glyph svg,
+.vf-glyph .ic-mask {
+  width: 26px;
+  height: 26px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+/* A long folder name ellipsises instead of pushing the count off the card. */
+.vf-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/*
+ * The selected folder.
+ *
+ * A pseudo-element ring rather than `box-shadow: inset` or an outline: the
+ * cover image is absolutely positioned over the card and would paint over an
+ * inset shadow, and this sits above it, following the card's radius.
+ */
+.vf-card.on::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border: 2px solid var(--accent);
+  border-radius: inherit;
+  pointer-events: none;
+}
+/* A slot, not a card — the same dashed edge the empty album sections use. */
+.vf-new {
+  background: none;
+  border: 1px dashed var(--border2);
+}
+/* The open folder's name and its two actions, under the strip. */
+.vf-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 16px 12px;
+}
+.vf-bar-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 15px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pill-btn.vf-danger {
+  color: var(--delete);
+}
+.vf-row-name,
+.vf-sheet-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.viewer-album-row:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 /* The keypad. Centred in the screen rather than pinned low: this is the whole

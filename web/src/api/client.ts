@@ -31,6 +31,21 @@ export interface Album {
   created_at: number
 }
 
+/**
+ * A folder inside the vault. Not an `Album`: those are listed without a PIN,
+ * and a folder's name is as private as what is in it.
+ */
+export interface VaultFolder {
+  id: number
+  name: string
+  created_at: number
+  file_count: number
+  cover_file_id: number | null
+}
+
+/** Which part of the vault a listing covers: everything, no folder, or one. */
+export type VaultScope = 'all' | 'unfiled' | number
+
 export interface StatsSummary {
   total: number
   pending: number
@@ -325,8 +340,29 @@ export const api = {
       vaultRequest<{ vault_token: string; expires_in: number }>('POST', '/api/vault/unlock', {
         pin,
       }),
-    files: () => vaultRequest<{ files: MediaFile[]; total: number }>('GET', '/api/vault/files'),
-    add: (ids: number[]) => vaultRequest<{ hidden: number }>('POST', '/api/vault/add', { ids }),
+    files: (scope: VaultScope = 'all') =>
+      vaultRequest<{ files: MediaFile[]; total: number }>(
+        'GET',
+        scope === 'all' ? '/api/vault/files' : `/api/vault/files?folder=${scope}`,
+      ),
+    /** Hide `ids`, straight into `folder_id` when one is on screen. */
+    add: (ids: number[], folder_id?: number) =>
+      vaultRequest<{ hidden: number }>('POST', '/api/vault/add', { ids, folder_id }),
+    folders: () =>
+      vaultRequest<{ folders: VaultFolder[]; unfiled: number; total: number }>(
+        'GET',
+        '/api/vault/folders',
+      ),
+    createFolder: (name: string) =>
+      vaultRequest<{ id: number; name: string }>('POST', '/api/vault/folders', { name }),
+    renameFolder: (id: number, name: string) =>
+      vaultRequest<{ id: number; name: string }>('PATCH', `/api/vault/folders/${id}`, { name }),
+    /** The folder only — its photos stay hidden, in Unfiled. */
+    deleteFolder: (id: number) =>
+      vaultRequest<{ deleted: number; unfiled: number }>('DELETE', `/api/vault/folders/${id}`),
+    /** File hidden photos into a folder; `null` means Unfiled. */
+    move: (ids: number[], folder_id: number | null) =>
+      vaultRequest<{ moved: number }>('POST', '/api/vault/move', { ids, folder_id }),
     restore: (ids: number[]) =>
       vaultRequest<{ restored: number }>('POST', '/api/vault/restore', { ids }),
     /** Permanent — hidden files cannot go to the trash, which needs no PIN. */
