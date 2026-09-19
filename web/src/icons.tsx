@@ -259,18 +259,15 @@ export const IC = {
       />
     </svg>
   ),
-  /* Solid, and the only pair in here that sits on top of a photograph — a
-     stroked triangle over a busy frame reads as a scratch rather than a
-     control. */
+  /* Solid: it sits on top of a photograph, where a stroked triangle over a
+     busy frame reads as a scratch rather than a control. */
   play: () => (
     <svg viewBox="0 0 24 24" className="ic-solid" xmlns="http://www.w3.org/2000/svg">
-      <path d="M8.4 4.6a1.4 1.4 0 012.1-1.2l9.3 6.4a1.4 1.4 0 010 2.4l-9.3 6.4a1.4 1.4 0 01-2.1-1.2V4.6z" />
-    </svg>
-  ),
-  pause: () => (
-    <svg viewBox="0 0 24 24" className="ic-solid" xmlns="http://www.w3.org/2000/svg">
-      <rect x="6" y="4" width="4" height="16" rx="1.3" />
-      <rect x="14" y="4" width="4" height="16" rx="1.3" />
+      {/* Drawn so the triangle's centroid, not its bounding box, sits on
+          (12, 12): vertically 4.45–19.55, and a left edge at 7.8 that puts
+          the visual mass on the centre line. Consumers centre the box and
+          add no nudge of their own. */}
+      <path d="M7.8 5.2v13.6a.9.9 0 0 0 1.4.75l10-6.8a.9.9 0 0 0 0-1.5l-10-6.8a.9.9 0 0 0-1.4.75z" />
     </svg>
   ),
   restore: () => (

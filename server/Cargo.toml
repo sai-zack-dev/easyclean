@@ -22,9 +22,11 @@ tower-http = { workspace = true }
 mime_guess = { workspace = true }
 tokio-stream = "0.1"
 futures-util = "0.3"
+# `oneshot` on tower-http's ServeFile, which is what streams originals with
+# byte-range support. Already in the tree through axum and tower-http.
+tower = { version = "0.5", features = ["util"] }
 
 [dev-dependencies]
-tower = { version = "0.5", features = ["util"] }
 # Only for tests: build a fixture photo, then measure the preview that comes
 # back. Decoding in the server itself always goes through easyclean-core.
 image = { workspace = true }

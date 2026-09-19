@@ -2,6 +2,7 @@ import { useState, useRef } from 'react'
 import { motion, useMotionValue, useTransform, animate } from 'framer-motion'
 import { IC } from '../icons'
 import { api, type MediaFile } from '../api/client'
+import { Spinner } from '../components/Spinner'
 
 function fmtBytes(b: number) {
   if (!b) return '0 B'
@@ -10,6 +11,18 @@ function fmtBytes(b: number) {
   if (b < 1073741824) return (b / 1048576).toFixed(1) + ' MB'
   return (b / 1073741824).toFixed(2) + ' GB'
 }
+
+/** A clip's length as `0:04` / `1:02:09`. */
+function fmtDuration(secs: number) {
+  const t = Math.round(secs)
+  const h = Math.floor(t / 3600)
+  const m = Math.floor((t % 3600) / 60)
+  const s = String(t % 60).padStart(2, '0')
+  return h ? `${h}:${String(m).padStart(2, '0')}:${s}` : `${m}:${s}`
+}
+
+/** Pointer travel under which a release on the card is a tap, not a swipe. */
+const TAP_SLOP = 6
 
 /** `created_at` is unix seconds. */
 function fmtDate(secs: number) {
@@ -32,38 +45,59 @@ export function SwipeCard({ file, badge, onKeep, onDelete }: Props) {
   const [imgErr, setImgErr] = useState(false)
   const [loaded, setLoaded] = useState(false)
   const [fav, setFav] = useState(file.is_favorite)
+  const x = useMotionValue(0)
+  const rotate = useTransform(x, [-300, 0, 300], [-18, 0, 18])
+  const overlayKpOpacity = useTransform(x, [40, 120], [0, 1])
+  const overlayDelOpacity = useTransform(x, [-120, -40], [1, 0])
   const isVideo = file.media_type !== 'image'
-  /**
-   * Whether the `<video>` exists yet — one tap, not one per card.
+
+  /*
+   * The clip, played in place with controls of our own.
    *
-   * A video's card showed its ffmpeg first frame and nothing else, so deciding
-   * whether to keep a clip meant deciding from a single still. The button is
-   * deliberately the only way in: mounting a player for every card would have
-   * the server streaming originals as fast as you can swipe past them.
+   * The first version mounted a native-controls <video> when Play was tapped
+   * and relied on `autoPlay`. On iOS that is two problems: Safari only lets a
+   * clip start *with sound* from a play() called inside the tap itself, so the
+   * freshly mounted element sat paused under Safari's own player — and that
+   * player's collapse and volume buttons landed on the heart and on our Play.
    *
-   * Reset by construction — the deck mounts a card per file with `key={id}`.
+   * So the element exists from the start, with `preload="none"` so a card you
+   * swipe past fetches nothing, and the tap calls play() on it directly. No
+   * `controls`: a centred button while stopped, the whole clip as a tap target
+   * to pause, and a hairline of progress along the bottom edge.
    */
-  const [mounted, setMounted] = useState(false)
-  /**
-   * Whether it is *currently* paused, which is a different question.
-   *
-   * Read off the element's own `play`/`pause` events rather than inferred from
-   * the tap that started it: the clip has native controls, so the user can
-   * pause it without this button ever being touched — and a Pause icon over a
-   * stopped video is a control lying about what it will do.
-   */
-  const [paused, setPaused] = useState(true)
   const videoRef = useRef<HTMLVideoElement>(null)
+  const barRef = useRef<HTMLDivElement>(null)
+  /** Idle until the first tap; `loading` until frames actually flow. */
+  const [vstate, setVstate] = useState<'idle' | 'loading' | 'playing' | 'paused'>('idle')
+  /** Once a frame has played, the video replaces the still for good. */
+  const [started, setStarted] = useState(false)
+  const [duration, setDuration] = useState<number | null>(null)
+  const [videoErr, setVideoErr] = useState(false)
 
   const togglePlay = () => {
-    if (!mounted) {
-      setMounted(true) // the element autoplays on mount
-      return
-    }
+    // Every tap on the card lands here, including the release at the end of a
+    // swipe. A swipe has moved the card; a tap has not.
+    if (Math.abs(x.get()) > TAP_SLOP) return
     const v = videoRef.current
-    if (!v) return
-    if (v.paused) void v.play()
-    else v.pause()
+    if (!v || videoErr) return
+    if (v.paused || v.ended) {
+      if (v.ended) v.currentTime = 0 // belt and braces for the rewind above
+      setVstate('loading')
+      // Synchronously inside the tap — this call *is* the user gesture iOS
+      // asks for. Refused (a codec this browser can't play) falls back to the
+      // still rather than leaving a spinner turning forever.
+      v.play().catch(() => setVstate(started ? 'paused' : 'idle'))
+    } else {
+      v.pause()
+    }
+  }
+
+  /** Progress written straight to the bar: timeupdate is several times a second,
+      and re-rendering the card for each is how swipes start to stutter. */
+  const onTime = (e: React.SyntheticEvent<HTMLVideoElement>) => {
+    const v = e.currentTarget
+    const bar = barRef.current
+    if (bar && v.duration > 0) bar.style.transform = `scaleX(${v.currentTime / v.duration})`
   }
 
   const toggleFav = () => {
@@ -72,10 +106,6 @@ export function SwipeCard({ file, badge, onKeep, onDelete }: Props) {
       .then((r) => setFav(r.is_favorite))
       .catch(() => setFav(file.is_favorite))
   }
-  const x = useMotionValue(0)
-  const rotate = useTransform(x, [-300, 0, 300], [-18, 0, 18])
-  const overlayKpOpacity = useTransform(x, [40, 120], [0, 1])
-  const overlayDelOpacity = useTransform(x, [-120, -40], [1, 0])
 
   const THRESHOLD = 110
 
@@ -94,7 +124,7 @@ export function SwipeCard({ file, badge, onKeep, onDelete }: Props) {
 
   return (
     <motion.div
-      className={`swipe-card ${mounted ? 'playing' : ''}`}
+      className="swipe-card"
       style={{ x, rotate }}
       drag="x"
       dragElastic={0.85}
@@ -120,26 +150,39 @@ export function SwipeCard({ file, badge, onKeep, onDelete }: Props) {
             draggable={false}
             alt=""
           />
-          {mounted && (
+          {isVideo && !videoErr && (
             <video
               ref={videoRef}
-              className="swipe-card-video"
+              // Hidden until it has a frame to show, so the sharp still stays
+              // up through buffering instead of a black box.
+              className={`swipe-card-video ${started ? 'in' : ''}`}
               src={api.rawUrl(file.id)}
-              poster={api.thumbUrl(file.id)}
-              autoPlay
-              loop
+              preload="none"
               playsInline
-              // The card is a drag surface with `touch-action: none`, so a
-              // pointer that lands on the video would be swiping the deck
-              // rather than scrubbing. Keeping it here is what lets the
-              // controls work without a swipe firing underneath them.
-              onPointerDown={(e) => e.stopPropagation()}
-              onPlay={() => setPaused(false)}
-              onPause={() => setPaused(true)}
-              // Undecodable in this browser: fall back to the still rather
-              // than a black rectangle with a dead control over it.
-              onError={() => setMounted(false)}
-              controls
+              disablePictureInPicture
+              onLoadedMetadata={(e) => setDuration(e.currentTarget.duration)}
+              onPlaying={() => {
+                setStarted(true)
+                setVstate('playing')
+              }}
+              onWaiting={() => setVstate('loading')}
+              // Fires at the end as well, which is what brings the button back
+              // for a replay — deliberately no `loop`, or it never would.
+              onPause={() => setVstate('paused')}
+              // Rewind ourselves the moment it ends. Calling play() on an
+              // *ended* element leaves the rewind to the engine, and Safari on
+              // iOS answered every replay tap by staying on the last frame.
+              // Back at 0, a replay is the same paused-at-the-start play() as
+              // the first tap — the case that works — and the card shows its
+              // opening frame again rather than freezing on the last.
+              onEnded={(e) => {
+                e.currentTarget.currentTime = 0
+              }}
+              onTimeUpdate={onTime}
+              onError={() => {
+                setVideoErr(true)
+                setVstate('idle')
+              }}
             />
           )}
         </div>
@@ -163,17 +206,28 @@ export function SwipeCard({ file, badge, onKeep, onDelete }: Props) {
         </div>
       )}
 
-      {/* Opposite the heart, so the two controls that sit on a photo frame it
-          rather than crowd one corner. */}
-      {isVideo && !imgErr && (
+      {/* The whole clip is the button — play, and tap again to pause — with
+          the glyph centred only while it is stopped. Pointer-down is left to
+          bubble so a swipe that starts on the clip still swipes the card;
+          togglePlay tells the two apart. Below the heart and badges, above
+          the picture. */}
+      {isVideo && !imgErr && !videoErr && (
         <button
-          className="play-btn"
+          className={`vid-hit ${vstate}`}
           onClick={togglePlay}
-          onPointerDown={(e) => e.stopPropagation()}
-          aria-label={mounted && !paused ? 'Pause' : 'Play this video'}
+          aria-label={vstate === 'playing' ? 'Pause video' : 'Play video'}
         >
-          {mounted && !paused ? <IC.pause /> : <IC.play />}
+          {vstate !== 'playing' && (
+            <span className="vid-center" aria-hidden="true">
+              {vstate === 'loading' ? <Spinner /> : <IC.play />}
+            </span>
+          )}
         </button>
+      )}
+      {isVideo && started && (
+        <div className="vid-progress" aria-hidden="true">
+          <div ref={barRef} className="vid-progress-fill" />
+        </div>
       )}
 
       <button
@@ -188,7 +242,10 @@ export function SwipeCard({ file, badge, onKeep, onDelete }: Props) {
 
       <div className="card-info-bar">
         <div className="card-fname">{file.filename}</div>
-        <div className="card-fmeta">{fmtDate(file.created_at)} · {fmtBytes(file.size_bytes)}</div>
+        <div className="card-fmeta">
+          {fmtDate(file.created_at)} · {fmtBytes(file.size_bytes)}
+          {duration !== null && Number.isFinite(duration) && ` · ${fmtDuration(duration)}`}
+        </div>
       </div>
     </motion.div>
   )

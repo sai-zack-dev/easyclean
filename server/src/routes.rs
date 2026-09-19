@@ -7,7 +7,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use axum::body::Body;
 use axum::extract::{Path, Query, State};
-use axum::http::{header, HeaderValue, StatusCode};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::Response;
 use axum::routing::{delete, get, patch, post};
@@ -785,6 +785,7 @@ async fn raw(
     State(st): State<AppState>,
     user: MediaUser,
     Path(id): Path<i64>,
+    headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let m = owned_media(&st, &user.username, id).await?;
     let p = FsPath::new(&m.path);
@@ -797,7 +798,7 @@ async fn raw(
     if !p.exists() {
         return Err(ApiError::not_found("file missing on disk"));
     }
-    serve_file(p).await
+    serve_original(p, &headers).await
 }
 
 /// Bin one file straight from the Gallery or the detail viewer.
@@ -1602,6 +1603,41 @@ fn enrich(files: Vec<MediaFile>) -> Vec<Value> {
         .collect()
 }
 
+/// Serve an original — streamed, and honouring `Range`.
+///
+/// `serve_file` reads the whole file into memory and answers every request
+/// with all of it, which is fine for a 30 KB thumbnail and wrong for a video.
+/// Safari on iOS opens a clip by asking for `bytes=0-1` and expects a `206`
+/// back; given a `200` it falls back to downloading the entire file before the
+/// first frame, so tapping Play on a 24 MB clip meant watching a spinner for
+/// all 24 MB — and it could not seek. Every one of those downloads also sat in
+/// the server's memory whole, under a container capped at 2 GB.
+///
+/// tower-http's `ServeFile` streams from disk and answers ranges and
+/// conditional requests properly. Only the headers it acts on are forwarded:
+/// the caller has already authenticated the request and resolved the path, so
+/// nothing else from the client reaches it.
+async fn serve_original(path: &FsPath, headers: &HeaderMap) -> Result<Response, ApiError> {
+    use tower::ServiceExt;
+    let mut req = axum::http::Request::new(Body::empty());
+    for name in [
+        header::RANGE,
+        header::IF_RANGE,
+        header::IF_MODIFIED_SINCE,
+        header::IF_UNMODIFIED_SINCE,
+    ] {
+        if let Some(v) = headers.get(&name) {
+            req.headers_mut().insert(name, v.clone());
+        }
+    }
+    // ServeFile cannot fail — a missing file is its own 404 response — so its
+    // error type is `Infallible` and this pattern is irrefutable.
+    let Ok(resp) = tower_http::services::ServeFile::new(path)
+        .oneshot(req)
+        .await;
+    Ok(resp.map(Body::new))
+}
+
 async fn serve_file(path: &FsPath) -> Result<Response, ApiError> {
     let bytes = tokio::fs::read(path)
         .await
@@ -2085,6 +2121,7 @@ async fn vault_raw(
     State(st): State<AppState>,
     user: VaultUser,
     Path(id): Path<i64>,
+    headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let m = db::vault_file(&st.db, &user.username, id)
         .await?
@@ -2093,7 +2130,7 @@ async fn vault_raw(
     if !p.starts_with(&st.cfg.media_root) || !p.exists() {
         return Err(ApiError::not_found("file missing on disk"));
     }
-    serve_file(p).await
+    serve_original(p, &headers).await
 }
 
 #[cfg(test)]
@@ -3943,6 +3980,55 @@ mod tests {
             !back.path.contains("/clean/"),
             "never into the cleaned folder"
         );
+    }
+
+    /// Originals are served in ranges, the way Safari asks for a video.
+    ///
+    /// iOS opens a clip with `Range: bytes=0-1` and needs a `206` back; given
+    /// the whole file instead it downloads all of it before showing a frame,
+    /// and cannot seek. This pins the partial answer, and that an ordinary
+    /// request still gets the whole file and says ranges are available.
+    #[tokio::test]
+    async fn originals_answer_byte_ranges() {
+        let st = test_state().await;
+        let m = db::get_media(&st.db, 1).await.unwrap().unwrap();
+        std::fs::create_dir_all(FsPath::new(&m.path).parent().unwrap()).unwrap();
+        std::fs::write(&m.path, b"0123456789abcdef").unwrap();
+        let token = core_auth::make_media_token("saiz", &st.cfg.secret, 60).unwrap();
+
+        let get = |st: AppState, range: Option<&'static str>| {
+            let uri = format!("/api/media/1/raw?token={token}");
+            async move {
+                let mut req = Request::builder().uri(uri);
+                if let Some(r) = range {
+                    req = req.header("range", r);
+                }
+                app(st)
+                    .oneshot(req.body(Body::empty()).unwrap())
+                    .await
+                    .unwrap()
+            }
+        };
+        let bytes = |r: Response| async move {
+            axum::body::to_bytes(r.into_body(), usize::MAX)
+                .await
+                .unwrap()
+                .to_vec()
+        };
+
+        let r = get(st.clone(), Some("bytes=0-1")).await;
+        assert_eq!(r.status(), StatusCode::PARTIAL_CONTENT, "Safari's probe");
+        assert_eq!(r.headers()["content-range"], "bytes 0-1/16");
+        assert_eq!(bytes(r).await, b"01");
+
+        let r = get(st.clone(), Some("bytes=10-")).await;
+        assert_eq!(r.status(), StatusCode::PARTIAL_CONTENT, "a seek");
+        assert_eq!(bytes(r).await, b"abcdef");
+
+        let r = get(st.clone(), None).await;
+        assert_eq!(r.status(), StatusCode::OK);
+        assert_eq!(r.headers()["accept-ranges"], "bytes");
+        assert_eq!(bytes(r).await, b"0123456789abcdef");
     }
 
     /// Manual album filing, used by the viewer's Album action.
