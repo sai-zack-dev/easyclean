@@ -8,6 +8,49 @@ All notable changes to EasyClean are documented here. The format follows
 
 Nothing yet.
 
+## [0.4.4] — 2026-09-20
+
+Two pieces of daily use that had gone sour: the vault was one flat grid however much you hid in it,
+and video in the swipe deck was close to unusable on the phone it is meant for.
+
+Patch: no breaking API change and nothing to configure. One new migration (0008 — a table, a column,
+an index), applied on start; it is additive, so a rollback to 0.4.3 still boots.
+
+### Added
+- **Folders in the vault.** Hidden photos can be filed. A row of cards above the grid — All, Unfiled,
+  one per folder, New folder — filters it, a folder's own bar offers Rename and Delete, and selection
+  gains Move: to a folder, to Unfiled, or into a new one named on the spot. `+` inside a folder hides
+  straight into it.
+
+  Folders group; they do not move anything. Files stay flat in `.vault/` and no name you type ever
+  becomes part of a path. They live in their own `vault_folder` table rather than as albums, because
+  `/api/albums` lists every album without asking for a PIN and a folder's name is as private as what
+  is in it — for the same reason the column is deliberately absent from ordinary Gallery responses,
+  where even a `null` would announce that a vault exists. Names are unique per user, ignoring case.
+
+  **Deleting a folder never deletes a photo**: its contents stay hidden and become Unfiled, and the
+  confirmation says so. Restoring a photo forgets its folder, so hiding it again lands it Unfiled.
+- **A real player for video in the swipe deck.** The clip plays in place with one tap, with a play
+  button while stopped, a spinner while it buffers, tap anywhere to pause and resume, a hairline of
+  progress along the bottom edge, and the clip's length on the date line. It rewinds itself to the
+  first frame when it ends.
+
+### Fixed
+- **Video actually starts, and nothing sits on top of it.** Play mounted a native-controls `<video>`
+  and left it to `autoPlay`; Safari on iOS only starts a clip with sound from a `play()` made inside
+  the tap, so it sat paused under Safari's own player — whose buttons landed on the heart and on our
+  Play button, with a scrubber across half the photo you were judging. The card now owns its player,
+  and there are no native controls left to collide with.
+- **Originals stream in ranges.** `/raw` and the vault's `/raw` read the whole file into memory and
+  answered every request with all of it. Safari opens a video with `Range: bytes=0-1` and expects a
+  206; given a 200 it downloads the entire clip before the first frame and cannot seek — so Play on a
+  24 MB clip meant a 24 MB wait, and every one of those sat whole in a 2 GB container. Both now serve
+  from disk through `ServeFile`, with byte ranges and conditional requests.
+- **A toast no longer re-locks the vault.** Every action that showed one dropped you back on the PIN
+  pad: the locked-or-unset check re-ran whenever `onClose` changed identity, `App` passes a fresh
+  inline one on each render, and every toast re-renders `App`. The check now runs once, on mount.
+- **Disabled pills look disabled.** The vault's Hide pill was indistinguishable from a live one.
+
 ## [0.4.3] — 2026-09-17
 
 Five fixes from a day of real use on a phone. The first is a correctness bug — a deleted photo could
