@@ -6,6 +6,15 @@ All notable changes to EasyClean are documented here. The format follows
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.5.0] — 2026-09-21
+
+Minor, not patch: the server gained a way to receive files, which it never had. Nothing breaks and
+nothing has to be configured — without `EASYCLEAN_QUOTAS` every account is unlimited, and the disk
+floor defaults to 5 GiB. One new migration, `0009`, adding a nullable column and an index; additive,
+so an automatic rollback to 0.4.4 still boots against a migrated database.
+
 ### Added
 - **Uploads, resumable and verified.** Six endpoints under `/api/upload`. A client hashes its files
   first and asks `check` which ones the server already holds, so re-offering a whole camera roll next
