@@ -3693,6 +3693,7 @@ mod tests {
                     created_at: 1_700_000_000 + i as i64,
                     gps_lat: None,
                     gps_lon: None,
+                    content_hash: None,
                 },
             )
             .await
