@@ -9,6 +9,7 @@ import {
   type VaultScope,
 } from '../api/client'
 import { ConfirmDialog } from '../components/ConfirmDialog'
+import { PhotoViewer } from './PhotoViewer'
 import { evictCachedThumbs } from '../pwa'
 import { useStickyHeader } from '../hooks/useStickyHeader'
 import { useScrollLock } from '../hooks/useScrollLock'
@@ -57,6 +58,8 @@ export function VaultScreen({ onClose, toast }: Props) {
   const [naming, setNaming] = useState<'create' | 'rename' | null>(null)
   const [confirmFolderDelete, setConfirmFolderDelete] = useState(false)
   const [moving, setMoving] = useState(false)
+  /** Which photo is open full-screen, as an index into `files`. */
+  const [viewing, setViewing] = useState<number | null>(null)
 
   /** The folder on screen, when the scope is one. */
   const current = typeof scope === 'number' ? (folders.find((f) => f.id === scope) ?? null) : null
@@ -142,20 +145,24 @@ export function VaultScreen({ onClose, toast }: Props) {
    * the vault token in the address bar and left it in history — a trail
    * leading back to the vault, on the screen that exists so there is no trail.
    */
-  const openHidden = async (id: number) => {
-    try {
-      const blob = await api.vault.rawBlob(id)
-      const url = URL.createObjectURL(blob)
-      const w = window.open(url, '_blank', 'noopener')
-      if (!w) {
-        URL.revokeObjectURL(url)
-        toast('Your browser blocked the new tab')
-        return
-      }
-      window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
-    } catch {
-      toast('The vault locked itself — enter your PIN again')
-    }
+  /**
+   * A photo has left the vault — put back or deleted from inside the viewer.
+   *
+   * The grid drops it here rather than reloading: the viewer is still open on
+   * the list either side of it, and swapping the array out from under it would
+   * move whatever it paged to next. The folder strip does get refetched, since
+   * every count on it just changed.
+   */
+  const dropHidden = (id: number) => {
+    setFiles((fs) => fs.filter((f) => f.id !== id))
+    api.vault
+      .folders()
+      .then((f) => {
+        setFolders(f.folders)
+        setUnfiled(f.unfiled)
+        setTotal(f.total)
+      })
+      .catch(() => {})
   }
 
   const restore = () => {
@@ -360,7 +367,7 @@ export function VaultScreen({ onClose, toast }: Props) {
         </div>
       ) : (
         <div className="gallery-grid">
-          {files.map((f) => {
+          {files.map((f, i) => {
             const on = picked?.has(f.id) ?? false
             return (
               <button
@@ -368,7 +375,7 @@ export function VaultScreen({ onClose, toast }: Props) {
                 className={`g-cell g-pick ${on ? 'on' : ''}`}
                 onClick={() => {
                   if (!picked) {
-                    void openHidden(f.id)
+                    setViewing(i)
                     return
                   }
                   const next = new Set(picked)
@@ -411,6 +418,22 @@ export function VaultScreen({ onClose, toast }: Props) {
             <span>Delete</span>
           </button>
         </div>
+      )}
+
+      {/* Was a new browser tab holding a blob URL, which is the one way out of
+          this screen that leaves the photo sitting in the app switcher next to
+          Safari's other tabs. Same viewer as the Gallery, pinch and page and
+          all, and it never leaves the vault. */}
+      {viewing !== null && files[viewing] && (
+        <PhotoViewer
+          files={files}
+          index={viewing}
+          onIndex={setViewing}
+          onClose={() => setViewing(null)}
+          mode="vault"
+          onRemoved={dropHidden}
+          toast={toast}
+        />
       )}
 
       {adding && (

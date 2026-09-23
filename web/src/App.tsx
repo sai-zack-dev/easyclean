@@ -5,6 +5,7 @@ import { applyAccent } from './theme'
 import { onUpdateAvailable, applyUpdate } from './pwa'
 import { Sidebar, TabBar } from './components/Sidebar'
 import { Toast } from './components/Toast'
+import { UploadPill } from './components/UploadPill'
 import { LoginScreen } from './screens/LoginScreen'
 import { ServerSetup } from './screens/ServerSetup'
 import { CleanTab } from './screens/CleanTab'
@@ -16,6 +17,7 @@ import { SettingsTab } from './screens/SettingsTab'
 import { TrashScreen } from './screens/TrashScreen'
 import { UploadScreen } from './screens/UploadScreen'
 import { VaultScreen } from './screens/VaultScreen'
+import { useUploads } from './store/uploads'
 
 export type TabId = 'clean' | 'gallery' | 'albums' | 'setting'
 
@@ -48,6 +50,23 @@ export function App() {
   /** The session token we last minted a media token for. */
   const [mediaFor, setMediaFor] = useState<string | null>(null)
   const tmr = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /** A batch is in flight somewhere — it no longer needs its screen to run. */
+  const uploading = useUploads((s) => s.running)
+
+  /**
+   * Leave the Add screen, and put the finished batch away with it.
+   *
+   * Only when nothing is running: a live batch keeps its list, because that
+   * list *is* the batch and the pill leads straight back to it. A settled one
+   * has already said what happened, in a toast, so holding on to it would mean
+   * opening "Add photos" next time onto last week's receipt — and holding its
+   * previews, which are object URLs over the whole selection.
+   */
+  const closeUpload = useCallback(() => {
+    setUploadOpen(false)
+    const s = useUploads.getState()
+    if (!s.running) s.clear()
+  }, [])
 
   // Stable identity on purpose: screens list `toast` in effect dependencies, so
   // a fresh function each render re-ran those effects every time a toast came
@@ -74,6 +93,17 @@ export function App() {
   useEffect(() => {
     applyAccent(accentIndex)
   }, [accentIndex, theme])
+
+  // The one thing a background upload still cannot survive is the page going
+  // away — there is no Background Fetch on iOS, and a service worker cannot be
+  // handed files picked in a document that no longer exists. So say so, on the
+  // platforms that will ask.
+  useEffect(() => {
+    if (!uploading) return
+    const warn = (e: BeforeUnloadEvent) => e.preventDefault()
+    window.addEventListener('beforeunload', warn)
+    return () => window.removeEventListener('beforeunload', warn)
+  }, [uploading])
 
   // Surfaced as a banner rather than only in Setting: an installed PWA has no
   // address bar and no reload, so without this the app can sit on an old build
@@ -146,6 +176,13 @@ export function App() {
           </button>
         </div>
       )}
+      {/* Not inside the tab shell: a batch keeps running through the swipe
+          deck, the duplicate compare and the trash too. Only its own screen
+          and the vault suppress it — one already shows the batch in full, and
+          the other is a screen nothing may point back out of. */}
+      {uploading && !uploadOpen && !vaultOpen && (
+        <UploadPill onOpen={() => setUploadOpen(true)} />
+      )}
       {swipe ? (
         <SwipeScreen
           mode={swipe.mode}
@@ -162,7 +199,7 @@ export function App() {
         <TrashScreen onClose={() => setTrashOpen(false)} toast={toast} />
       ) : uploadOpen ? (
         <UploadScreen
-          onClose={() => setUploadOpen(false)}
+          onClose={closeUpload}
           toast={toast}
           onUploaded={() => setLibraryVersion((v) => v + 1)}
         />

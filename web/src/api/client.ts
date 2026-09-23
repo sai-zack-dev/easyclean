@@ -486,9 +486,21 @@ export const api = {
   statsSummary: () => request<StatsSummary>('GET', '/api/stats/summary'),
   statsTimeline: () =>
     request<{ months: TimelineMonth[] }>('GET', '/api/stats/timeline').then((r) => r.months ?? []),
-  statsStreak: () => request<StreakStats>('GET', '/api/stats/streak'),
+  /*
+   * Both of these count in days, and a day is where the person looking at it
+   * lives — the server has no idea. It stores timestamps in UTC and used to
+   * divide them by 86 400, which draws the day boundary at 06:30 in Yangon and
+   * 19:00 in New York; the streak then broke, or failed to break, on the wrong
+   * night. `getTimezoneOffset` is minutes *behind* UTC, so it is negated here
+   * to give minutes ahead, which is the direction the query means.
+   */
+  statsStreak: () =>
+    request<StreakStats>('GET', `/api/stats/streak?tz=${-new Date().getTimezoneOffset()}`),
   statsStorage: (days = 30) =>
-    request<StorageSeries>('GET', `/api/stats/storage?days=${days}`),
+    request<StorageSeries>(
+      'GET',
+      `/api/stats/storage?days=${days}&tz=${-new Date().getTimezoneOffset()}`,
+    ),
 
   /** Merged search: exact name matches, then photos that look like the query. */
   search: (params: { q: string; mode?: string; type?: 'image' | 'video' }) => {

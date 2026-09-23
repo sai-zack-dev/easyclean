@@ -8,6 +8,48 @@ All notable changes to EasyClean are documented here. The format follows
 
 Nothing yet.
 
+## [0.5.1] — 2026-09-23
+
+Five things reported after 0.5.0 went into daily use, all in the client or in a read-only query —
+patch rather than minor: no API changes, no configuration changes, no new migration, nothing to do
+before upgrading.
+
+### Fixed
+- **An upload no longer holds the app hostage.** A batch lives in its own store rather than in the
+  screen that starts it, so sending 50 photos over a home link is something you set going and then
+  leave — Clean, Gallery, the swipe deck and the trash all stay usable while it runs, and a pill
+  above the tab bar reports progress and leads back. Closing the Add screen no longer means
+  cancelling; Cancel is its own button now. The tab still has to stay open: there is no Background
+  Fetch on iOS, and a service worker cannot be handed files picked in a document that has gone away,
+  so a `beforeunload` guard speaks up on the platforms that will ask.
+
+- **The upload list stopped destroying its own thumbnails.** Previews were derived from the item
+  array, which the run replaces several times a second to report progress — so every tick revoked
+  all sixty object URLs and minted sixty more, and the browser re-decoded every thumbnail it had
+  just decoded. That is what made rows go blank and the list tear under a fast scroll. They are now
+  built once when the files are picked and left alone, progress is coalesced to one render per
+  frame, and each row is `contain`ed and lazily decoded so a 200-file list lays out once.
+
+- **Streaks are counted in your calendar, not UTC's.** Both the streak and the Settings storage
+  chart bucketed `timestamp / 86400`, which draws the day boundary at 06:30 in Yangon and 19:00 in
+  New York. One morning's cleaning could therefore land on two different "days" and paper over a
+  real gap. Both endpoints now take the client's UTC offset (`?tz=`, minutes ahead) and bucket by it.
+
+- **The vault has a photo viewer.** Tapping a hidden photo opened a new browser tab holding a blob
+  URL — the one way out of that screen that leaves the photo sitting in the app switcher next to
+  Safari's other tabs. It now opens the same viewer as the Gallery, in a `vault` mode: pinch, page
+  and swipe-to-dismiss as usual, with Put back and Delete forever in place of Share and Album, no
+  favourite, and no album lookup. The original still arrives as a blob fetched with the vault token
+  in a header, so nothing about it reaches a URL.
+
+- **`viewport-fit=cover`, which every `env(safe-area-inset-*)` in the stylesheet was waiting for.**
+  Without it iOS reports all four insets as 0, so the carefully-written padding did nothing: action
+  bars sat under the home indicator, and the photo viewer's chrome was 45px taller at the top (status
+  bar plus header) than at the bottom. A photo centred in the gap between the two bars is therefore
+  not centred on the screen — it sits half that difference low, which is the first thing you notice
+  on a short photo. The viewer now also gives the difference back to whichever end is shorter, so the
+  photo's centre and the screen's are the same point.
+
 ## [0.5.0] — 2026-09-21
 
 Minor, not patch: the server gained a way to receive files, which it never had. Nothing breaks and

@@ -825,45 +825,87 @@ pub async fn unlog_last_swipe(pool: &Db, user: &str) -> Result<()> {
     Ok(())
 }
 
+/// Which day a timestamp falls on, in the *viewer's* calendar.
+///
+/// `tz_offset_secs` is how far that calendar is ahead of UTC — +6.5 h for
+/// Yangon, -5 h for New York. Dividing a raw unix timestamp by 86 400, as this
+/// used to, buckets by UTC day, which is a different day from the user's for
+/// part of every 24 hours: at UTC+6:30 a swipe before 06:30 local counted
+/// towards yesterday, so a run of late mornings and one late night could look
+/// like an unbroken week when two of those days had no cleaning in them at all.
+///
+/// Floor division, not truncation: `-1 / 86_400` is 0 in Rust and would put
+/// the last hours of 1969 on the same day as the first of 1970.
+fn day_bucket(ts: i64, tz_offset_secs: i64) -> i64 {
+    (ts + tz_offset_secs).div_euclid(86_400)
+}
+
+/// `day_bucket`, as a SQL expression over `col`, taking the offset twice.
+///
+/// SQLite has no `FLOOR` — that is a build-time math extension, and the one
+/// bundled here is not built with it — and its `/` truncates towards zero,
+/// which is a different answer from `div_euclid` for every negative value.
+/// Subtracting the true modulus first leaves an exact multiple of 86 400, and
+/// every division agrees about those.
+///
+/// Both `?` are the offset, and they come before any other placeholder in the
+/// statements below, so the binds read offset, offset, then the rest.
+fn local_day_sql(col: &str) -> String {
+    format!("((({col} + ?) - (((({col} + ?) % 86400) + 86400) % 86400)) / 86400)")
+}
+
 /// Compute streak stats for a user.
-/// `now_secs` = current unix timestamp (in seconds).
+///
+/// `now_secs` = current unix timestamp (in seconds); `tz_offset_secs` = the
+/// caller's offset from UTC, which is what makes "a day" mean their day.
 pub async fn streak_stats(
     pool: &Db,
     user: &str,
     now_secs: i64,
+    tz_offset_secs: i64,
 ) -> Result<crate::models::StreakStats> {
-    let today_start = now_secs - (now_secs % 86_400);
+    let today_bucket = day_bucket(now_secs, tz_offset_secs);
+    // The first instant of the day six days back, in UTC seconds — the bound
+    // the query needs, since `swiped_at` is stored in UTC.
+    let window_start = (today_bucket - 6) * 86_400 - tz_offset_secs;
 
     // Swipes per calendar day (last 7).
-    let rows: Vec<(i64, i64)> = sqlx::query_as(
-        "SELECT (swiped_at / 86400) AS day_bucket, COUNT(*) \
+    let sql = format!(
+        "SELECT {day} AS day_bucket, COUNT(*) \
          FROM swipe_log WHERE user = ? AND swiped_at >= ? \
          GROUP BY day_bucket ORDER BY day_bucket ASC",
-    )
-    .bind(user)
-    .bind(today_start - 6 * 86_400)
-    .fetch_all(pool)
-    .await?;
+        day = local_day_sql("swiped_at"),
+    );
+    let rows: Vec<(i64, i64)> = sqlx::query_as(&sql)
+        .bind(tz_offset_secs)
+        .bind(tz_offset_secs)
+        .bind(user)
+        .bind(window_start)
+        .fetch_all(pool)
+        .await?;
 
-    let today_bucket = today_start / 86_400;
     let mut last_7 = vec![0i64; 7];
     for (bucket, count) in &rows {
-        let idx = (bucket - (today_bucket - 6)) as usize;
-        if idx < 7 {
-            last_7[idx] = *count;
+        let idx = bucket - (today_bucket - 6);
+        if (0..7).contains(&idx) {
+            last_7[idx as usize] = *count;
         }
     }
 
     // Streak: walk backwards from today counting consecutive days with swipes.
-    let active_days: std::collections::HashSet<i64> = sqlx::query_as::<_, (i64,)>(
-        "SELECT DISTINCT (swiped_at / 86400) FROM swipe_log WHERE user = ?",
-    )
-    .bind(user)
-    .fetch_all(pool)
-    .await?
-    .into_iter()
-    .map(|(d,)| d)
-    .collect();
+    let sql = format!(
+        "SELECT DISTINCT {day} FROM swipe_log WHERE user = ?",
+        day = local_day_sql("swiped_at"),
+    );
+    let active_days: std::collections::HashSet<i64> = sqlx::query_as::<_, (i64,)>(&sql)
+        .bind(tz_offset_secs)
+        .bind(tz_offset_secs)
+        .bind(user)
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .map(|(d,)| d)
+        .collect();
 
     let mut streak = 0i64;
     let mut day = today_bucket;
@@ -1007,28 +1049,39 @@ pub async fn storage_by_day(
     user: &str,
     days: i64,
     now_secs: i64,
+    tz_offset_secs: i64,
 ) -> Result<Vec<crate::models::StorageDay>> {
     let days = days.clamp(1, 365);
-    let today_bucket = now_secs / 86_400;
+    // The same calendar the streak counts in — see `day_bucket`. The two are
+    // read side by side ("I cleaned on these days" against "this is what I
+    // saved"), so a chart bucketed by UTC day next to a streak bucketed by the
+    // user's would disagree about which day a late-evening session belonged to.
+    let today_bucket = day_bucket(now_secs, tz_offset_secs);
     let first_bucket = today_bucket - (days - 1);
 
-    let rows: Vec<(i64, i64, i64)> = sqlx::query_as(
-        "SELECT (trashed_at / 86400) AS day_bucket, \
+    let sql = format!(
+        "SELECT {day} AS day_bucket, \
                 COALESCE(SUM(size_bytes), 0), \
                 COUNT(*) \
          FROM media_file \
          WHERE user = ? AND status = 'trashed' AND trashed_at IS NOT NULL \
-           AND (trashed_at / 86400) >= ? \
+           AND trashed_at >= ? \
          GROUP BY day_bucket ORDER BY day_bucket ASC",
-    )
-    .bind(user)
-    .bind(first_bucket)
-    .fetch_all(pool)
-    .await?;
+        day = local_day_sql("trashed_at"),
+    );
+    let rows: Vec<(i64, i64, i64)> = sqlx::query_as(&sql)
+        .bind(tz_offset_secs)
+        .bind(tz_offset_secs)
+        .bind(user)
+        .bind(first_bucket * 86_400 - tz_offset_secs)
+        .fetch_all(pool)
+        .await?;
 
     let mut series: Vec<crate::models::StorageDay> = (0..days)
         .map(|i| crate::models::StorageDay {
-            day: (first_bucket + i) * 86_400,
+            // Local midnight, expressed in UTC seconds, so the client's own
+            // `new Date(day * 1000)` renders the right calendar day back.
+            day: (first_bucket + i) * 86_400 - tz_offset_secs,
             bytes: 0,
             files: 0,
         })

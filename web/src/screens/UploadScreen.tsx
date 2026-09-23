@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type DragEvent } from 'react'
 import { IC } from '../icons'
 import { api } from '../api/client'
-import { makeItems, runUpload, type UploadItem, type UploadSummary } from '../api/uploader'
+import { type UploadItem } from '../api/uploader'
+import { useUploads, uploadProgress } from '../store/uploads'
 import { Spinner } from '../components/Spinner'
 
 interface Props {
@@ -10,9 +11,6 @@ interface Props {
   /** Something arrived, so the screens behind this one are now stale. */
   onUploaded: () => void
 }
-
-/** Above this many files, previews cost more memory than they are worth. */
-const PREVIEW_LIMIT = 60
 
 function fmtBytes(b: number) {
   if (!b) return '0 B'
@@ -41,14 +39,19 @@ function stateLabel(it: UploadItem): string {
   }
 }
 
+/**
+ * The batch's own screen.
+ *
+ * It no longer *owns* the upload — `useUploads` does, so closing this is
+ * leaving the room, not pulling the plug. That is why the back button here
+ * closes even mid-transfer and Cancel is its own button: the two were the same
+ * control only because there was nowhere for a running batch to live.
+ */
 export function UploadScreen({ onClose, toast, onUploaded }: Props) {
-  const [items, setItems] = useState<UploadItem[]>([])
-  const [running, setRunning] = useState(false)
-  const [summary, setSummary] = useState<UploadSummary | null>(null)
+  const { items, previews, running, summary, pick, start, cancel, clear } = useUploads()
   const [quota, setQuota] = useState<{ used: number; limit: number | null } | null>(null)
   const [dragging, setDragging] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
-  const abortRef = useRef<AbortController | null>(null)
 
   const loadQuota = useCallback(() => {
     api.upload
@@ -61,76 +64,32 @@ export function UploadScreen({ onClose, toast, onUploaded }: Props) {
     loadQuota()
   }, [loadQuota])
 
-  // Previews are object URLs, which the browser holds until they are revoked —
-  // forgetting to would leak the whole selection for as long as the tab lives.
-  const previews = useMemo(() => {
-    if (items.length === 0 || items.length > PREVIEW_LIMIT) return new Map<string, string>()
-    const m = new Map<string, string>()
-    for (const it of items) {
-      if (it.file.type.startsWith('image/')) m.set(it.key, URL.createObjectURL(it.file))
-    }
-    return m
-  }, [items])
-
+  // Refetched when a batch settles rather than inside `start`, so the figure is
+  // right however you got back here — including opening the screen again after
+  // the upload finished while you were off swiping.
   useEffect(() => {
-    return () => {
-      previews.forEach((url) => URL.revokeObjectURL(url))
-    }
-  }, [previews])
+    if (!running) loadQuota()
+  }, [running, loadQuota])
 
-  const pick = (list: FileList | null) => {
+  const choose = (list: FileList | null) => {
     if (!list || list.length === 0) return
-    setSummary(null)
-    setItems(makeItems(Array.from(list)))
+    pick(Array.from(list))
   }
-
-  const start = async () => {
-    if (items.length === 0 || running) return
-    const ac = new AbortController()
-    abortRef.current = ac
-    setRunning(true)
-    setSummary(null)
-    try {
-      const result = await runUpload(items, setItems, ac.signal)
-      setSummary(result)
-      loadQuota()
-      if (result.uploaded > 0) {
-        onUploaded()
-        toast(
-          `${result.uploaded} photo${result.uploaded === 1 ? '' : 's'} added — analysing in the background`,
-        )
-      } else if (result.stoppedBecause) {
-        toast(result.stoppedBecause)
-      } else if (result.skipped > 0) {
-        toast('Everything you picked was already on the server')
-      }
-    } finally {
-      setRunning(false)
-      abortRef.current = null
-    }
-  }
-
-  const cancel = () => abortRef.current?.abort()
 
   const onDrop = (e: DragEvent) => {
     e.preventDefault()
     setDragging(false)
-    if (!running) pick(e.dataTransfer.files)
+    if (!running) choose(e.dataTransfer.files)
   }
 
-  const totalBytes = items.reduce((s, i) => s + i.file.size, 0)
-  const sentBytes = items.reduce(
-    (s, i) => s + (i.state === 'done' || i.state === 'skipped' ? i.file.size : i.sent),
-    0,
-  )
-  const pct = totalBytes > 0 ? Math.floor((sentBytes / totalBytes) * 100) : 0
+  const { total: totalBytes, pct } = uploadProgress(items)
   const remaining = quota?.limit != null ? Math.max(quota.limit - quota.used, 0) : null
   const overQuota = remaining !== null && totalBytes > remaining
 
   return (
     <div className="swipe-screen">
       <div className="swipe-header">
-        <button className="back-btn" onClick={running ? cancel : onClose} aria-label="Back">
+        <button className="back-btn" onClick={onClose} aria-label="Back">
           <IC.chevLeft />
         </button>
         <div className="swipe-title-wrap">
@@ -144,7 +103,7 @@ export function UploadScreen({ onClose, toast, onUploaded }: Props) {
           </div>
         </div>
         {items.length > 0 && !running ? (
-          <button className="undo-btn" onClick={() => setItems([])}>
+          <button className="undo-btn" onClick={clear}>
             CLEAR
           </button>
         ) : (
@@ -201,13 +160,18 @@ export function UploadScreen({ onClose, toast, onUploaded }: Props) {
                   <div className="idx-fill" style={{ width: `${pct}%` }} />
                 </div>
               )}
+              {running && (
+                <div className="up-quota-note">
+                  Keep the app open and this carries on while you use the rest of it.
+                </div>
+              )}
               {overQuota && !running && (
                 <div className="up-warn">
                   That is more than the {fmtBytes(remaining ?? 0)} you have left. Empty the trash or
                   pick fewer files.
                 </div>
               )}
-              {summary && (
+              {summary && !running && (
                 <div className="up-result">
                   {summary.uploaded} added
                   {summary.skipped > 0 && ` · ${summary.skipped} already there`}
@@ -226,7 +190,12 @@ export function UploadScreen({ onClose, toast, onUploaded }: Props) {
                   <div className={`up-row ${it.state}`} key={it.key}>
                     <div className="up-thumb">
                       {preview ? (
-                        <img src={preview} alt="" />
+                        // `lazy` and `async` together are what keep a long list
+                        // scrollable: a row that has never been on screen costs
+                        // nothing, and one that comes into view decodes off the
+                        // main thread instead of stalling the scroll on a 10 MB
+                        // photo.
+                        <img src={preview} alt="" loading="lazy" decoding="async" />
                       ) : (
                         <IC.imgOff />
                       )}
@@ -267,7 +236,7 @@ export function UploadScreen({ onClose, toast, onUploaded }: Props) {
           accept="image/*,video/*"
           hidden
           onChange={(e) => {
-            pick(e.target.files)
+            choose(e.target.files)
             // Cleared so picking the same files again still fires a change.
             e.target.value = ''
           }}
@@ -277,9 +246,16 @@ export function UploadScreen({ onClose, toast, onUploaded }: Props) {
       {items.length > 0 && (
         <div className="up-actions">
           {running ? (
-            <button className="up-btn ghost" onClick={cancel}>
-              Cancel
-            </button>
+            <>
+              <button className="up-btn ghost" onClick={cancel}>
+                Cancel
+              </button>
+              {/* Leaving is the ordinary thing to do now, so it gets the
+                  primary slot and Cancel stops being the only way out. */}
+              <button className="up-btn primary" onClick={onClose}>
+                Keep uploading
+              </button>
+            </>
           ) : (
             <>
               <button className="up-btn ghost" onClick={() => inputRef.current?.click()}>
@@ -287,7 +263,10 @@ export function UploadScreen({ onClose, toast, onUploaded }: Props) {
               </button>
               {/* Once a batch has run, the primary action is leaving — pressing
                   Upload again would re-send files the server would only skip. */}
-              <button className="up-btn primary" onClick={summary ? onClose : start}>
+              <button
+                className="up-btn primary"
+                onClick={summary ? onClose : () => void start(toast, onUploaded)}
+              >
                 {summary ? 'Done' : `Upload ${items.length} file${items.length === 1 ? '' : 's'}`}
               </button>
             </>

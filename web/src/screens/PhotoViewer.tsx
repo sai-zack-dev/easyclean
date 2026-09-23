@@ -37,15 +37,57 @@ const SWIPE_UP_THRESHOLD = 70
 /**
  * The media itself, mounted with `key={file.id}` so paging remounts it — load
  * and error state reset by construction rather than by an effect.
+ *
+ * A hidden photo takes the long way round. Everything else here is an `<img
+ * src>` pointing at the server with the media token in the query string, and
+ * the vault deliberately has no such URL: putting its token in a src would
+ * write it into the address bar and the history of the one screen whose whole
+ * purpose is leaving no trace. So the bytes are fetched with the token in a
+ * header and handed to the tag as a blob URL, which is scoped to this document
+ * and carries no credential. The thumbnail still comes over a URL — it is a
+ * 200px square, and the grid behind this has already paid for it.
  */
-function ViewerMedia({ file, onErr }: { file: MediaFile; onErr: () => void }) {
+function ViewerMedia({ file, hidden, onErr }: { file: MediaFile; hidden: boolean; onErr: () => void }) {
   const [loaded, setLoaded] = useState(false)
   const [err, setErr] = useState(false)
+  /** The hidden original, once it has arrived. `null` until then, and always
+   *  for an ordinary file, which needs no such trip. */
+  const [blobUrl, setBlobUrl] = useState<string | null>(null)
 
   const fail = () => {
     setErr(true)
     onErr()
   }
+
+  useEffect(() => {
+    if (!hidden) return
+    let live = true
+    let url: string | null = null
+    api.vault
+      .rawBlob(file.id)
+      .then((b) => {
+        url = URL.createObjectURL(b)
+        // Paged past already: revoke it here rather than leaving the cleanup
+        // to find a URL it was never told about.
+        if (!live) {
+          URL.revokeObjectURL(url)
+          url = null
+          return
+        }
+        setBlobUrl(url)
+      })
+      .catch(() => {
+        if (live) fail()
+      })
+    return () => {
+      live = false
+      if (url) URL.revokeObjectURL(url)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hidden, file.id])
+
+  const thumb = hidden ? api.vault.thumbUrl(file.id) : api.thumbUrl(file.id)
+  const full = hidden ? blobUrl : api.previewUrl(file.id)
 
   if (err) {
     return (
@@ -57,16 +99,20 @@ function ViewerMedia({ file, onErr }: { file: MediaFile; onErr: () => void }) {
   }
 
   if (file.media_type !== 'image') {
+    // A hidden clip has no URL to stream from, so it waits for the whole file.
+    if (hidden && !blobUrl) {
+      return <img className="viewer-media in" src={thumb} alt={file.filename} aria-busy="true" />
+    }
     return (
       <video
         className="viewer-media in"
-        src={api.rawUrl(file.id)}
+        src={hidden ? blobUrl! : api.rawUrl(file.id)}
         // The first frame, extracted by ffmpeg at scan time, standing in until
         // the clip itself has decoded one. Without it the stage was an empty
         // grey rectangle with a play button on it — the video was fine, there
         // was simply nothing to look at until you pressed play, which is no
         // way to decide whether to keep it.
-        poster={api.thumbUrl(file.id)}
+        poster={thumb}
         // Enough to draw the first frame and know the duration, without
         // pulling a 24 MB clip down because you paged past it.
         preload="metadata"
@@ -81,20 +127,31 @@ function ViewerMedia({ file, onErr }: { file: MediaFile; onErr: () => void }) {
     <>
       {/* The grid already cached this, so it paints instantly and the stage is
           never empty while the full preview renders server-side. */}
-      <img className="viewer-media ph" src={api.thumbUrl(file.id)} alt="" aria-hidden="true" />
-      <img
-        className={`viewer-media full ${loaded ? 'in' : ''}`}
-        src={api.previewUrl(file.id)}
-        alt={file.filename}
-        draggable={false}
-        onLoad={() => setLoaded(true)}
-        onError={fail}
-      />
+      <img className="viewer-media ph" src={thumb} alt="" aria-hidden="true" />
+      {full && (
+        <img
+          className={`viewer-media full ${loaded ? 'in' : ''}`}
+          src={full}
+          alt={file.filename}
+          draggable={false}
+          onLoad={() => setLoaded(true)}
+          onError={fail}
+        />
+      )}
     </>
   )
 }
 
-export type ViewerMode = 'gallery' | 'trash'
+/**
+ * Which library the deck is drawn from, and so which bar of actions is honest.
+ *
+ * `vault` is not a third kind of trash: a hidden file has no albums, no
+ * favourite and no share — offering any of them would be a way of mentioning
+ * the vault somewhere it should not be mentioned — and its delete is
+ * permanent, because the trash needs no PIN and a hidden photo sitting in it
+ * would no longer be hidden.
+ */
+export type ViewerMode = 'gallery' | 'trash' | 'vault'
 
 interface Props {
   files: MediaFile[]
@@ -106,6 +163,11 @@ interface Props {
   /** Called after a file leaves this list, so the caller can drop it. */
   onRemoved?: (id: number) => void
   toast?: (msg: string) => void
+}
+
+/** Whether `mode` hides its files — the vault, and only the vault. */
+function isHidden(mode: ViewerMode) {
+  return mode === 'vault'
 }
 
 export function PhotoViewer({
@@ -129,6 +191,7 @@ export function PhotoViewer({
   const [sharing, setSharing] = useState(false)
   const [retentionDays, setRetentionDays] = useState(30)
   const [openedAt] = useState(() => Date.now())
+  const hidden = isHidden(mode)
 
   const stageRef = useRef<HTMLDivElement>(null)
   const frameRef = useRef<HTMLDivElement>(null)
@@ -215,15 +278,17 @@ export function PhotoViewer({
   }, [])
 
   useEffect(() => {
+    // Nothing in the vault can reach the trash, so its retention is not a
+    // number this screen ever says out loud.
+    if (hidden) return
     api.settings().then((s) => setRetentionDays(s.trash_retention_days)).catch(() => {})
-  }, [])
+  }, [hidden])
 
   // ── Gestures ────────────────────────────────────────────────────────────
 
   const clampPan = () => {
     const frame = frameRef.current
-    const stage = stageRef.current
-    if (!frame || !stage) return
+    if (!frame) return
     const { scale } = view.current
     if (scale <= 1) {
       view.current.x = 0
@@ -231,9 +296,14 @@ export function PhotoViewer({
       return
     }
     // How far the scaled image may travel before its edge enters the viewport.
-    const r = stage.getBoundingClientRect()
-    const maxX = Math.max((r.width * scale - r.width) / 2, 0)
-    const maxY = Math.max((r.height * scale - r.height) / 2, 0)
+    // Measured from the frame's *layout* box rather than a bounding rect: the
+    // frame is the element being scaled, so its rect is already multiplied by
+    // the very scale this is trying to account for. It is also no longer the
+    // same box as the stage — see `--chrome-skew-*`.
+    const w = frame.offsetWidth
+    const h = frame.offsetHeight
+    const maxX = Math.max((w * scale - w) / 2, 0)
+    const maxY = Math.max((h * scale - h) / 2, 0)
     view.current.x = Math.min(Math.max(view.current.x, -maxX), maxX)
     view.current.y = Math.min(Math.max(view.current.y, -maxY), maxY)
   }
@@ -401,6 +471,12 @@ export function PhotoViewer({
     reset(true)
     setPanel('info')
     setFileAlbums(null)
+    // A hidden file is out of every album by definition — asking would be a
+    // request naming a vault id over the ordinary, PIN-less albums endpoint.
+    if (hidden) {
+      setFileAlbums([])
+      return
+    }
     api.fileAlbums(file.id).then(setFileAlbums).catch(() => setFileAlbums([]))
   }
 
@@ -496,6 +572,33 @@ export function PhotoViewer({
       .finally(() => setBusy(false))
   }
 
+  /** Out of the vault and back into the library, unreviewed. */
+  const unhide = () => {
+    setBusy(true)
+    api.vault
+      .restore([file.id])
+      .then(() => {
+        toast?.(`${file.filename} is back in your library`)
+        dropCurrent(file.id)
+      })
+      .catch(() => toast?.('Could not put it back'))
+      .finally(() => setBusy(false))
+  }
+
+  /** Straight off the disk. The vault has no trash to fall back to. */
+  const purgeHidden = () => {
+    setBusy(true)
+    api.vault
+      .remove([file.id])
+      .then(() => {
+        toast?.(`${file.filename} deleted for good`)
+        setConfirm(null)
+        dropCurrent(file.id)
+      })
+      .catch(() => toast?.('Could not delete it'))
+      .finally(() => setBusy(false))
+  }
+
   const addToAlbum = (album_id?: number, name?: string) => {
     setBusy(true)
     api.albumAdd({ file_id: file.id, album_id, name })
@@ -545,7 +648,7 @@ export function PhotoViewer({
           onPointerCancel={onPointerUp}
           onDoubleClick={onDoubleClick}
         >
-          <ViewerMedia key={file.id} file={file} onErr={() => reset(false)} />
+          <ViewerMedia key={file.id} file={file} hidden={hidden} onErr={() => reset(false)} />
         </div>
       </div>
 
@@ -573,24 +676,34 @@ export function PhotoViewer({
               <dt>Size</dt><dd>{fmtBytes(file.size_bytes)}</dd>
               <dt>Type</dt><dd>{file.media_type}</dd>
               <dt>Folder</dt><dd>{file.rel_path || '—'}</dd>
-              <dt>Albums</dt>
-              <dd>
-                {fileAlbums === null ? (
-                  'Checking…'
-                ) : fileAlbums.length === 0 ? (
-                  'Not in any album'
-                ) : (
-                  <span className="viewer-album-tags">
-                    {fileAlbums.map((a) => (
-                      <span key={a.id} className="viewer-album-tag">{a.name}</span>
-                    ))}
-                  </span>
-                )}
-              </dd>
+              {!hidden && (
+                <>
+                  <dt>Albums</dt>
+                  <dd>
+                    {fileAlbums === null ? (
+                      'Checking…'
+                    ) : fileAlbums.length === 0 ? (
+                      'Not in any album'
+                    ) : (
+                      <span className="viewer-album-tags">
+                        {fileAlbums.map((a) => (
+                          <span key={a.id} className="viewer-album-tag">{a.name}</span>
+                        ))}
+                      </span>
+                    )}
+                  </dd>
+                </>
+              )}
               <dt>Status</dt>
               <dd>
-                {file.status === 'pending' ? 'Not reviewed' : file.status === 'keep' ? 'Cleaned' : 'In trash'}
-                {daysLeft !== null && ` · ${daysLeft} day${daysLeft === 1 ? '' : 's'} left`}
+                {hidden
+                  ? 'Hidden'
+                  : file.status === 'pending'
+                    ? 'Not reviewed'
+                    : file.status === 'keep'
+                      ? 'Cleaned'
+                      : 'In trash'}
+                {!hidden && daysLeft !== null && ` · ${daysLeft} day${daysLeft === 1 ? '' : 's'} left`}
               </dd>
               {file.blur_score !== null && (
                 <>
@@ -660,7 +773,22 @@ export function PhotoViewer({
       {/* Reads as the app's tab bar, because it stands in for it while the
           viewer is up — same height, same blur, same four-across rhythm. */}
       <div className="viewer-bar">
-        {mode === 'gallery' ? (
+        {mode === 'vault' ? (
+          <>
+            <button className="viewer-act" onClick={unhide} disabled={busy}>
+              <IC.restore /><span>Put back</span>
+            </button>
+            <button
+              className={`viewer-act ${panel === 'info' ? 'on' : ''}`}
+              onClick={() => (panel === 'info' ? closePanel() : openInfo())}
+            >
+              <IC.info /><span>Info</span>
+            </button>
+            <button className="viewer-act danger" onClick={() => setConfirm('purge')} disabled={busy}>
+              <IC.trash /><span>Delete forever</span>
+            </button>
+          </>
+        ) : mode === 'gallery' ? (
           <>
             <button className="viewer-act" onClick={() => setSharing(true)} disabled={busy}>
               <IC.share /><span>Share</span>
@@ -720,11 +848,15 @@ export function PhotoViewer({
         <ConfirmDialog
           title="Delete forever?"
           subject={file.filename}
-          body="This erases it from disk. It cannot be undone."
+          body={
+            hidden
+              ? 'This erases it from disk. Hidden photos have no trash to fall back on — a trash needs no PIN, and one sitting in it would no longer be hidden.'
+              : 'This erases it from disk. It cannot be undone.'
+          }
           confirmLabel="Delete forever"
-          thumbUrl={api.thumbUrl(file.id)}
+          thumbUrl={hidden ? api.vault.thumbUrl(file.id) : api.thumbUrl(file.id)}
           busy={busy}
-          onConfirm={purge}
+          onConfirm={hidden ? purgeHidden : purge}
           onCancel={() => setConfirm(null)}
         />
       )}

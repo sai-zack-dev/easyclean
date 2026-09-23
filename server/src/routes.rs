@@ -1223,14 +1223,33 @@ async fn timeline(State(st): State<AppState>, user: AuthUser) -> Result<Json<Val
     Ok(Json(json!({ "months": months })))
 }
 
-async fn streak(State(st): State<AppState>, user: AuthUser) -> Result<Json<Value>, ApiError> {
-    let s = db::streak_stats(&st.db, &user.username, now_secs()).await?;
+/// A client's offset from UTC, in minutes ahead — what `getTimezoneOffset()`
+/// reports, negated. Clamped to the range real zones occupy, so a junk query
+/// string cannot shift a day by a year.
+#[derive(Deserialize, Default)]
+struct TzQuery {
+    tz: Option<i64>,
+}
+
+impl TzQuery {
+    fn offset_secs(&self) -> i64 {
+        self.tz.unwrap_or(0).clamp(-14 * 60, 14 * 60) * 60
+    }
+}
+
+async fn streak(
+    State(st): State<AppState>,
+    user: AuthUser,
+    Query(tz): Query<TzQuery>,
+) -> Result<Json<Value>, ApiError> {
+    let s = db::streak_stats(&st.db, &user.username, now_secs(), tz.offset_secs()).await?;
     Ok(Json(serde_json::to_value(s).unwrap_or(Value::Null)))
 }
 
 #[derive(Deserialize)]
 struct StorageQuery {
     days: Option<i64>,
+    tz: Option<i64>,
 }
 
 /// Daily "storage saved" series behind the Settings chart.
@@ -1240,7 +1259,8 @@ async fn storage(
     Query(q): Query<StorageQuery>,
 ) -> Result<Json<Value>, ApiError> {
     let days = q.days.unwrap_or(30);
-    let series = db::storage_by_day(&st.db, &user.username, days, now_secs()).await?;
+    let tz = TzQuery { tz: q.tz }.offset_secs();
+    let series = db::storage_by_day(&st.db, &user.username, days, now_secs(), tz).await?;
     let total: i64 = series.iter().map(|d| d.bytes).sum();
     let files: i64 = series.iter().map(|d| d.files).sum();
     Ok(Json(
@@ -3221,7 +3241,7 @@ mod tests {
         let s = db::stats_summary(&st.db, "saiz").await.unwrap();
         assert_eq!((s.trashed, s.pending), (1, 0));
         assert_eq!(
-            db::streak_stats(&st.db, "saiz", now_secs())
+            db::streak_stats(&st.db, "saiz", now_secs(), 0)
                 .await
                 .unwrap()
                 .total_swipes,
@@ -3237,7 +3257,7 @@ mod tests {
             "undo should return it to the deck"
         );
         assert_eq!(
-            db::streak_stats(&st.db, "saiz", now_secs())
+            db::streak_stats(&st.db, "saiz", now_secs(), 0)
                 .await
                 .unwrap()
                 .total_swipes,
@@ -5611,6 +5631,61 @@ mod tests {
         assert_eq!(v["total_files"], json!(1));
         let days = v["days"].as_array().unwrap();
         assert_eq!(days.last().unwrap()["bytes"], json!(10), "landed on today");
+    }
+
+    /// A day is the *user's* day, not UTC's.
+    ///
+    /// The streak used to bucket `swiped_at / 86400`, which at UTC+6:30 draws
+    /// the line at 06:30 local. Two sessions on the same local morning, either
+    /// side of that line, were two days — enough to paper over a real gap and
+    /// report an unbroken week to someone who had cleaned on five days of it.
+    #[tokio::test]
+    async fn streak_counts_days_in_the_callers_timezone() {
+        let st = test_state().await;
+        // +6:30, where UTC midnight falls at 06:30 local.
+        let tz = 6 * 3600 + 1800;
+        let local_midnight = 20_000 * 86_400 - tz;
+        let now = local_midnight + 8 * 3600;
+
+        // One session at 05:00 local and one at 08:00, the same morning — but
+        // either side of UTC midnight, so UTC calls them two different days.
+        db::log_swipes(&st.db, "saiz", 1, local_midnight + 5 * 3600)
+            .await
+            .unwrap();
+        db::log_swipes(&st.db, "saiz", 1, now).await.unwrap();
+
+        let local = db::streak_stats(&st.db, "saiz", now, tz).await.unwrap();
+        assert_eq!(local.current_streak, 1, "one local day of cleaning");
+        assert_eq!(
+            local.last_7_days.iter().filter(|n| **n > 0).count(),
+            1,
+            "and one lit-up ring to go with it"
+        );
+        assert_eq!(local.last_7_days[6], 2, "both swipes land on today");
+
+        let utc = db::streak_stats(&st.db, "saiz", now, 0).await.unwrap();
+        assert_eq!(
+            utc.current_streak, 2,
+            "the old, UTC-bucketed reading — kept here so the difference is the test"
+        );
+    }
+
+    /// The gap is the whole point: a streak stops at the first day with
+    /// nothing on it, however much work sits behind that day.
+    #[tokio::test]
+    async fn streak_stops_at_the_first_empty_day() {
+        let st = test_state().await;
+        let tz = 6 * 3600 + 1800;
+        let today = 20_000 * 86_400 - tz + 12 * 3600;
+        // Today, yesterday, then nothing the day before, then three more.
+        for d in [0, 1, 3, 4, 5] {
+            db::log_swipes(&st.db, "saiz", 1, today - d * 86_400)
+                .await
+                .unwrap();
+        }
+        let s = db::streak_stats(&st.db, "saiz", today, tz).await.unwrap();
+        assert_eq!(s.current_streak, 2, "the run ends at the empty day");
+        assert_eq!(s.total_swipes, 5, "which is not the same as the total");
     }
 
     /// A preview is rendered from the original and cached; it must be bigger

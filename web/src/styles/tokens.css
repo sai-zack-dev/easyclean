@@ -2335,6 +2335,22 @@ body.viewer-open .tabbar {
   background: rgba(var(--viewer-bg), calc(0.94 * var(--viewer-dim, 1)));
   backdrop-filter: blur(8px);
   overscroll-behavior: contain;
+
+  /*
+   * How tall the chrome is at each end, and the difference between them.
+   *
+   * The two are not the same height and cannot be: the top bar also carries
+   * the status bar, the bottom one the home indicator. A photo centred in the
+   * gap between them is therefore *not* centred on the screen — it sits half
+   * the difference low, which on a short photo with room to spare above and
+   * below is the first thing you notice. The skew below gives that difference
+   * back to whichever end is shorter, so the photo's centre and the screen's
+   * are the same point.
+   */
+  --chrome-top: calc(58px + env(safe-area-inset-top));
+  --chrome-bottom: calc(var(--tab) + env(safe-area-inset-bottom));
+  --chrome-skew-top: max(0px, calc(var(--chrome-bottom) - var(--chrome-top)));
+  --chrome-skew-bottom: max(0px, calc(var(--chrome-top) - var(--chrome-bottom)));
 }
 .viewer-top {
   display: flex;
@@ -2400,7 +2416,10 @@ body.viewer-open .tabbar {
  */
 .viewer-frame {
   position: absolute;
-  inset: 0;
+  /* Not `inset: 0` — see `--chrome-skew-*` on `.viewer`. The frame is the box
+     the photo centres itself in, so the correction belongs here rather than on
+     the stage, whose `overflow: hidden` still clips to the full gap. */
+  inset: var(--chrome-skew-top) 0 var(--chrome-skew-bottom) 0;
   touch-action: none;
   user-select: none;
   -webkit-user-select: none;
@@ -4197,6 +4216,10 @@ body.modal-open .vault-screen {
   background: var(--bg3);
   border: 1px solid var(--border);
   border-radius: var(--r);
+  /* A row's contents never affect anything outside it, and the percentages
+     inside change several times a second. Saying so keeps a 200-row list from
+     re-laying-out end to end on every tick. */
+  contain: layout paint style;
 }
 .up-row.skipped,
 .up-row.failed {
@@ -4277,6 +4300,74 @@ body.modal-open .vault-screen {
 }
 .up-row.failed .up-state {
   color: var(--delete);
+}
+
+/*
+ * The running-batch pill.
+ *
+ * Above the tab bar, not under the header: an upload belongs to the app rather
+ * than to whichever tab is on screen, and the top of every tab is already a
+ * sticky title. Below the photo viewer's z-index — a batch running behind a
+ * full-screen photo has nothing to say until you come back out.
+ */
+.up-pill {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: calc(var(--bar-h) + 12px);
+  z-index: 50;
+  max-width: calc(100% - 32px);
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 14px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--border2);
+  background: var(--bg3);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 12.5px;
+  font-weight: 600;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+  cursor: pointer;
+  overflow: hidden;
+  animation: confirm-pop 0.2s var(--ease);
+}
+/* The progress is the pill's own fill rather than a bar beside it — there is
+   no room for both at this size, and a pill that fills up needs no legend. */
+.up-pill-bar {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  background: var(--accent);
+  opacity: 0.16;
+  transition: width 0.3s var(--ease);
+  pointer-events: none;
+}
+.up-pill > svg {
+  position: relative;
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.up-pill-text {
+  position: relative;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.up-pill-pct {
+  position: relative;
+  flex-shrink: 0;
+  color: var(--text3);
+  font-variant-numeric: tabular-nums;
 }
 
 /*
