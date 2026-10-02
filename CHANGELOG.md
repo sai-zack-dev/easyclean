@@ -8,6 +8,37 @@ All notable changes to EasyClean are documented here. The format follows
 
 Nothing yet.
 
+## [0.6.0] — 2026-10-02
+
+Minor, not patch: the viewer gained a mode it did not have. Nothing breaks, no API or configuration
+changes, no new migration.
+
+### Added
+- **Slideshow.** A play button in the photo viewer opens a sheet for direction (next or previous) and
+  interval (1, 3, 5 or 10 seconds), and the deck then advances on its own until it reaches either
+  end. The timer is keyed off the current photo rather than looping independently, so each one gets
+  its whole interval — including one a manual swipe landed on — and touching the controls stops the
+  show instead of fighting it. It pauses behind a confirmation or the share sheet: those close over
+  the photo that was on screen when they opened, so advancing underneath one would delete or share
+  something else. Not offered in the trash, or on a deck of one.
+
+### Changed
+- **The tab bar is 58px, not 72px.** 72 was quietly standing in for the home indicator as well as the
+  bar's own content. Since 0.5.1 turned `env(safe-area-inset-bottom)` on, that space is added
+  properly on top — so the old number left about 20px of dead air under the icon-and-label stack on
+  every screen.
+- **The vault's Select and Cancel are text pills again**, matching the Gallery's, with
+  `.swipe-title-wrap`'s gutter widened to 136px so a centred title clears them and the Add button.
+
+### Fixed
+- **The toast sat behind the status bar.** It was pinned 56px from the top, which after
+  `viewport-fit=cover` is measured from the physical top edge rather than below the status bar — so
+  on any notched phone it was mostly hidden.
+- **The version the app reports.** 0.5.1 was tagged and deployed without bumping the workspace
+  `Cargo.toml`, so both `/api/health` and the Settings readout have been saying `0.5.0` while running
+  the 0.5.1 image. The bundle reads the same file, so the two agreed with each other and nothing
+  flagged it.
+
 ## [0.5.1] — 2026-09-23
 
 Five things reported after 0.5.0 went into daily use, all in the client or in a read-only query —
