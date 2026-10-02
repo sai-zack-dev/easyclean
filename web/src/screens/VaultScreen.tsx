@@ -307,21 +307,20 @@ export function VaultScreen({ onClose, toast }: Props) {
                 <IC.plus />
               </button>
             )}
-            {/* Icon rather than a "Select" pill: with a text button here the
-                right-hand cluster was 173px wide, and a title centred on the
-                header cannot clear that and still have room to be read. */}
+            {/* Text, matching Gallery's own Select/Cancel — `.swipe-title-wrap`
+                carries a wider gutter now to clear this plus the Add button
+                beside it. */}
             {picked ? (
-              <button className="icon-btn" onClick={() => setPicked(null)} aria-label="Cancel">
-                <IC.close />
+              <button className="pill-btn" onClick={() => setPicked(null)}>
+                Cancel
               </button>
             ) : (
               <button
-                className="icon-btn"
+                className="pill-btn"
                 onClick={() => setPicked(new Set())}
                 disabled={!files.length}
-                aria-label="Select photos"
               >
-                <IC.check />
+                Select
               </button>
             )}
           </div>

@@ -180,7 +180,7 @@ export function PhotoViewer({
   toast,
 }: Props) {
   const file = files[index]
-  const [panel, setPanel] = useState<'none' | 'info' | 'album'>('none')
+  const [panel, setPanel] = useState<'none' | 'info' | 'album' | 'slideshow'>('none')
   const [albums, setAlbums] = useState<Album[]>([])
   /** Albums this photo is already filed under — shown in Details. */
   const [fileAlbums, setFileAlbums] = useState<Album[] | null>(null)
@@ -191,6 +191,11 @@ export function PhotoViewer({
   const [sharing, setSharing] = useState(false)
   const [retentionDays, setRetentionDays] = useState(30)
   const [openedAt] = useState(() => Date.now())
+  /** Slideshow: off until started from its own sheet, on the last direction
+   *  and interval picked — so starting it again later remembers your choice. */
+  const [slideshowOn, setSlideshowOn] = useState(false)
+  const [slideshowDir, setSlideshowDir] = useState<'next' | 'prev'>('next')
+  const [slideshowSecs, setSlideshowSecs] = useState(3)
   const hidden = isHidden(mode)
 
   const stageRef = useRef<HTMLDivElement>(null)
@@ -239,6 +244,10 @@ export function PhotoViewer({
 
   const go = useCallback(
     (delta: number) => {
+      // Taking the controls yourself ends the slideshow rather than fighting
+      // it — a swipe mid-slideshow that put you back where the timer had
+      // already moved on from would read as the gesture doing nothing.
+      setSlideshowOn(false)
       const next = index + delta
       if (next < 0 || next >= files.length) {
         reset(true)
@@ -249,6 +258,33 @@ export function PhotoViewer({
     },
     [index, files.length, onIndex, reset],
   )
+
+  /**
+   * Advance on a timer while the slideshow runs, one photo at a time.
+   *
+   * Keyed off `index` rather than looping internally, so it restarts its wait
+   * from zero on every photo — including one a manual swipe landed on, in the
+   * moment before `go` turns the slideshow off — rather than firing early off
+   * a clock that started before the photo did.
+   *
+   * Paused, not stopped, behind a confirmation or the share sheet: `purge` and
+   * friends close over `file` from render scope, so advancing underneath one
+   * would delete or share whatever the timer had moved on to, not what was on
+   * screen when it was opened.
+   */
+  useEffect(() => {
+    if (!slideshowOn || confirm || sharing) return
+    const id = window.setTimeout(() => {
+      const next = index + (slideshowDir === 'next' ? 1 : -1)
+      if (next < 0 || next >= files.length) {
+        setSlideshowOn(false)
+        return
+      }
+      reset(false)
+      onIndex(next)
+    }, slideshowSecs * 1000)
+    return () => window.clearTimeout(id)
+  }, [slideshowOn, slideshowDir, slideshowSecs, index, files.length, onIndex, reset, confirm, sharing])
 
   // Keyboard still works — the arrows are gone from the UI, not the interaction.
   // A confirmation on top owns the keyboard while it's up, or one Escape would
@@ -456,6 +492,7 @@ export function PhotoViewer({
   const sheetRef = useRef<HTMLDivElement>(null)
 
   const openAlbums = () => {
+    setSlideshowOn(false)
     reset(true)
     setPanel('album')
     // Only albums you made yourself. The automatic ones describe what a photo
@@ -468,6 +505,7 @@ export function PhotoViewer({
   }
 
   const openInfo = () => {
+    setSlideshowOn(false)
     reset(true)
     setPanel('info')
     setFileAlbums(null)
@@ -478,6 +516,21 @@ export function PhotoViewer({
       return
     }
     api.fileAlbums(file.id).then(setFileAlbums).catch(() => setFileAlbums([]))
+  }
+
+  /** The icon in the top bar: open the picker while stopped, stop while running. */
+  const toggleSlideshow = () => {
+    if (slideshowOn) {
+      setSlideshowOn(false)
+      return
+    }
+    reset(true)
+    setPanel('slideshow')
+  }
+
+  const startSlideshow = () => {
+    closePanel()
+    setSlideshowOn(true)
   }
 
   /**
@@ -630,12 +683,25 @@ export function PhotoViewer({
           <IC.chevLeft />
         </button>
         <div className="viewer-when">{fmtDateTime(file.created_at)}</div>
-        {/* Favourites are a review signal; they mean nothing for a binned file. */}
-        {mode === 'gallery' ? (
-          <FavButton key={file.id} file={file} />
-        ) : (
-          <span className="viewer-btn-spacer" aria-hidden="true" />
-        )}
+        <div className="viewer-top-actions">
+          {/* Not the trash: a slideshow through files waiting to be purged is
+              not a thing anyone asked for, and one photo has nothing to play. */}
+          {mode !== 'trash' && files.length > 1 && (
+            <button
+              className={`viewer-btn ${slideshowOn ? 'active' : ''}`}
+              onClick={toggleSlideshow}
+              aria-label={slideshowOn ? 'Stop slideshow' : 'Slideshow'}
+            >
+              <IC.play />
+            </button>
+          )}
+          {/* Favourites are a review signal; they mean nothing for a binned file. */}
+          {mode === 'gallery' ? (
+            <FavButton key={file.id} file={file} />
+          ) : (
+            <span className="viewer-btn-spacer" aria-hidden="true" />
+          )}
+        </div>
       </div>
 
       <div className="viewer-stage" ref={stageRef}>
@@ -766,6 +832,61 @@ export function PhotoViewer({
                 </button>
               ))
             )}
+          </div>
+        </div>
+      )}
+
+      {panel === 'slideshow' && (
+        <div
+          className="viewer-sheet"
+          role="group"
+          aria-label="Slideshow"
+          ref={sheetRef}
+          onPointerDown={onSheetDown}
+          onPointerMove={onSheetMove}
+          onPointerUp={onSheetUp}
+          onPointerCancel={onSheetUp}
+        >
+          <div className="viewer-sheet-grip" aria-hidden="true" />
+          <div className="viewer-sheet-head">
+            <span>Slideshow</span>
+          </div>
+          <div className="viewer-sheet-body">
+            <div className="ss-row">
+              <span className="ss-row-label">Direction</span>
+              <div className="ss-opts">
+                <button
+                  className={slideshowDir === 'next' ? 'on' : ''}
+                  onClick={() => setSlideshowDir('next')}
+                >
+                  Next ›
+                </button>
+                <button
+                  className={slideshowDir === 'prev' ? 'on' : ''}
+                  onClick={() => setSlideshowDir('prev')}
+                >
+                  ‹ Prev
+                </button>
+              </div>
+            </div>
+            <div className="ss-row">
+              <span className="ss-row-label">Every</span>
+              <div className="ss-opts">
+                {[1, 3, 5, 10].map((s) => (
+                  <button
+                    key={s}
+                    className={slideshowSecs === s ? 'on' : ''}
+                    onClick={() => setSlideshowSecs(s)}
+                  >
+                    {s}s
+                  </button>
+                ))}
+              </div>
+            </div>
+            <button className="ss-start" onClick={startSlideshow}>
+              <IC.play />
+              Start
+            </button>
           </div>
         </div>
       )}

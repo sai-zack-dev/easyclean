@@ -53,7 +53,15 @@
   --r-lg: 20px;
   --r-pill: 100px;
   --sidebar: 240px;
-  --tab: 72px;
+  /*
+   * The bar's own content height, before the home indicator's share is added
+   * in `--bar-h`. 72px left 20px of dead air below the icon+label column on
+   * every device — `env(safe-area-inset-bottom)` alone (~34pt on a notched
+   * phone) is what the home indicator actually needs, and this only has to
+   * cover the icon (22px), its label and their padding (a 44px stack) plus a
+   * little breathing room.
+   */
+  --tab: 58px;
   /* Where a modal holding a text field starts: clear of the title nav, and
      well clear of where the keyboard comes up. Shared by the New album box and
      the search overlay so the two open at the same height. */
@@ -840,16 +848,16 @@ body,
  * Symmetric insets, wide enough for the busiest header's buttons.
  *
  * Symmetric is what keeps the title on the header's true midline; the width is
- * what keeps it off the buttons. 104px clears two icon buttons plus the gutter
- * — measured, the vault's title was overlapping its own controls by 20px
- * before this, invisible only because the text is dim.
+ * what keeps it off the buttons. 136px clears the vault's busiest case — the
+ * round Add button plus a Select/Cancel pill beside it — which is wider than
+ * any other screen's single icon or UNDO pill puts there.
  */
 .swipe-title-wrap {
   position: absolute;
   top: calc(10px + env(safe-area-inset-top));
   bottom: 10px;
-  left: 104px;
-  right: 104px;
+  left: 136px;
+  right: 136px;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -2243,7 +2251,11 @@ input[type="range"]:disabled {
 /* ── TOAST ──────────────────────────────────────────── */
 .toast {
   position: fixed;
-  top: 56px;
+  /* `viewport-fit=cover` means `top: 0` is the physical top edge, under the
+     status bar — without the inset this sat mostly behind it, on any device
+     where the status bar is taller than 56px (all of them with a notch or
+     Dynamic Island). */
+  top: calc(56px + env(safe-area-inset-top));
   left: 50%;
   transform: translateX(-50%);
   background: rgba(40, 40, 40, 0.95);
@@ -2401,6 +2413,17 @@ body.viewer-open .tabbar {
 .viewer-btn.on svg {
   fill: var(--delete);
   stroke: var(--delete);
+}
+/* The slideshow toggle, running: accent rather than the heart's red, since
+   this isn't a judgement about the photo. */
+.viewer-btn.active {
+  background: var(--accent);
+  color: var(--accent-on);
+}
+.viewer-top-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .viewer-stage {
@@ -2637,6 +2660,67 @@ body.viewer-open .tabbar {
 }
 .viewer-album-list {
   padding: 0 12px 18px;
+}
+/* ── Slideshow sheet ────────────────────────────────── */
+.ss-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 18px;
+}
+.ss-row-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--viewer-text);
+}
+.ss-opts {
+  display: flex;
+  gap: 4px;
+  background: var(--viewer-fill);
+  border-radius: var(--r-pill);
+  padding: 3px;
+}
+.ss-opts button {
+  padding: 6px 12px;
+  border-radius: var(--r-pill);
+  border: none;
+  background: none;
+  color: var(--viewer-text3);
+  font-family: var(--font);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.ss-opts button.on {
+  background: var(--viewer-fill-hi);
+  color: var(--viewer-text);
+}
+.ss-start {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin: 8px 18px calc(16px + env(safe-area-inset-bottom));
+  padding: 13px;
+  border: none;
+  border-radius: var(--r-pill);
+  background: var(--accent);
+  color: var(--accent-on);
+  font-family: var(--font);
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.ss-start svg {
+  width: 16px;
+  height: 16px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 /* Album chips in the Details panel. */
 .viewer-album-tags {
