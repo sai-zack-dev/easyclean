@@ -6,6 +6,38 @@ All notable changes to EasyClean are documented here. The format follows
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.6.1] — 2026-10-02
+
+A patch for one line of 0.5.1 that turned out to cost more than it bought on iOS.
+
+### Fixed
+- **The app stopped rendering 59px too high.** 0.5.1 added `viewport-fit=cover`, which is what makes
+  every `env(safe-area-inset-*)` in the stylesheet mean anything. Paired with the
+  `apple-mobile-web-app-status-bar-style: black-translucent` that was already in the head, iOS kept
+  the layout viewport at screen-minus-status-bar but moved its origin to the physical top — so the
+  whole app sat 59px high and came up 59px short at the bottom. Measured off a screenshot: the tab
+  bar ends at 873 CSS px and the last 59px of the screen are bare canvas, and the photo viewer, which
+  is `position: fixed; inset: 0` rather than `100dvh`, stops at exactly the same place. That strip is
+  outside the viewport, so no CSS could reach it.
+
+  Neither meta is at fault alone — `black-translucent` had been there for releases without doing
+  anything, because iOS still laid the app out below the status bar. Only the pair moved the origin.
+  The status-bar meta is gone; `viewport-fit=cover` stays, because the bottom inset it reports is
+  real and is what the tab bar and action bars reserve for the home indicator.
+
+- **Page titles are sharp again.** Content under the status bar is what fed iOS 26's scroll-edge
+  effect, which progressively blurs whatever passes beneath it. Slicing across the `E` of
+  "EasyClean": the glyph edge ramps over seven pixels and peaks at 205 near the top, and is a
+  one-pixel edge at full 255 forty pixels lower. Nothing was under the status bar before 0.5.1, so
+  there was nothing to blur.
+
+### Changed
+- `theme-color` and the manifest's `theme_color` now match `--bg` (`#0a0a0a` dark, `#f2f2f7` light)
+  rather than pure black and white. The status bar is opaque again and is painted with that value, so
+  anything else draws a faint band above every screen.
+
 ### Added
 - **Tailscale sidecar, opt-in.** `deploy/docker-compose.tailscale.yml` plus `deploy/tailscale/serve.json`
   give EasyClean its own HTTPS name on your tailnet — `https://<TS_HOSTNAME>.<tailnet>.ts.net` — with
@@ -18,8 +50,9 @@ All notable changes to EasyClean are documented here. The format follows
   name belongs to a machine, and Tailscale shares access one machine at a time — so sharing EasyClean
   with a relative gives them EasyClean and nothing else you run on that box.
 
-  Running on the home server since 2026-09-24; this is the repository catching up, so a fresh
-  `install.sh` reproduces it.
+  Shipped inert, and verified so: during the 0.6.0 rollout `docker compose ps` on the home server
+  listed `easyclean` alone, with no `easyclean-tailscale` beside it. Nothing starts the sidecar until
+  `COMPOSE_FILE` names the overlay in `/opt/easyclean/.env`, and no release writes that file.
 
 ## [0.6.0] — 2026-10-02
 

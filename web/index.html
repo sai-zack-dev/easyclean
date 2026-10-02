@@ -12,11 +12,32 @@
     />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <!--
+      No `apple-mobile-web-app-status-bar-style`, and that is the point.
+
+      `black-translucent` on its own did nothing here — iOS still laid the app
+      out below the status bar. Paired with `viewport-fit=cover` it did
+      something worse than either: the layout viewport kept its height of
+      screen-minus-status-bar but moved its origin to the physical top, so the
+      whole app rendered 59px high and came up 59px short at the bottom. That
+      is the dead strip under the tab bar, and it is outside the viewport
+      entirely, so no amount of `100dvh` or `position: fixed` can reach it.
+      Content sitting under the status bar is also what fed iOS's scroll-edge
+      effect, which progressively blurred the top ~95px of every screen — the
+      big page titles worst of all.
+
+      Without it the viewport starts below the status bar and is internally
+      consistent again, while `viewport-fit=cover` still reports a real
+      `safe-area-inset-bottom` for the home indicator, which is the inset the
+      bars actually need.
+    -->
     <meta name="apple-mobile-web-app-title" content="EasyClean" />
     <meta name="description" content="Swipe through your photo library — keep, delete, de-duplicate, and organize." />
-    <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" />
-    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+    <!-- Matched to `--bg` in tokens.css, not to pure black and white: the
+         status bar is opaque now and painted with this, so a value that is not
+         the page's own ground draws a visible band above every screen. -->
+    <meta name="theme-color" content="#0a0a0a" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#f2f2f7" media="(prefers-color-scheme: light)" />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
