@@ -31,6 +31,12 @@ mkdir -p "$DEPLOY_DIR"
 say "Installing docker-compose.yml"
 install -m 0644 "$SRC_DIR/docker-compose.yml" "$DEPLOY_DIR/docker-compose.yml"
 
+# The Tailscale sidecar and its serve config ride along unconditionally but stay
+# inert: nothing starts them until COMPOSE_FILE in .env names the overlay.
+install -m 0644 "$SRC_DIR/docker-compose.tailscale.yml" "$DEPLOY_DIR/docker-compose.tailscale.yml"
+install -d -m 0755 "$DEPLOY_DIR/tailscale"
+install -m 0644 "$SRC_DIR/tailscale/serve.json" "$DEPLOY_DIR/tailscale/serve.json"
+
 FRESH_ENV=0
 if [ -f "$DEPLOY_DIR/.env" ]; then
   say ".env already exists — leaving it alone"
@@ -71,6 +77,20 @@ say "Data directory: $DATA_DIR"
 mkdir -p "$DATA_DIR"
 chown -R "$APP_UID:$APP_GID" "$DATA_DIR"
 
+# Tailscale sidecar enabled? Its state dir holds the node key and the HTTPS
+# cert, so it is root-owned and private — tailscaled runs as root in its
+# container, unlike the app.
+if [ -n "$(env_get COMPOSE_FILE)" ]; then
+  TS_STATE_DIR="$(env_get TS_STATE_DIR)"
+  TS_STATE_DIR="${TS_STATE_DIR:-$DEPLOY_DIR/tailscale-state}"
+  say "Tailscale state directory: $TS_STATE_DIR"
+  mkdir -p "$TS_STATE_DIR"
+  chmod 0700 "$TS_STATE_DIR"
+  [ -n "$(env_get TS_AUTHKEY)" ] || die "COMPOSE_FILE enables the Tailscale sidecar but TS_AUTHKEY is empty.
+       Mint a reusable, pre-authorized, tagged key at
+       https://login.tailscale.com/admin/settings/keys, or remove COMPOSE_FILE from $DEPLOY_DIR/.env."
+fi
+
 if [ -n "$MEDIA_ROOT" ] && [ -d "$MEDIA_ROOT" ]; then
   say "Media root: $MEDIA_ROOT"
   # Only the top level: chown -R across a 100K-photo library is slow and
@@ -102,6 +122,10 @@ for _ in $(seq 1 60); do
   if curl -fsS "http://localhost:$PORT/api/health" >/dev/null 2>&1; then
     IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
     say "EasyClean is up:  http://${IP:-localhost}:$PORT"
+    if [ -n "$(env_get COMPOSE_FILE)" ]; then
+      say "Tailscale: watch it register with  docker compose logs -f tailscale"
+      say "  then confirm the name it actually took at https://login.tailscale.com/admin/machines"
+    fi
     exit 0
   fi
   sleep 1

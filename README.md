@@ -96,8 +96,10 @@ EasyClean is **LAN-only by default** and is not hardened for direct internet exp
   `EASYCLEAN_CORS_ORIGINS` only for a split dev setup.
 - **Change the passcode** — anyone on the Wi-Fi who reaches the port can otherwise see and delete photos.
   Logins are rate-limited to 5 attempts / 15 min per IP.
-- **Don't port-forward.** For remote access use Tailscale or a Cloudflare Tunnel (planned), never a
-  router port-forward.
+- **Don't port-forward.** For remote access, a Tailscale sidecar ships in
+  [`deploy/docker-compose.tailscale.yml`](deploy/docker-compose.tailscale.yml) — it gives EasyClean its
+  own HTTPS `ts.net` name for you and whoever you share it with ([setup](deploy/README.md#5-remote-access-over-tailscale)).
+  A Cloudflare Tunnel is the other option. Never a router port-forward.
 - Deletions are **trash-first** — files move to `.trash/` and are only purged on explicit action or after
   the retention window. That is a delay, not a backup.
 

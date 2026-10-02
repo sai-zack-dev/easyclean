@@ -6,7 +6,20 @@ All notable changes to EasyClean are documented here. The format follows
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+- **Tailscale sidecar, opt-in.** `deploy/docker-compose.tailscale.yml` plus `deploy/tailscale/serve.json`
+  give EasyClean its own HTTPS name on your tailnet — `https://<TS_HOSTNAME>.<tailnet>.ts.net` — with
+  no port forwarding and no certificate to renew. Enabled by one `COMPOSE_FILE` line in `.env`, which
+  `docker compose` reads on its own, so the deploy workflow's `docker compose up -d` picks it up
+  without changing. Setup, including the auth key and what the state volume holds, is
+  [deploy/README.md §5](deploy/README.md).
+
+  It is a second container, and therefore a second machine on the tailnet, on purpose: a MagicDNS
+  name belongs to a machine, and Tailscale shares access one machine at a time — so sharing EasyClean
+  with a relative gives them EasyClean and nothing else you run on that box.
+
+  Running on the home server since 2026-09-24; this is the repository catching up, so a fresh
+  `install.sh` reproduces it.
 
 ## [0.6.0] — 2026-10-02
 

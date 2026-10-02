@@ -1,0 +1,78 @@
+# EasyClean — optional Tailscale sidecar.
+#
+# Gives EasyClean its own HTTPS name on your tailnet
+# (https://saiz-easyclean.<tailnet>.ts.net) without opening a single port on
+# your router. Off unless you opt in: add this line to /opt/easyclean/.env
+#
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.tailscale.yml
+#
+# `docker compose` reads COMPOSE_FILE out of .env, so a plain
+# `docker compose up -d` — including the one the deploy workflow runs on the
+# self-hosted runner — picks the sidecar up from then on. Setup: deploy/README.md §5.
+#
+# Why a second container and not a path on an existing Tailscale node: a
+# MagicDNS name belongs to a machine, so a separate name means a separate node.
+# That is worth having — Tailscale shares access one node at a time, so sharing
+# EasyClean with a relative gives them EasyClean and nothing else on the tailnet.
+services:
+  tailscale:
+    image: tailscale/tailscale:stable
+    container_name: easyclean-tailscale
+    restart: unless-stopped
+    hostname: ${TS_HOSTNAME:-saiz-easyclean}
+
+    environment:
+      # Becomes the MagicDNS name: <TS_HOSTNAME>.<tailnet>.ts.net. Tailscale
+      # lowercases it and, if the name is taken, silently appends "-1" — so
+      # check the machine list after the first boot rather than assuming.
+      TS_HOSTNAME: ${TS_HOSTNAME:-saiz-easyclean}
+      # Reusable, PRE-AUTHORIZED, tagged auth key from the admin console.
+      # Only read on first registration; after that the node's identity lives
+      # in the state volume below.
+      TS_AUTHKEY: ${TS_AUTHKEY:?set TS_AUTHKEY in .env, or drop docker-compose.tailscale.yml from COMPOSE_FILE}
+      TS_STATE_DIR: /var/lib/tailscale
+      # Declarative `tailscale serve`: terminate HTTPS on the tailnet name and
+      # reverse-proxy to the app container. ${TS_CERT_DOMAIN} is substituted by
+      # the image with this node's real MagicDNS name.
+      TS_SERVE_CONFIG: /config/serve.json
+      # Userspace networking: tailscaled proxies through plain sockets instead
+      # of a TUN device, so this container needs no NET_ADMIN and no
+      # /dev/net/tun. It only has to *serve*, never route traffic for others.
+      TS_USERSPACE: "true"
+      # Do NOT let MagicDNS take over the container's resolver. This sidecar
+      # resolves exactly one name — "easyclean", from Docker's embedded DNS —
+      # and pointing /etc/resolv.conf at MagicDNS instead breaks that.
+      TS_ACCEPT_DNS: "false"
+      TS_EXTRA_ARGS: ${TS_EXTRA_ARGS:-}
+
+    volumes:
+      # The node's identity and its HTTPS certificate. Lose this and the node
+      # re-registers on the next boot as a *new* machine — which means a new
+      # name (saiz-easyclean-1) and re-doing every share.
+      - ${TS_STATE_DIR:-/opt/easyclean/tailscale}:/var/lib/tailscale
+      - ./tailscale/serve.json:/config/serve.json:ro
+
+    # Wait for the app to answer /api/health, so the first request through the
+    # tunnel after a restart isn't a 502.
+    depends_on:
+      easyclean:
+        condition: service_healthy
+
+    # No `ports:` on purpose. The tailnet interface lives inside this container;
+    # nothing new is published to your LAN, and nothing to the internet.
+
+    # Same posture as the app container, minus read_only: tailscaled keeps its
+    # control socket under /var/run and expects a writable root. Everything that
+    # must survive a restart is in the state volume above.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: ${TS_MEM_LIMIT:-256m}
+    pids_limit: 256
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
