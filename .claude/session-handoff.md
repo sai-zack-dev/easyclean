@@ -15,7 +15,7 @@ code.
 |---|---|
 | M0–M2 core + API | ✅ 36 tests green, clippy `-D warnings` clean, fmt clean |
 | M3 web UI | ✅ builds; lint clean; **now an installable PWA** |
-| M4 Tauri desktop | ❌ **removed 2026-09-09** — `desktop/` crate deleted; in git history at `da8f7f5` |
+| M4 Tauri desktop | ❌ **removed 2026-09-09** — `desktop/` crate deleted; in git history at `3ffbe50` |
 | M5 Docker | ✅ **image builds and passes a container smoke test** (was broken before today) |
 | M5.4 CI/CD | ✅ workflows written; ⏳ runner not yet registered on the server |
 | HEIC | ✅ decodes via libheif in the Docker image |
@@ -63,7 +63,7 @@ code.
 10. `deploy/` kit for `/opt/easyclean`.
 
 **Hygiene**
-11. Deleted `backend/` (Python) and `frontend/` (prototype) — in history at `2763e16`. Added MIT
+11. Deleted `backend/` (Python) and `frontend/` (prototype) — in history at `ce531fe`. Added MIT
     `LICENSE`. Fixed all clippy + eslint findings (including a component declared during render and a
     swipe-batch race). `npm audit`: 0 vulnerabilities.
 

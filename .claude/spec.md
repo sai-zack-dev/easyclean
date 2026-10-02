@@ -33,7 +33,7 @@ The cleaning logic is built **once** (a Rust core crate + an axum server binary)
 only launcher around it — no second backend, and the backend is never built outside the image.
 
 > The Tauri desktop shell (Shell A: folder pick · Start/Stop · URL + QR) was **removed on 2026-09-09**.
-> Its code is in git history at `da8f7f5`. Current scope: Dockerfile for the backend, `web/` for the
+> Its code is in git history at `3ffbe50`. Current scope: Dockerfile for the backend, `web/` for the
 > frontend.
 
 ## Storage model

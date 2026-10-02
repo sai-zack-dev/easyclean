@@ -901,9 +901,9 @@ First release deployed to the home server.
 - **The Tauri desktop shell.** The `desktop/` crate, its workspace member, its `release.yml` bundle job,
   and the `--exclude easyclean-desktop` flags in CI are gone; `Cargo.lock` drops 312 packages
   (660 → 348). EasyClean now ships one way — the Docker image — and the backend is only ever built
-  inside it. The code remains in git history at `da8f7f5`.
+  inside it. The code remains in git history at `3ffbe50`.
 - The superseded prototypes: `frontend/index.html` (single-file React app, now ported to `web/`) and
-  the Python FastAPI `backend/`. Both remain in git history at `2763e16`.
+  the Python FastAPI `backend/`. Both remain in git history at `ce531fe`.
 
 ### Security
 - **No shared default JWT secret.** The forgeable `dev-insecure-secret-change-me` fallback is gone.

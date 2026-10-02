@@ -3,7 +3,7 @@
 > **2026-09-09 — the Tauri desktop shell was removed.** M4 Phase 4.2, M5 Phase 5.2, and every other
 > `desktop/` item below are kept as a record of work that was done and then deleted; they are history,
 > not open work. The shipping scope is now the Dockerfile for the backend and `web/` for the frontend.
-> The deleted code is in git history at `da8f7f5`.
+> The deleted code is in git history at `3ffbe50`.
 
 Rust-only "one core, one shell" (see [CLAUDE.md](CLAUDE.md) / [spec.md](spec.md)); screens & design in
 [ui.md](ui.md). Task legend: `[ ]` todo · `[~]` in progress · `[x]` done.

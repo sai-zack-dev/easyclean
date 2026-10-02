@@ -21,7 +21,7 @@ one way:
   machine, only inside the image.
 
 The **Tauri desktop shell was removed on 2026-09-09** (`desktop/` crate, its release job, and the
-workspace member). It lives in git history at `da8f7f5` if the folder-pick + QR control panel is ever
+workspace member). It lives in git history at `3ffbe50` if the folder-pick + QR control panel is ever
 wanted back. Scope for now is deliberately: **Dockerfile for the backend, `web/` for the frontend.**
 
 Clients = **any browser on the LAN** (MVP). Mobile = installable **PWA** later; native later still.
@@ -98,7 +98,7 @@ Locked, both themes (dark from prototypes, light defined) — see [ui.md](ui.md)
 - **`web/` is the canonical web UI** — React 18 + Vite + TS, the finished port of the original
   single-file prototype, with both themes and the PWA layer. Do NOT redesign it; match [ui.md](ui.md).
 - The two prototypes it replaced (`frontend/index.html`, the Python `backend/`) were **deleted on
-  2026-08-17**. They live in git history at commit `2763e16` if you ever need the original markup or
+  2026-08-17**. They live in git history at commit `ce531fe` if you ever need the original markup or
   the old scan/pHash reference.
 
 ## Deployment
